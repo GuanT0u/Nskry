@@ -1,0 +1,27 @@
+# Build outputs
+build/
+out/
+cmake-build-*/
+
+# IDE
+.vs/
+.vscode/
+*.vcxproj
+*.vcxproj.filters
+*.sln
+*.suo
+*.user
+
+# Compiled
+*.exe
+*.dll
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
