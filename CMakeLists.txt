@@ -9,15 +9,17 @@ set(CMAKE_SYSTEM_VERSION 10.0.19041.0)
 
 add_executable(Nskry WIN32
     src/main.cpp
+    src/core/plugin_manager.cpp
     src/interop/window_enumerator.cpp
     src/capture/d3d_device.cpp
     src/capture/capture_session.cpp
+    src/ui/annotation/annotation_engine.cpp
     src/ui/pip_window.cpp
     src/ui/pin_window.cpp
     src/ui/selection_window.cpp
 )
 
-target_include_directories(Nskry PRIVATE src)
+target_include_directories(Nskry PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} src sdk)
 
 target_compile_definitions(Nskry PRIVATE
     WIN32_LEAN_AND_MEAN
@@ -35,6 +37,7 @@ target_link_libraries(Nskry PRIVATE
     shcore
     msimg32
     gdiplus
+    shlwapi
 )
 
 # Precompiled header

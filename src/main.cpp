@@ -5,6 +5,7 @@
 #include "ui/pip_window.h"
 #include "ui/pin_window.h"
 #include "ui/selection_window.h"
+#include "core/plugin_manager.h"
 
 // GDI+ for PNG saving (needs min/max workaround with NOMINMAX)
 #include <algorithm>
@@ -92,6 +93,17 @@ int WINAPI wWinMain(
         0, 0, 0, 0,
         HWND_MESSAGE, nullptr, hInstance, nullptr);
 
+    // Plugin Manager initialization
+    NskryHostContext hostCtx{};
+    hostCtx.mainHwnd = g_mainHwnd;
+    hostCtx.d3dDevice = g_device ? g_device->Device() : nullptr;
+    hostCtx.d3dContext = g_device ? g_device->Context() : nullptr;
+    hostCtx.showNotification = [](const wchar_t* msg, int durationMs) {
+        // Can be hooked to toast or status
+    };
+    hostCtx.copyBitmapToClipboard = CopyBitmapToClipboard;
+    nskry::PluginManager::Instance().Initialize(&hostCtx);
+
     // Global hotkeys
     if (!::RegisterHotKey(g_mainHwnd, HOTKEY_CAPTURE, MOD_CONTROL | MOD_ALT, 'A')) {
         ::MessageBoxW(nullptr,
@@ -128,6 +140,7 @@ int WINAPI wWinMain(
     }
 
     // Cleanup
+    nskry::PluginManager::Instance().Shutdown();
     ::Shell_NotifyIconW(NIM_DELETE, &nid);
     CleanupPip();
     g_pins.clear();
