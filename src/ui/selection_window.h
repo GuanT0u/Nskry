@@ -23,11 +23,12 @@ enum class SelectionAction {
 
 /// Result data produced by SelectionWindow after region selection.
 struct SelectionResult {
-    HWND       targetHwnd{};    // The window under the selection start point
-    CropRegion crop{};          // Crop region relative to targetHwnd (for PiP)
-    HBITMAP    bitmap{};        // Static screenshot of selected area. Caller takes ownership.
-    int        bitmapWidth{};
-    int        bitmapHeight{};
+    HWND                  targetHwnd{};    // The window under the selection start point
+    CropRegion            crop{};          // Crop region relative to targetHwnd (for PiP)
+    HBITMAP               bitmap{};        // Static screenshot of selected area. Caller takes ownership.
+    int                   bitmapWidth{};
+    int                   bitmapHeight{};
+    std::vector<uint32_t> overlayPixels;   // Transparent ARGB annotation overlay for PiP
 };
 
 // ============================================================================

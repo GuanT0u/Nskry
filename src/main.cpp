@@ -46,7 +46,7 @@ static constexpr UINT WM_USER_TRAY   = WM_USER + 1;
 static LRESULT CALLBACK MainWndProc(HWND, UINT, WPARAM, LPARAM);
 static void ShowSelectionOverlay();
 static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionResult result);
-static void StartPiP(HWND targetHwnd, nskry::CropRegion crop);
+static void StartPiP(HWND targetHwnd, nskry::CropRegion crop, const std::vector<uint32_t>& overlayPixels = {});
 static void CleanupPip();
 static void CopyBitmapToClipboard(HBITMAP hbmp);
 static void SaveBitmapToFile(HBITMAP hbmp, int w, int h);
@@ -244,7 +244,7 @@ static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionR
     case nskry::SelectionAction::PiP:
         if (result.bitmap) ::DeleteObject(result.bitmap);
         if (result.targetHwnd)
-            StartPiP(result.targetHwnd, result.crop);
+            StartPiP(result.targetHwnd, result.crop, result.overlayPixels);
         break;
 
     case nskry::SelectionAction::Cancel:
@@ -257,7 +257,7 @@ static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionR
 // Start PiP live capture
 // ============================================================================
 
-static void StartPiP(HWND targetHwnd, nskry::CropRegion crop) {
+static void StartPiP(HWND targetHwnd, nskry::CropRegion crop, const std::vector<uint32_t>& overlayPixels) {
     CleanupPip();
 
     try {
@@ -265,7 +265,8 @@ static void StartPiP(HWND targetHwnd, nskry::CropRegion crop) {
             g_device,
             static_cast<UINT>(crop.width),
             static_cast<UINT>(crop.height),
-            []() { ::PostMessageW(g_mainHwnd, WM_CLEANUP, 0, 0); });
+            []() { ::PostMessageW(g_mainHwnd, WM_CLEANUP, 0, 0); },
+            overlayPixels);
 
         g_capture = std::make_unique<nskry::CaptureSession>(
             g_device, targetHwnd, crop);

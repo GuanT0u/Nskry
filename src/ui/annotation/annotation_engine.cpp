@@ -136,4 +136,17 @@ HBITMAP AnnotationEngine::BakeToBitmap(HDC hdcBase, RECT baseLocalRect, int outW
     return hbmp;
 }
 
+std::vector<uint32_t> AnnotationEngine::RenderOverlayRgba(HDC hdcBase, int baseOffsetX, int baseOffsetY, int outW, int outH) {
+    if (IsEmpty() || outW <= 0 || outH <= 0) return {};
+
+    std::vector<uint32_t> pixels(outW * outH, 0); // 0 = fully transparent ARGB
+
+    Gdiplus::Bitmap bmp(outW, outH, outW * 4, PixelFormat32bppARGB, reinterpret_cast<BYTE*>(pixels.data()));
+    Gdiplus::Graphics g(&bmp);
+
+    Draw(g, hdcBase, baseOffsetX, baseOffsetY, baseOffsetX + outW, baseOffsetY + outH);
+
+    return pixels;
+}
+
 } // namespace nskry

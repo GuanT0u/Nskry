@@ -29,6 +29,10 @@ target_compile_definitions(Nskry PRIVATE
     _UNICODE
 )
 
+if (MSVC)
+    target_compile_options(Nskry PRIVATE /utf-8)
+endif()
+
 target_link_libraries(Nskry PRIVATE
     d3d11
     dxgi
@@ -38,6 +42,7 @@ target_link_libraries(Nskry PRIVATE
     msimg32
     gdiplus
     shlwapi
+    d3dcompiler
 )
 
 # Precompiled header

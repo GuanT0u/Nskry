@@ -517,28 +517,28 @@ void SelectionWindow::BuildToolbar(RECT selRect) {
 
     MainBtnDef mainDefs[] = {
         // Annotation Tools
-        { ToolbarItemType::ToolToggle, L"\x25AD", ToolType::Rect,    SelectionAction::Cancel, 30, false }, // ▭
-        { ToolbarItemType::ToolToggle, L"\x25CB", ToolType::Ellipse, SelectionAction::Cancel, 30, false }, // ○
-        { ToolbarItemType::ToolToggle, L"\x2794", ToolType::Arrow,   SelectionAction::Cancel, 30, false }, // ➔
-        { ToolbarItemType::ToolToggle, L"\x270E", ToolType::Pen,     SelectionAction::Cancel, 30, false }, // ✎
-        { ToolbarItemType::ToolToggle, L"\x25A6", ToolType::Mosaic,  SelectionAction::Cancel, 30, false }, // ▦
-        { ToolbarItemType::ToolToggle, L"T",      ToolType::Text,    SelectionAction::Cancel, 30, false }, // T
+        { ToolbarItemType::ToolToggle, L"矩形",   ToolType::Rect,    SelectionAction::Cancel, 38, false },
+        { ToolbarItemType::ToolToggle, L"圆形",   ToolType::Ellipse, SelectionAction::Cancel, 38, false },
+        { ToolbarItemType::ToolToggle, L"箭头",   ToolType::Arrow,   SelectionAction::Cancel, 38, false },
+        { ToolbarItemType::ToolToggle, L"画笔",   ToolType::Pen,     SelectionAction::Cancel, 38, false },
+        { ToolbarItemType::ToolToggle, L"马赛克", ToolType::Mosaic,  SelectionAction::Cancel, 48, false },
+        { ToolbarItemType::ToolToggle, L"文本",   ToolType::Text,    SelectionAction::Cancel, 38, false },
 
         // Separator
         { ToolbarItemType::Action,     nullptr,   ToolType::None,    SelectionAction::Cancel, 6,  true  },
 
         // Edit History
-        { ToolbarItemType::Undo,       L"\x21B6", ToolType::None,    SelectionAction::Cancel, 30, false }, // ↶
-        { ToolbarItemType::Redo,       L"\x21B7", ToolType::None,    SelectionAction::Cancel, 30, false }, // ↷
+        { ToolbarItemType::Undo,       L"撤销",   ToolType::None,    SelectionAction::Cancel, 38, false },
+        { ToolbarItemType::Redo,       L"重做",   ToolType::None,    SelectionAction::Cancel, 38, false },
 
         // Separator
         { ToolbarItemType::Action,     nullptr,   ToolType::None,    SelectionAction::Cancel, 6,  true  },
 
         // Actions
-        { ToolbarItemType::Action,     L"\x2398 \x590D\x5236", ToolType::None, SelectionAction::Copy, 66, false }, // ⎘ 复制
-        { ToolbarItemType::Action,     L"\x2193 \x4FDD\x5B58", ToolType::None, SelectionAction::Save, 66, false }, // ↓ 保存
-        { ToolbarItemType::Action,     L"\x2197 \x56FA\x5B9A", ToolType::None, SelectionAction::Pin,  66, false }, // ↗ 固定
-        { ToolbarItemType::Action,     L"\x25B6 \x76D1\x63A7", ToolType::None, SelectionAction::PiP,  66, false }, // ▶ 监控
+        { ToolbarItemType::Action,     L"⎘ 复制", ToolType::None,    SelectionAction::Copy, 56, false },
+        { ToolbarItemType::Action,     L"↓ 保存", ToolType::None,    SelectionAction::Save, 56, false },
+        { ToolbarItemType::Action,     L"↗ 固定", ToolType::None,    SelectionAction::Pin,  56, false },
+        { ToolbarItemType::Action,     L"▶ 监控", ToolType::None,    SelectionAction::PiP,  56, false },
     };
 
     constexpr int gap = 3;
@@ -710,9 +710,7 @@ void SelectionWindow::DrawToolbar(HDC hdc) {
         ::DeleteObject(borderBrush);
 
         if (item.label) {
-            HFONT useFont = (item.type == ToolbarItemType::ToolToggle || item.type == ToolbarItemType::Undo || item.type == ToolbarItemType::Redo)
-                          ? m_fontIcon : m_font;
-            HFONT oldFont = static_cast<HFONT>(::SelectObject(hdc, useFont));
+            HFONT oldFont = static_cast<HFONT>(::SelectObject(hdc, m_font));
 
             ::SetTextColor(hdc, item.selected ? RGB(255, 255, 255) : RGB(235, 235, 240));
             RECT textRect = item.rect;
@@ -805,6 +803,13 @@ void SelectionWindow::FinishWithAction(SelectionAction action) {
         result.crop.y      = screenTop  - m_targetBounds.top;
         result.crop.width  = result.bitmapWidth;
         result.crop.height = result.bitmapHeight;
+
+        // If PiP action and we have annotations, extract the overlay
+        if (action == SelectionAction::PiP && !m_annotationEngine.IsEmpty()) {
+            result.overlayPixels = m_annotationEngine.RenderOverlayRgba(
+                m_hdcSnapshot, m_finalRect.left, m_finalRect.top,
+                result.crop.width, result.crop.height);
+        }
 
         m_capturedBitmap = nullptr; // transferred to caller
     } else {

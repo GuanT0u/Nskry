@@ -48,6 +48,9 @@ public:
     // baseLocalRect: the rectangle in hdcBase corresponding to the cropped region
     HBITMAP BakeToBitmap(HDC hdcBase, RECT baseLocalRect, int outW, int outH);
 
+    // Renders only the annotations onto an ARGB 32bpp transparent buffer for PiP video overlay
+    std::vector<uint32_t> RenderOverlayRgba(HDC hdcBase, int baseOffsetX, int baseOffsetY, int outW, int outH);
+
 private:
     ToolType  m_currentTool = ToolType::None;
     ToolStyle m_style{};

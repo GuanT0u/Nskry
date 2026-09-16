@@ -1,7 +1,26 @@
 #include "pch.h"
 #include "ui/pip_window.h"
+#include <d3dcompiler.h>
 
 namespace nskry {
+
+static const char kPipShaderSource[] = R"(
+struct VS_OUT {
+    float4 pos : SV_Position;
+    float2 uv  : TEXCOORD0;
+};
+VS_OUT vs_main(uint id : SV_VertexID) {
+    VS_OUT output;
+    output.uv = float2((id << 1) & 2, id & 2);
+    output.pos = float4(output.uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+    return output;
+}
+Texture2D g_tex : register(t0);
+SamplerState g_samp : register(s0);
+float4 ps_main(VS_OUT input) : SV_Target {
+    return g_tex.Sample(g_samp, input.uv);
+}
+)";
 
 // Custom message posted to MainWindow when the user closes the PiP.
 // This avoids re-entrance issues (the PiP's WndProc returns before cleanup).
@@ -14,7 +33,8 @@ static constexpr UINT WM_PIP_CLOSE_REQUEST = WM_APP + 100;
 PipWindow::PipWindow(
     std::shared_ptr<D3DDevice> device,
     UINT contentWidth, UINT contentHeight,
-    std::function<void()> onCloseRequest)
+    std::function<void()> onCloseRequest,
+    const std::vector<uint32_t>& overlayPixels)
     : m_device(std::move(device))
     , m_contentW(contentWidth)
     , m_contentH(contentHeight)
@@ -60,6 +80,9 @@ PipWindow::PipWindow(
 
     // --- Create DXGI swap chain --------------------------------------------
     CreateSwapChain(contentWidth, contentHeight);
+
+    // --- Initialize optional annotation overlay ----------------------------
+    InitOverlayResources(overlayPixels);
 }
 
 PipWindow::~PipWindow() {
@@ -67,6 +90,12 @@ PipWindow::~PipWindow() {
     {
         std::lock_guard lk(m_renderMutex);
         m_swapChain = nullptr;
+        m_overlaySRV = nullptr;
+        m_overlayTex = nullptr;
+        m_vs = nullptr;
+        m_ps = nullptr;
+        m_blendState = nullptr;
+        m_sampler = nullptr;
     }
     if (m_hwnd) {
         ::DestroyWindow(m_hwnd);
@@ -81,6 +110,60 @@ PipWindow::~PipWindow() {
 void PipWindow::Show() {
     ::ShowWindow(m_hwnd, SW_SHOWNA);
     ::UpdateWindow(m_hwnd);
+}
+
+void PipWindow::InitOverlayResources(const std::vector<uint32_t>& overlayPixels) {
+    if (overlayPixels.empty() || m_contentW == 0 || m_contentH == 0) return;
+
+    auto dev = m_device->Device();
+
+    // 1. Create overlay texture
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width            = m_contentW;
+    desc.Height           = m_contentH;
+    desc.MipLevels        = 1;
+    desc.ArraySize        = 1;
+    desc.Format           = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage            = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags        = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA subData{};
+    subData.pSysMem     = overlayPixels.data();
+    subData.SysMemPitch = m_contentW * sizeof(uint32_t);
+
+    if (FAILED(dev->CreateTexture2D(&desc, &subData, m_overlayTex.put()))) return;
+    if (FAILED(dev->CreateShaderResourceView(m_overlayTex.get(), nullptr, m_overlaySRV.put()))) return;
+
+    // 2. Compile shaders
+    winrt::com_ptr<ID3DBlob> vsBlob, psBlob, errBlob;
+    if (FAILED(::D3DCompile(kPipShaderSource, sizeof(kPipShaderSource) - 1, nullptr, nullptr, nullptr,
+                            "vs_main", "vs_4_0", 0, 0, vsBlob.put(), errBlob.put()))) return;
+    if (FAILED(::D3DCompile(kPipShaderSource, sizeof(kPipShaderSource) - 1, nullptr, nullptr, nullptr,
+                            "ps_main", "ps_4_0", 0, 0, psBlob.put(), errBlob.put()))) return;
+
+    dev->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, m_vs.put());
+    dev->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, m_ps.put());
+
+    // 3. Create blend state (standard premultiplied/alpha blend)
+    D3D11_BLEND_DESC bd{};
+    bd.RenderTarget[0].BlendEnable           = TRUE;
+    bd.RenderTarget[0].SrcBlend              = D3D11_BLEND_SRC_ALPHA;
+    bd.RenderTarget[0].DestBlend             = D3D11_BLEND_INV_SRC_ALPHA;
+    bd.RenderTarget[0].BlendOp               = D3D11_BLEND_OP_ADD;
+    bd.RenderTarget[0].SrcBlendAlpha         = D3D11_BLEND_ONE;
+    bd.RenderTarget[0].DestBlendAlpha        = D3D11_BLEND_INV_SRC_ALPHA;
+    bd.RenderTarget[0].BlendOpAlpha          = D3D11_BLEND_OP_ADD;
+    bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    dev->CreateBlendState(&bd, m_blendState.put());
+
+    // 4. Create sampler state
+    D3D11_SAMPLER_DESC sd{};
+    sd.Filter   = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    sd.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sd.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    dev->CreateSamplerState(&sd, m_sampler.put());
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +191,36 @@ void PipWindow::RenderFrame(ID3D11Texture2D* croppedTexture, UINT w, UINT h) {
         m_device->Context()->CopySubresourceRegion(
             backBuf.get(), 0, 0, 0, 0,
             croppedTexture, 0, &box);
+    }
+
+    // Blend annotation overlay on top if present
+    if (m_overlaySRV && m_vs && m_ps) {
+        winrt::com_ptr<ID3D11RenderTargetView> rtv;
+        if (SUCCEEDED(m_device->Device()->CreateRenderTargetView(backBuf.get(), nullptr, rtv.put()))) {
+            auto ctx = m_device->Context();
+            ID3D11RenderTargetView* rtvs[] = { rtv.get() };
+            ctx->OMSetRenderTargets(1, rtvs, nullptr);
+            ctx->OMSetBlendState(m_blendState.get(), nullptr, 0xffffffff);
+
+            D3D11_VIEWPORT vp{ 0.0f, 0.0f, static_cast<float>(bbDesc.Width), static_cast<float>(bbDesc.Height), 0.0f, 1.0f };
+            ctx->RSSetViewports(1, &vp);
+
+            ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            ctx->VSSetShader(m_vs.get(), nullptr, 0);
+            ctx->PSSetShader(m_ps.get(), nullptr, 0);
+
+            ID3D11ShaderResourceView* srvs[] = { m_overlaySRV.get() };
+            ctx->PSSetShaderResources(0, 1, srvs);
+            ID3D11SamplerState* samps[] = { m_sampler.get() };
+            ctx->PSSetSamplers(0, 1, samps);
+
+            ctx->Draw(3, 0);
+
+            ID3D11ShaderResourceView* nullSRV[] = { nullptr };
+            ctx->PSSetShaderResources(0, 1, nullSRV);
+            ID3D11RenderTargetView* nullRTV[] = { nullptr };
+            ctx->OMSetRenderTargets(1, nullRTV, nullptr);
+        }
     }
 
     // VSync present — DWM stretches the back buffer to the window rect

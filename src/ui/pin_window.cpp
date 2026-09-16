@@ -168,6 +168,31 @@ LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return TRUE;
     }
 
+    case WM_NCRBUTTONUP:
+        if (wp == HTCAPTION) {
+            POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+            ShowContextMenu(pt.x, pt.y);
+            return 0;
+        }
+        break;
+
+    case WM_NCLBUTTONDBLCLK:
+        if (wp == HTCAPTION) {
+            EnterEditMode();
+            return 0;
+        }
+        break;
+
+    case WM_CONTEXTMENU: {
+        POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+        if (pt.x == -1 && pt.y == -1) {
+            RECT rc{}; ::GetWindowRect(hwnd, &rc);
+            pt = { rc.left + 20, rc.top + 20 };
+        }
+        ShowContextMenu(pt.x, pt.y);
+        return 0;
+    }
+
     case WM_RBUTTONUP: {
         if (m_isEditing) {
             if (m_annotationEngine.GetTool() != ToolType::None) {
@@ -411,18 +436,18 @@ void PinWindow::BuildPinToolbar(int clientW, int clientH) {
     };
 
     Def defs[] = {
-        { ToolType::Rect,    0, L"\x25AD", 26, false }, // ▭
-        { ToolType::Ellipse, 0, L"\x25CB", 26, false }, // ○
-        { ToolType::Arrow,   0, L"\x2794", 26, false }, // ➔
-        { ToolType::Pen,     0, L"\x270E", 26, false }, // ✎
-        { ToolType::Mosaic,  0, L"\x25A6", 26, false }, // ▦
-        { ToolType::Text,    0, L"T",      26, false }, // T
-        { ToolType::None,    0, nullptr,   4,  true  }, // Sep
-        { ToolType::None,    3, L"\x21B6", 26, false }, // ↶ Undo
-        { ToolType::None,    4, L"\x21B7", 26, false }, // ↷ Redo
-        { ToolType::None,    0, nullptr,   4,  true  }, // Sep
-        { ToolType::None,    1, L"\x2713", 32, false }, // ✓ Done
-        { ToolType::None,    2, L"\x2715", 32, false }, // ✕ Cancel
+        { ToolType::Rect,    0, L"矩形",   36, false },
+        { ToolType::Ellipse, 0, L"圆形",   36, false },
+        { ToolType::Arrow,   0, L"箭头",   36, false },
+        { ToolType::Pen,     0, L"画笔",   36, false },
+        { ToolType::Mosaic,  0, L"马赛克", 46, false },
+        { ToolType::Text,    0, L"文本",   36, false },
+        { ToolType::None,    0, nullptr,    4, true  },
+        { ToolType::None,    3, L"撤销",   36, false },
+        { ToolType::None,    4, L"重做",   36, false },
+        { ToolType::None,    0, nullptr,    4, true  },
+        { ToolType::None,    1, L"✓ 完成", 46, false },
+        { ToolType::None,    2, L"✕ 取消", 46, false },
     };
 
     constexpr int gap = 2;
@@ -488,8 +513,7 @@ void PinWindow::DrawPinToolbar(HDC hdc, int /*clientW*/, int /*clientH*/) {
         ::DeleteObject(borderBrush);
 
         if (item.label) {
-            HFONT useFont = (item.tool != ToolType::None || item.action >= 3) ? m_fontIcon : m_font;
-            HFONT oldFont = static_cast<HFONT>(::SelectObject(hdc, useFont));
+            HFONT oldFont = static_cast<HFONT>(::SelectObject(hdc, m_font));
             ::SetTextColor(hdc, RGB(240, 240, 245));
             RECT textRect = item.rect;
             ::DrawTextW(hdc, item.label, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);

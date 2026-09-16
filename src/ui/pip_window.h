@@ -23,7 +23,8 @@ public:
     ///                       responsible for tearing down capture + PipWindow.
     PipWindow(std::shared_ptr<D3DDevice> device,
               UINT contentWidth, UINT contentHeight,
-              std::function<void()> onCloseRequest);
+              std::function<void()> onCloseRequest,
+              const std::vector<uint32_t>& overlayPixels = {});
     ~PipWindow();
 
     PipWindow(const PipWindow&)            = delete;
@@ -31,7 +32,7 @@ public:
 
     void Show();
 
-    /// Blit the cropped texture into the swap-chain back buffer and Present.
+    /// Blit the cropped texture into the swap-chain back buffer, blend annotations if present, and Present.
     /// Safe to call from any thread (internally mutex-protected).
     void RenderFrame(ID3D11Texture2D* croppedTexture, UINT w, UINT h);
 
@@ -40,6 +41,7 @@ public:
 private:
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     void CreateSwapChain(UINT w, UINT h);
+    void InitOverlayResources(const std::vector<uint32_t>& overlayPixels);
 
     std::shared_ptr<D3DDevice>      m_device;
     HWND                            m_hwnd{};
@@ -48,6 +50,14 @@ private:
     UINT                            m_contentW{};
     UINT                            m_contentH{};
     std::function<void()>           m_onClose;
+
+    // Optional GPU annotation overlay
+    winrt::com_ptr<ID3D11Texture2D>          m_overlayTex;
+    winrt::com_ptr<ID3D11ShaderResourceView> m_overlaySRV;
+    winrt::com_ptr<ID3D11VertexShader>       m_vs;
+    winrt::com_ptr<ID3D11PixelShader>        m_ps;
+    winrt::com_ptr<ID3D11BlendState>         m_blendState;
+    winrt::com_ptr<ID3D11SamplerState>       m_sampler;
 
     static constexpr wchar_t kClassName[] = L"NskryPipWindow";
     static inline std::once_flag s_classOnce;

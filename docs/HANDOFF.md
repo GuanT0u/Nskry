@@ -35,8 +35,9 @@ Nskry 是一款轻量级 Windows 工具，融合了"QQ截图式的流畅框选�
 | 复制截图到剪贴板 | ✅ | Win32 Clipboard API (自动烘焙标注) |
 | 保存截图为 PNG | ✅ | GDI+ 编码 + GetSaveFileNameW (自动烘焙标注) |
 | 固定截图 (PinWindow) | ✅ | 置顶 GDI 窗口，可拖拽/缩放 (自动烘焙标注) |
-| 固定截图二次批注 | ✅ | PinWindow 右键菜单「✎ 标注编辑」，支持就地追加批注并保存 |
-| PiP 实时监控 | ✅ | WGC + D3D11 SwapChain |
+| 固定截图二次批注 | ✅ | PinWindow 右键菜单「✎ 标注编辑」/双击，支持就地追加批注并保存 |
+| PiP 实时监控 | ✅ | WGC + D3D11 SwapChain (支持标注浮动叠加) |
+| PiP 标注图层叠加 | ✅ | GPU Alpha-Blend Shader 实时叠加标注于动态视频帧上 |
 | 窗口缩放锁定比例 | ✅ | 拖四角锁比例，拖边缘自由缩放 |
 | 系统托盘图标 | ✅ | 右键菜单 + 双击截图 |
 | 双屏适配 | ✅ | 虚拟屏幕坐标系 |
