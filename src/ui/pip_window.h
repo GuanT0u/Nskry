@@ -42,6 +42,8 @@ private:
     static LRESULT CALLBACK ToolbarWndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleToolbarMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
+    static LRESULT CALLBACK TextEditSubclassProc(HWND, UINT, WPARAM, LPARAM);
+
     void CreateSwapChain(UINT w, UINT h);
     void InitD3DOverlayPipeline();
     void UpdateOverlayFromEngine();

@@ -54,6 +54,7 @@ PipWindow::PipWindow(
     std::call_once(s_toolbarClassOnce, [&] {
         WNDCLASSEXW twc{};
         twc.cbSize        = sizeof(twc);
+        twc.style         = CS_HREDRAW | CS_VREDRAW | CS_DROPSHADOW;
         twc.lpfnWndProc   = ToolbarWndProc;
         twc.hInstance      = ::GetModuleHandleW(nullptr);
         twc.lpszClassName  = kToolbarClassName;
@@ -487,11 +488,35 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ::ScreenToClient(hwnd, &pt);
             RECT rc{}; ::GetClientRect(hwnd, &rc);
             if (::PtInRect(&rc, pt)) {
-                ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32515))); // IDC_CROSS
+                if (m_annotationEngine.GetTool() != ToolType::None) {
+                    ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32515))); // IDC_CROSS
+                } else {
+                    ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32512))); // IDC_ARROW
+                }
                 return TRUE;
             }
         }
         break;
+
+    case WM_WINDOWPOSCHANGED: {
+        if (m_isEditing && m_hwndToolbar) {
+            if (m_hTextEdit) CommitTextEdit();
+            RECT rc{}; ::GetClientRect(hwnd, &rc);
+            BuildToolbar(rc.right, rc.bottom);
+        }
+        break;
+    }
+
+    case WM_SHOWWINDOW: {
+        if (m_hwndToolbar) {
+            if (!wp) {
+                ::ShowWindow(m_hwndToolbar, SW_HIDE);
+            } else if (m_isEditing) {
+                ::ShowWindow(m_hwndToolbar, SW_SHOWNOACTIVATE);
+            }
+        }
+        break;
+    }
 
     case WM_KEYDOWN:
         if (m_isEditing) {
@@ -582,8 +607,9 @@ void PipWindow::EnterEditMode() {
 
     RECT rc{}; ::GetClientRect(m_hwnd, &rc);
     BuildToolbar(rc.right, rc.bottom);
-    ::ShowWindow(m_hwndToolbar, SW_SHOW);
+    ::ShowWindow(m_hwndToolbar, SW_SHOWNOACTIVATE);
     ::InvalidateRect(m_hwndToolbar, nullptr, FALSE);
+    ::UpdateWindow(m_hwndToolbar);
 }
 
 void PipWindow::FinishEdit(bool apply) {
@@ -595,23 +621,47 @@ void PipWindow::FinishEdit(bool apply) {
 
     m_annotationEngine.SetTool(ToolType::None);
     m_isEditing = false;
-    ::ShowWindow(m_hwndToolbar, SW_HIDE);
+    if (m_hwndToolbar) {
+        ::ShowWindow(m_hwndToolbar, SW_HIDE);
+    }
     UpdateOverlayFromEngine();
+}
+
+static WNDPROC s_origPipEditProc = nullptr;
+LRESULT CALLBACK PipWindow::TextEditSubclassProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto pip = reinterpret_cast<PipWindow*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (msg == WM_KEYDOWN) {
+        if (wp == VK_RETURN) {
+            if (pip) pip->CommitTextEdit();
+            return 0;
+        }
+        if (wp == VK_ESCAPE) {
+            HWND h = hwnd;
+            ::DestroyWindow(h);
+            return 0;
+        }
+    } else if (msg == WM_KILLFOCUS) {
+        if (pip) pip->CommitTextEdit();
+        return 0;
+    }
+    return ::CallWindowProcW(s_origPipEditProc, hwnd, msg, wp, lp);
 }
 
 void PipWindow::CommitTextEdit() {
     if (!m_hTextEdit) return;
 
-    int len = ::GetWindowTextLengthW(m_hTextEdit);
+    HWND hEdit = m_hTextEdit;
+    m_hTextEdit = nullptr;
+
+    int len = ::GetWindowTextLengthW(hEdit);
     if (len > 0) {
         std::vector<wchar_t> buf(len + 1);
-        ::GetWindowTextW(m_hTextEdit, buf.data(), len + 1);
+        ::GetWindowTextW(hEdit, buf.data(), len + 1);
         m_annotationEngine.AddTextShape(m_textEditPos, buf.data());
         UpdateOverlayFromEngine();
     }
 
-    ::DestroyWindow(m_hTextEdit);
-    m_hTextEdit = nullptr;
+    ::DestroyWindow(hEdit);
 }
 
 void PipWindow::OnLButtonDown(int x, int y) {
@@ -628,13 +678,19 @@ void PipWindow::OnLButtonDown(int x, int y) {
 
     if (m_annotationEngine.GetTool() == ToolType::Text) {
         m_textEditPos = { bmpX, bmpY };
+        POINT ptScreen = { x, y };
+        ::ClientToScreen(m_hwnd, &ptScreen);
+
         m_hTextEdit = ::CreateWindowExW(
-            0, L"EDIT", L"",
-            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-            x, y, 120, 24,
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            L"EDIT", L"",
+            WS_POPUP | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+            ptScreen.x, ptScreen.y, 140, 26,
             m_hwnd,
             reinterpret_cast<HMENU>(static_cast<UINT_PTR>(104)),
             ::GetModuleHandleW(nullptr), nullptr);
+        ::SetWindowLongPtrW(m_hTextEdit, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+        s_origPipEditProc = reinterpret_cast<WNDPROC>(::SetWindowLongPtrW(m_hTextEdit, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(TextEditSubclassProc)));
         ::SendMessageW(m_hTextEdit, WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
         ::SetFocus(m_hTextEdit);
     } else {
@@ -679,8 +735,9 @@ void PipWindow::OnLButtonUp(int x, int y) {
 
 void PipWindow::CreateToolbarWindow() {
     m_hwndToolbar = ::CreateWindowExW(
-        0, kToolbarClassName, L"",
-        WS_CHILD | WS_CLIPSIBLINGS,
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        kToolbarClassName, L"",
+        WS_POPUP,
         0, 0, 100, 30,
         m_hwnd, nullptr,
         ::GetModuleHandleW(nullptr),
@@ -726,9 +783,25 @@ LRESULT PipWindow::HandleToolbarMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
         return 0;
     }
 
-    case WM_SETCURSOR:
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+
+    case WM_LBUTTONDBLCLK:
+        return HandleToolbarMessage(hwnd, WM_LBUTTONDOWN, wp, lp);
+
+    case WM_SETCURSOR: {
+        POINT pt;
+        ::GetCursorPos(&pt);
+        ::ScreenToClient(hwnd, &pt);
+        for (const auto& item : m_toolbarItems) {
+            if (!item.isSeparator && ::PtInRect(&item.rect, pt)) {
+                ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32649))); // IDC_HAND
+                return TRUE;
+            }
+        }
         ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32512))); // IDC_ARROW
         return TRUE;
+    }
 
     case WM_MOUSEMOVE: {
         int x = GET_X_LPARAM(lp);
@@ -822,18 +895,18 @@ void PipWindow::BuildToolbar(int clientW, int clientH) {
     };
 
     Def defs[] = {
-        { ToolType::Rect,    0, L"矩形",   34, false },
-        { ToolType::Ellipse, 0, L"圆形",   34, false },
-        { ToolType::Arrow,   0, L"箭头",   34, false },
-        { ToolType::Pen,     0, L"画笔",   34, false },
-        { ToolType::Mosaic,  0, L"马赛克", 44, false },
-        { ToolType::Text,    0, L"文本",   34, false },
+        { ToolType::Rect,    0, L"矩形",   36, false },
+        { ToolType::Ellipse, 0, L"圆形",   36, false },
+        { ToolType::Arrow,   0, L"箭头",   36, false },
+        { ToolType::Pen,     0, L"画笔",   36, false },
+        { ToolType::Mosaic,  0, L"马赛克", 46, false },
+        { ToolType::Text,    0, L"文本",   36, false },
         { ToolType::None,    0, nullptr,    4, true  },
-        { ToolType::None,    3, L"撤销",   34, false },
-        { ToolType::None,    4, L"重做",   34, false },
+        { ToolType::None,    3, L"撤销",   36, false },
+        { ToolType::None,    4, L"重做",   36, false },
         { ToolType::None,    0, nullptr,    4, true  },
-        { ToolType::None,    1, L"✓ 完成", 44, false },
-        { ToolType::None,    2, L"✕ 取消", 44, false },
+        { ToolType::None,    1, L"✓ 完成", 46, false },
+        { ToolType::None,    2, L"✕ 取消", 46, false },
     };
 
     constexpr int gap = 2;
@@ -847,14 +920,32 @@ void PipWindow::BuildToolbar(int clientW, int clientH) {
     int tbW = totalMainW + 12;
     int tbH = hasSub ? (barH + subItemH + 12) : (barH + 10);
 
-    if (tbW > clientW - 8) tbW = clientW - 8;
-    if (tbW < 100) tbW = 100;
+    POINT ptScreen = { 0, 0 };
+    if (m_hwnd) {
+        ::ClientToScreen(m_hwnd, &ptScreen);
+    }
 
-    int tbX = (clientW - tbW) / 2;
-    int tbY = clientH - tbH - 6;
-    if (tbY < 4) tbY = 4;
+    int tbX = ptScreen.x + (clientW - tbW) / 2;
+    int tbY = ptScreen.y + clientH - tbH - 10;
+    if (tbY < ptScreen.y + 4) tbY = ptScreen.y + 4;
 
-    ::SetWindowPos(m_hwndToolbar, HWND_TOP, tbX, tbY, tbW, tbH, SWP_NOACTIVATE);
+    HMONITOR hMon = ::MonitorFromWindow(m_hwnd ? m_hwnd : m_hwndToolbar, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{ sizeof(mi) };
+    if (::GetMonitorInfoW(hMon, &mi)) {
+        if (tbX + tbW > mi.rcWork.right - 4) tbX = mi.rcWork.right - 4 - tbW;
+        if (tbX < mi.rcWork.left + 4)        tbX = mi.rcWork.left + 4;
+        if (tbY + tbH > mi.rcWork.bottom - 4) tbY = mi.rcWork.bottom - 4 - tbH;
+        if (tbY < mi.rcWork.top + 4)          tbY = mi.rcWork.top + 4;
+    }
+
+    if (m_hwndToolbar) {
+        ::SetWindowPos(
+            m_hwndToolbar,
+            HWND_TOPMOST,
+            tbX, tbY, tbW, tbH,
+            SWP_NOACTIVATE | (m_isEditing ? SWP_SHOWWINDOW : SWP_HIDEWINDOW)
+        );
+    }
 
     // Primary row inside toolbar local coords
     int startX = (tbW - totalMainW) / 2;
@@ -877,7 +968,7 @@ void PipWindow::BuildToolbar(int clientW, int clientH) {
     // Secondary row (if active tool)
     if (hasSub) {
         int subY = startY + barH + 4;
-        const int subBarW = 310;
+        const int subBarW = 298;
         int subStartX = (tbW - subBarW) / 2;
         if (subStartX < 4) subStartX = 4;
 
@@ -924,7 +1015,10 @@ void PipWindow::BuildToolbar(int clientW, int clientH) {
         }
     }
 
-    ::InvalidateRect(m_hwndToolbar, nullptr, FALSE);
+    if (m_hwndToolbar) {
+        ::InvalidateRect(m_hwndToolbar, nullptr, FALSE);
+        ::UpdateWindow(m_hwndToolbar);
+    }
 }
 
 void PipWindow::DrawToolbar(HDC hdc, int clientW, int clientH) {
