@@ -49,6 +49,41 @@ private:
     void UpdateOverlayFromEngine();
     void BlitAndPresent(ID3D11Texture2D* frameTex, UINT w, UINT h);
 
+    struct FrameHdcGuard {
+        HDC     hdc    = nullptr;
+        HBITMAP hbmp   = nullptr;
+        HGDIOBJ oldBmp = nullptr;
+        void*   bits   = nullptr;
+
+        FrameHdcGuard() = default;
+        ~FrameHdcGuard() {
+            if (hdc) {
+                if (oldBmp) ::SelectObject(hdc, oldBmp);
+                ::DeleteDC(hdc);
+            }
+            if (hbmp) ::DeleteObject(hbmp);
+        }
+        FrameHdcGuard(const FrameHdcGuard&) = delete;
+        FrameHdcGuard& operator=(const FrameHdcGuard&) = delete;
+        FrameHdcGuard(FrameHdcGuard&& o) noexcept
+            : hdc(o.hdc), hbmp(o.hbmp), oldBmp(o.oldBmp), bits(o.bits) {
+            o.hdc = nullptr; o.hbmp = nullptr; o.oldBmp = nullptr; o.bits = nullptr;
+        }
+        FrameHdcGuard& operator=(FrameHdcGuard&& o) noexcept {
+            if (this != &o) {
+                if (hdc) {
+                    if (oldBmp) ::SelectObject(hdc, oldBmp);
+                    ::DeleteDC(hdc);
+                }
+                if (hbmp) ::DeleteObject(hbmp);
+                hdc = o.hdc; hbmp = o.hbmp; oldBmp = o.oldBmp; bits = o.bits;
+                o.hdc = nullptr; o.hbmp = nullptr; o.oldBmp = nullptr; o.bits = nullptr;
+            }
+            return *this;
+        }
+    };
+    FrameHdcGuard GetLastFrameHdc();
+
     void ShowContextMenu(int screenX, int screenY);
     void EnterEditMode();
     void FinishEdit(bool apply);
@@ -78,6 +113,7 @@ private:
     winrt::com_ptr<ID3D11BlendState>         m_blendState;
     winrt::com_ptr<ID3D11SamplerState>       m_sampler;
     winrt::com_ptr<ID3D11Texture2D>          m_lastFrameTex;
+    winrt::com_ptr<ID3D11Texture2D>          m_stagingTex;
 
     // In-place annotation editing state
     bool             m_isEditing = false;

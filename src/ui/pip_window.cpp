@@ -129,6 +129,7 @@ PipWindow::~PipWindow() {
         m_blendState = nullptr;
         m_sampler = nullptr;
         m_lastFrameTex = nullptr;
+        m_stagingTex = nullptr;
     }
     if (m_hwnd) {
         ::DestroyWindow(m_hwnd);
@@ -182,12 +183,74 @@ void PipWindow::InitD3DOverlayPipeline() {
     dev->CreateSamplerState(&sd, m_sampler.put());
 }
 
+PipWindow::FrameHdcGuard PipWindow::GetLastFrameHdc() {
+    FrameHdcGuard guard;
+    if (m_contentW == 0 || m_contentH == 0) return guard;
+
+    auto dev = m_device->Device();
+    auto ctx = m_device->Context();
+
+    std::lock_guard lk(m_renderMutex);
+    if (!m_lastFrameTex) return guard;
+
+    if (m_stagingTex) {
+        D3D11_TEXTURE2D_DESC sd{};
+        m_stagingTex->GetDesc(&sd);
+        if (sd.Width != m_contentW || sd.Height != m_contentH) {
+            m_stagingTex = nullptr;
+        }
+    }
+    if (!m_stagingTex) {
+        D3D11_TEXTURE2D_DESC desc{};
+        m_lastFrameTex->GetDesc(&desc);
+        desc.Usage          = D3D11_USAGE_STAGING;
+        desc.BindFlags      = 0;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        desc.MiscFlags      = 0;
+        if (FAILED(dev->CreateTexture2D(&desc, nullptr, m_stagingTex.put()))) {
+            return guard;
+        }
+    }
+
+    ctx->CopyResource(m_stagingTex.get(), m_lastFrameTex.get());
+
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (SUCCEEDED(ctx->Map(m_stagingTex.get(), 0, D3D11_MAP_READ, 0, &mapped))) {
+        BITMAPINFO bmi{};
+        bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth       = static_cast<LONG>(m_contentW);
+        bmi.bmiHeader.biHeight      = -static_cast<LONG>(m_contentH); // Top-down
+        bmi.bmiHeader.biPlanes      = 1;
+        bmi.bmiHeader.biBitCount    = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        HDC hdcScreen = ::GetDC(nullptr);
+        guard.hdc  = ::CreateCompatibleDC(hdcScreen);
+        guard.hbmp = ::CreateDIBSection(guard.hdc, &bmi, DIB_RGB_COLORS, &guard.bits, nullptr, 0);
+        ::ReleaseDC(nullptr, hdcScreen);
+
+        if (guard.hbmp && guard.bits) {
+            guard.oldBmp = ::SelectObject(guard.hdc, guard.hbmp);
+            const BYTE* src = static_cast<const BYTE*>(mapped.pData);
+            BYTE* dst = static_cast<BYTE*>(guard.bits);
+            size_t rowBytes = m_contentW * 4;
+            for (UINT r = 0; r < m_contentH; ++r) {
+                memcpy(dst + r * rowBytes, src + r * mapped.RowPitch, rowBytes);
+            }
+        }
+        ctx->Unmap(m_stagingTex.get(), 0);
+    }
+
+    return guard;
+}
+
 void PipWindow::UpdateOverlayFromEngine() {
     if (m_contentW == 0 || m_contentH == 0) return;
 
     std::vector<uint32_t> pixels;
     if (!m_annotationEngine.IsEmpty()) {
-        pixels = m_annotationEngine.RenderOverlayRgba(nullptr, 0, 0, m_contentW, m_contentH);
+        FrameHdcGuard fg = GetLastFrameHdc();
+        pixels = m_annotationEngine.RenderOverlayRgba(fg.hdc, 0, 0, m_contentW, m_contentH);
     }
 
     std::lock_guard lk(m_renderMutex);
@@ -488,7 +551,9 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ::ScreenToClient(hwnd, &pt);
             RECT rc{}; ::GetClientRect(hwnd, &rc);
             if (::PtInRect(&rc, pt)) {
-                if (m_annotationEngine.GetTool() != ToolType::None) {
+                if (m_annotationEngine.GetTool() == ToolType::Text) {
+                    ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32513))); // IDC_IBEAM
+                } else if (m_annotationEngine.GetTool() != ToolType::None) {
                     ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32515))); // IDC_CROSS
                 } else {
                     ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32512))); // IDC_ARROW
@@ -499,10 +564,15 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         break;
 
     case WM_WINDOWPOSCHANGED: {
+        auto pos = reinterpret_cast<WINDOWPOS*>(lp);
         if (m_isEditing && m_hwndToolbar) {
-            if (m_hTextEdit) CommitTextEdit();
-            RECT rc{}; ::GetClientRect(hwnd, &rc);
-            BuildToolbar(rc.right, rc.bottom);
+            if (!(pos->flags & SWP_NOMOVE) || !(pos->flags & SWP_NOSIZE)) {
+                if (m_hTextEdit && !(pos->flags & SWP_NOMOVE)) {
+                    CommitTextEdit();
+                }
+                RECT rc{}; ::GetClientRect(hwnd, &rc);
+                BuildToolbar(rc.right, rc.bottom);
+            }
         }
         break;
     }
@@ -630,6 +700,9 @@ void PipWindow::FinishEdit(bool apply) {
 static WNDPROC s_origPipEditProc = nullptr;
 LRESULT CALLBACK PipWindow::TextEditSubclassProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto pip = reinterpret_cast<PipWindow*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (msg == WM_GETDLGCODE) {
+        return DLGC_WANTALLKEYS;
+    }
     if (msg == WM_KEYDOWN) {
         if (wp == VK_RETURN) {
             if (pip) pip->CommitTextEdit();
@@ -681,17 +754,25 @@ void PipWindow::OnLButtonDown(int x, int y) {
         POINT ptScreen = { x, y };
         ::ClientToScreen(m_hwnd, &ptScreen);
 
+        HMONITOR hMon = ::MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi{ sizeof(mi) };
+        if (::GetMonitorInfoW(hMon, &mi)) {
+            if (ptScreen.x + 140 > mi.rcWork.right - 4) ptScreen.x = mi.rcWork.right - 144;
+            if (ptScreen.y + 26 > mi.rcWork.bottom - 4) ptScreen.y = mi.rcWork.bottom - 30;
+        }
+
         m_hTextEdit = ::CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
             L"EDIT", L"",
             WS_POPUP | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
             ptScreen.x, ptScreen.y, 140, 26,
             m_hwnd,
-            reinterpret_cast<HMENU>(static_cast<UINT_PTR>(104)),
+            nullptr,
             ::GetModuleHandleW(nullptr), nullptr);
         ::SetWindowLongPtrW(m_hTextEdit, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
         s_origPipEditProc = reinterpret_cast<WNDPROC>(::SetWindowLongPtrW(m_hTextEdit, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(TextEditSubclassProc)));
         ::SendMessageW(m_hTextEdit, WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
+        ::SetActiveWindow(m_hTextEdit);
         ::SetFocus(m_hTextEdit);
     } else {
         m_isDrawing = true;

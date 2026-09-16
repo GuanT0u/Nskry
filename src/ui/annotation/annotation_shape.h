@@ -227,8 +227,6 @@ public:
         : startPt(start), endPt(end), blockSize(block) {}
 
     void Draw(Gdiplus::Graphics& g, HDC hdcBase, int baseOffsetX, int baseOffsetY, int baseW, int baseH) override {
-        if (!hdcBase || baseW <= 0 || baseH <= 0) return;
-
         int x = (std::min)(startPt.x, endPt.x);
         int y = (std::min)(startPt.y, endPt.y);
         int w = std::abs(endPt.x - startPt.x);
@@ -236,6 +234,21 @@ public:
         if (w <= 0 || h <= 0) return;
 
         int bs = (blockSize < 4) ? 4 : blockSize;
+
+        if (!hdcBase || baseW <= 0 || baseH <= 0) {
+            // Fallback when base HDC is not available: draw alternating frosted mosaic tiles
+            for (int curY = y; curY < y + h; curY += bs) {
+                int curH = (std::min)(bs, (y + h) - curY);
+                for (int curX = x; curX < x + w; curX += bs) {
+                    int curW = (std::min)(bs, (x + w) - curX);
+                    int tile = ((curX / bs) + (curY / bs)) % 3;
+                    BYTE val = (tile == 0) ? 170 : ((tile == 1) ? 200 : 225);
+                    Gdiplus::SolidBrush brush(Gdiplus::Color(255, val, val, val));
+                    g.FillRectangle(&brush, curX, curY, curW, curH);
+                }
+            }
+            return;
+        }
 
         // Pixelate block by block using sampled color from hdcBase
         for (int curY = y; curY < y + h; curY += bs) {

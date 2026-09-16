@@ -29,7 +29,7 @@ void AnnotationEngine::OnMouseDown(POINT localPt) {
         break;
     case ToolType::Mosaic:
         m_inProgressShape = std::make_unique<MosaicShape>(
-            localPt, localPt, 10);
+            localPt, localPt, (m_style.strokeWidth == 2 ? 6 : (m_style.strokeWidth == 4 ? 12 : 20)));
         break;
     default:
         break;
@@ -102,6 +102,7 @@ void AnnotationEngine::Draw(Gdiplus::Graphics& g, HDC hdcBase, int baseOffsetX, 
     g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
     g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+    g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
 
     for (const auto& shape : m_shapes) {
         shape->Draw(g, hdcBase, baseOffsetX, baseOffsetY, baseW, baseH);
