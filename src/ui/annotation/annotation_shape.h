@@ -33,6 +33,7 @@ class AnnotationShape {
 public:
     virtual ~AnnotationShape() = default;
     virtual void Draw(Gdiplus::Graphics& g, HDC hdcBase, int baseOffsetX, int baseOffsetY, int baseW, int baseH) = 0;
+    virtual std::unique_ptr<AnnotationShape> Clone() const = 0;
 };
 
 // ============================================================================
@@ -66,6 +67,10 @@ public:
             g.DrawRectangle(&pen, x, y, w, h);
         }
     }
+
+    std::unique_ptr<AnnotationShape> Clone() const override {
+        return std::make_unique<RectShape>(*this);
+    }
 };
 
 // ============================================================================
@@ -97,6 +102,10 @@ public:
             Gdiplus::Pen pen(gdiColor, static_cast<Gdiplus::REAL>(strokeWidth));
             g.DrawEllipse(&pen, x, y, w, h);
         }
+    }
+
+    std::unique_ptr<AnnotationShape> Clone() const override {
+        return std::make_unique<EllipseShape>(*this);
     }
 };
 
@@ -151,6 +160,10 @@ public:
         Gdiplus::SolidBrush brush(gdiColor);
         g.FillPolygon(&brush, arrowPoints, 3);
     }
+
+    std::unique_ptr<AnnotationShape> Clone() const override {
+        return std::make_unique<ArrowShape>(*this);
+    }
 };
 
 // ============================================================================
@@ -195,6 +208,10 @@ public:
 
         g.DrawLines(&pen, gdiPoints.data(), static_cast<INT>(gdiPoints.size()));
     }
+
+    std::unique_ptr<AnnotationShape> Clone() const override {
+        return std::make_unique<PenShape>(*this);
+    }
 };
 
 // ============================================================================
@@ -236,6 +253,10 @@ public:
             }
         }
     }
+
+    std::unique_ptr<AnnotationShape> Clone() const override {
+        return std::make_unique<MosaicShape>(*this);
+    }
 };
 
 // ============================================================================
@@ -264,6 +285,10 @@ public:
 
         Gdiplus::PointF origin(static_cast<Gdiplus::REAL>(pt.x), static_cast<Gdiplus::REAL>(pt.y));
         g.DrawString(text.c_str(), -1, &font, origin, &brush);
+    }
+
+    std::unique_ptr<AnnotationShape> Clone() const override {
+        return std::make_unique<TextShape>(*this);
     }
 };
 

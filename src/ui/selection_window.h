@@ -29,6 +29,32 @@ struct SelectionResult {
     int                   bitmapWidth{};
     int                   bitmapHeight{};
     std::vector<uint32_t> overlayPixels;   // Transparent ARGB annotation overlay for PiP
+    AnnotationEngine      annotationEngine; // Preserves vector shapes for secondary editing
+
+    SelectionResult() = default;
+    SelectionResult(SelectionResult&&) noexcept            = default;
+    SelectionResult& operator=(SelectionResult&&) noexcept = default;
+    SelectionResult(const SelectionResult& other)
+        : targetHwnd(other.targetHwnd)
+        , crop(other.crop)
+        , bitmap(other.bitmap)
+        , bitmapWidth(other.bitmapWidth)
+        , bitmapHeight(other.bitmapHeight)
+        , overlayPixels(other.overlayPixels)
+        , annotationEngine(other.annotationEngine.Clone())
+    {}
+    SelectionResult& operator=(const SelectionResult& other) {
+        if (this != &other) {
+            targetHwnd = other.targetHwnd;
+            crop = other.crop;
+            bitmap = other.bitmap;
+            bitmapWidth = other.bitmapWidth;
+            bitmapHeight = other.bitmapHeight;
+            overlayPixels = other.overlayPixels;
+            annotationEngine = other.annotationEngine.Clone();
+        }
+        return *this;
+    }
 };
 
 // ============================================================================

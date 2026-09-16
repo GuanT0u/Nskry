@@ -11,6 +11,32 @@ public:
     AnnotationEngine() = default;
     ~AnnotationEngine() = default;
 
+    AnnotationEngine(AnnotationEngine&&) noexcept            = default;
+    AnnotationEngine& operator=(AnnotationEngine&&) noexcept = default;
+    AnnotationEngine(const AnnotationEngine&)                = delete;
+    AnnotationEngine& operator=(const AnnotationEngine&)     = delete;
+
+    AnnotationEngine Clone() const {
+        AnnotationEngine copy;
+        copy.m_currentTool = m_currentTool;
+        copy.m_style       = m_style;
+        for (const auto& s : m_shapes) {
+            if (s) copy.m_shapes.push_back(s->Clone());
+        }
+        return copy;
+    }
+
+    void RestoreFrom(const AnnotationEngine& other) {
+        m_currentTool = other.m_currentTool;
+        m_style       = other.m_style;
+        m_shapes.clear();
+        m_redoStack.clear();
+        m_inProgressShape.reset();
+        for (const auto& s : other.m_shapes) {
+            if (s) m_shapes.push_back(s->Clone());
+        }
+    }
+
     // Tool & Style Configuration
     void     SetTool(ToolType tool)        { m_currentTool = tool; }
     ToolType GetTool() const               { return m_currentTool; }

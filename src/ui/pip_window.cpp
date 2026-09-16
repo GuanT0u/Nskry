@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "ui/pip_window.h"
 #include <d3dcompiler.h>
+#include <windowsx.h>
 
 namespace nskry {
 
@@ -22,10 +23,6 @@ float4 ps_main(VS_OUT input) : SV_Target {
 }
 )";
 
-// Custom message posted to MainWindow when the user closes the PiP.
-// This avoids re-entrance issues (the PiP's WndProc returns before cleanup).
-static constexpr UINT WM_PIP_CLOSE_REQUEST = WM_APP + 100;
-
 // ---------------------------------------------------------------------------
 // Construction
 // ---------------------------------------------------------------------------
@@ -34,13 +31,14 @@ PipWindow::PipWindow(
     std::shared_ptr<D3DDevice> device,
     UINT contentWidth, UINT contentHeight,
     std::function<void()> onCloseRequest,
-    const std::vector<uint32_t>& overlayPixels)
+    AnnotationEngine initialEngine)
     : m_device(std::move(device))
     , m_contentW(contentWidth)
     , m_contentH(contentHeight)
     , m_onClose(std::move(onCloseRequest))
+    , m_annotationEngine(std::move(initialEngine))
 {
-    // --- Register window class (once) --------------------------------------
+    // --- Register main window class (once) ---------------------------------
     std::call_once(s_classOnce, [&] {
         WNDCLASSEXW wc{};
         wc.cbSize        = sizeof(wc);
@@ -51,6 +49,23 @@ PipWindow::PipWindow(
         wc.hCursor        = ::LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
         ::RegisterClassExW(&wc);
     });
+
+    // --- Register toolbar child window class (once) ------------------------
+    std::call_once(s_toolbarClassOnce, [&] {
+        WNDCLASSEXW twc{};
+        twc.cbSize        = sizeof(twc);
+        twc.lpfnWndProc   = ToolbarWndProc;
+        twc.hInstance      = ::GetModuleHandleW(nullptr);
+        twc.lpszClassName  = kToolbarClassName;
+        twc.hbrBackground  = static_cast<HBRUSH>(::GetStockObject(BLACK_BRUSH));
+        twc.hCursor        = ::LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
+        ::RegisterClassExW(&twc);
+    });
+
+    m_font = ::CreateFontW(
+        -12, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
 
     // --- Calculate initial window size (≈ 400px wide, aspect-preserving) ----
     constexpr int kDefaultWidth = 400;
@@ -63,12 +78,12 @@ PipWindow::PipWindow(
     }
 
     const DWORD style   = WS_POPUP | WS_THICKFRAME | WS_CAPTION | WS_SYSMENU;
-    const DWORD exStyle = WS_EX_TOPMOST;
+    const DWORD exStyle = WS_EX_TOPMOST | WS_EX_TOOLWINDOW;
 
     RECT rc = { 0, 0, winW, winH };
     ::AdjustWindowRectEx(&rc, style, FALSE, exStyle);
 
-    // --- Create the window -------------------------------------------------
+    // --- Create the main window --------------------------------------------
     m_hwnd = ::CreateWindowExW(
         exStyle, kClassName, L"Nskry PiP",
         style,
@@ -76,17 +91,33 @@ PipWindow::PipWindow(
         rc.right - rc.left, rc.bottom - rc.top,
         nullptr, nullptr,
         ::GetModuleHandleW(nullptr),
-        this);    // pass 'this' via CREATESTRUCT
+        this);
 
     // --- Create DXGI swap chain --------------------------------------------
     CreateSwapChain(contentWidth, contentHeight);
 
-    // --- Initialize optional annotation overlay ----------------------------
-    InitOverlayResources(overlayPixels);
+    // --- Initialize D3D overlay pipeline -----------------------------------
+    InitD3DOverlayPipeline();
+
+    // --- Render initial annotations if present -----------------------------
+    if (!m_annotationEngine.IsEmpty()) {
+        UpdateOverlayFromEngine();
+    }
+
+    // --- Create toolbar child window (initially hidden) --------------------
+    CreateToolbarWindow();
 }
 
 PipWindow::~PipWindow() {
-    // Release swap chain under lock so an in-flight RenderFrame sees nullptr
+    CommitTextEdit();
+    if (m_font) {
+        ::DeleteObject(m_font);
+        m_font = nullptr;
+    }
+    if (m_hwndToolbar) {
+        ::DestroyWindow(m_hwndToolbar);
+        m_hwndToolbar = nullptr;
+    }
     {
         std::lock_guard lk(m_renderMutex);
         m_swapChain = nullptr;
@@ -96,6 +127,7 @@ PipWindow::~PipWindow() {
         m_ps = nullptr;
         m_blendState = nullptr;
         m_sampler = nullptr;
+        m_lastFrameTex = nullptr;
     }
     if (m_hwnd) {
         ::DestroyWindow(m_hwnd);
@@ -112,30 +144,13 @@ void PipWindow::Show() {
     ::UpdateWindow(m_hwnd);
 }
 
-void PipWindow::InitOverlayResources(const std::vector<uint32_t>& overlayPixels) {
-    if (overlayPixels.empty() || m_contentW == 0 || m_contentH == 0) return;
+// ---------------------------------------------------------------------------
+// D3D11 Overlay Pipeline & Texture Update
+// ---------------------------------------------------------------------------
 
+void PipWindow::InitD3DOverlayPipeline() {
     auto dev = m_device->Device();
 
-    // 1. Create overlay texture
-    D3D11_TEXTURE2D_DESC desc{};
-    desc.Width            = m_contentW;
-    desc.Height           = m_contentH;
-    desc.MipLevels        = 1;
-    desc.ArraySize        = 1;
-    desc.Format           = DXGI_FORMAT_B8G8R8A8_UNORM;
-    desc.SampleDesc.Count = 1;
-    desc.Usage            = D3D11_USAGE_IMMUTABLE;
-    desc.BindFlags        = D3D11_BIND_SHADER_RESOURCE;
-
-    D3D11_SUBRESOURCE_DATA subData{};
-    subData.pSysMem     = overlayPixels.data();
-    subData.SysMemPitch = m_contentW * sizeof(uint32_t);
-
-    if (FAILED(dev->CreateTexture2D(&desc, &subData, m_overlayTex.put()))) return;
-    if (FAILED(dev->CreateShaderResourceView(m_overlayTex.get(), nullptr, m_overlaySRV.put()))) return;
-
-    // 2. Compile shaders
     winrt::com_ptr<ID3DBlob> vsBlob, psBlob, errBlob;
     if (FAILED(::D3DCompile(kPipShaderSource, sizeof(kPipShaderSource) - 1, nullptr, nullptr, nullptr,
                             "vs_main", "vs_4_0", 0, 0, vsBlob.put(), errBlob.put()))) return;
@@ -145,7 +160,7 @@ void PipWindow::InitOverlayResources(const std::vector<uint32_t>& overlayPixels)
     dev->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, m_vs.put());
     dev->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, m_ps.put());
 
-    // 3. Create blend state (standard premultiplied/alpha blend)
+    // Alpha blend state (premultiplied / standard over blend)
     D3D11_BLEND_DESC bd{};
     bd.RenderTarget[0].BlendEnable           = TRUE;
     bd.RenderTarget[0].SrcBlend              = D3D11_BLEND_SRC_ALPHA;
@@ -157,7 +172,7 @@ void PipWindow::InitOverlayResources(const std::vector<uint32_t>& overlayPixels)
     bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
     dev->CreateBlendState(&bd, m_blendState.put());
 
-    // 4. Create sampler state
+    // Sampler state
     D3D11_SAMPLER_DESC sd{};
     sd.Filter   = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     sd.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -166,31 +181,66 @@ void PipWindow::InitOverlayResources(const std::vector<uint32_t>& overlayPixels)
     dev->CreateSamplerState(&sd, m_sampler.put());
 }
 
-// ---------------------------------------------------------------------------
-// Frame rendering (called from CaptureSession's thread-pool thread)
-// ---------------------------------------------------------------------------
+void PipWindow::UpdateOverlayFromEngine() {
+    if (m_contentW == 0 || m_contentH == 0) return;
 
-void PipWindow::RenderFrame(ID3D11Texture2D* croppedTexture, UINT w, UINT h) {
+    std::vector<uint32_t> pixels;
+    if (!m_annotationEngine.IsEmpty()) {
+        pixels = m_annotationEngine.RenderOverlayRgba(nullptr, 0, 0, m_contentW, m_contentH);
+    }
+
     std::lock_guard lk(m_renderMutex);
-    if (!m_swapChain) return;
+    if (pixels.empty()) {
+        m_overlaySRV = nullptr;
+        m_overlayTex = nullptr;
+    } else {
+        auto dev = m_device->Device();
+        if (!m_overlayTex) {
+            D3D11_TEXTURE2D_DESC desc{};
+            desc.Width            = m_contentW;
+            desc.Height           = m_contentH;
+            desc.MipLevels        = 1;
+            desc.ArraySize        = 1;
+            desc.Format           = DXGI_FORMAT_B8G8R8A8_UNORM;
+            desc.SampleDesc.Count = 1;
+            desc.Usage            = D3D11_USAGE_DEFAULT;
+            desc.BindFlags        = D3D11_BIND_SHADER_RESOURCE;
+
+            D3D11_SUBRESOURCE_DATA subData{};
+            subData.pSysMem     = pixels.data();
+            subData.SysMemPitch = m_contentW * sizeof(uint32_t);
+
+            if (SUCCEEDED(dev->CreateTexture2D(&desc, &subData, m_overlayTex.put()))) {
+                dev->CreateShaderResourceView(m_overlayTex.get(), nullptr, m_overlaySRV.put());
+            }
+        } else {
+            m_device->Context()->UpdateSubresource(
+                m_overlayTex.get(), 0, nullptr,
+                pixels.data(), m_contentW * sizeof(uint32_t), 0);
+        }
+    }
+
+    // Re-present on last known frame if available
+    if (m_lastFrameTex) {
+        BlitAndPresent(m_lastFrameTex.get(), m_contentW, m_contentH);
+    }
+}
+
+void PipWindow::BlitAndPresent(ID3D11Texture2D* frameTex, UINT w, UINT h) {
+    if (!m_swapChain || !frameTex) return;
 
     // Get back buffer
     winrt::com_ptr<ID3D11Texture2D> backBuf;
-    winrt::check_hresult(m_swapChain->GetBuffer(
-        0, __uuidof(ID3D11Texture2D), backBuf.put_void()));
+    if (FAILED(m_swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), backBuf.put_void()))) return;
 
-    // If sizes match: CopyResource (fastest). Otherwise: CopySubresourceRegion.
     D3D11_TEXTURE2D_DESC bbDesc{};
     backBuf->GetDesc(&bbDesc);
 
     if (bbDesc.Width == w && bbDesc.Height == h) {
-        m_device->Context()->CopyResource(backBuf.get(), croppedTexture);
+        m_device->Context()->CopyResource(backBuf.get(), frameTex);
     } else {
-        D3D11_BOX box{ 0, 0, 0, (std::min)(w, bbDesc.Width),
-                                  (std::min)(h, bbDesc.Height), 1 };
-        m_device->Context()->CopySubresourceRegion(
-            backBuf.get(), 0, 0, 0, 0,
-            croppedTexture, 0, &box);
+        D3D11_BOX box{ 0, 0, 0, (std::min)(w, bbDesc.Width), (std::min)(h, bbDesc.Height), 1 };
+        m_device->Context()->CopySubresourceRegion(backBuf.get(), 0, 0, 0, 0, frameTex, 0, &box);
     }
 
     // Blend annotation overlay on top if present
@@ -223,8 +273,30 @@ void PipWindow::RenderFrame(ID3D11Texture2D* croppedTexture, UINT w, UINT h) {
         }
     }
 
-    // VSync present — DWM stretches the back buffer to the window rect
     m_swapChain->Present(1, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Frame rendering (called from CaptureSession's thread-pool thread)
+// ---------------------------------------------------------------------------
+
+void PipWindow::RenderFrame(ID3D11Texture2D* croppedTexture, UINT w, UINT h) {
+    std::lock_guard lk(m_renderMutex);
+    if (!m_swapChain) return;
+
+    // Cache latest frame
+    if (!m_lastFrameTex) {
+        D3D11_TEXTURE2D_DESC d{};
+        croppedTexture->GetDesc(&d);
+        d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        d.Usage     = D3D11_USAGE_DEFAULT;
+        m_device->Device()->CreateTexture2D(&d, nullptr, m_lastFrameTex.put());
+    }
+    if (m_lastFrameTex) {
+        m_device->Context()->CopyResource(m_lastFrameTex.get(), croppedTexture);
+    }
+
+    BlitAndPresent(croppedTexture, w, h);
 }
 
 // ---------------------------------------------------------------------------
@@ -266,36 +338,38 @@ void PipWindow::CreateSwapChain(UINT w, UINT h) {
 }
 
 // ---------------------------------------------------------------------------
-// WndProc — minimal: draggable client area + close handling
+// WndProc dispatch
 // ---------------------------------------------------------------------------
 
 LRESULT CALLBACK PipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    // Store 'this' pointer on creation
     if (msg == WM_NCCREATE) {
         auto cs = reinterpret_cast<CREATESTRUCTW*>(lp);
-        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA,
-            reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
     }
+    auto self = reinterpret_cast<PipWindow*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (self) return self->HandleMessage(hwnd, msg, wp, lp);
+    return ::DefWindowProcW(hwnd, msg, wp, lp);
+}
 
-    auto* self = reinterpret_cast<PipWindow*>(
-        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-
+LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_NCHITTEST: {
-        // Keep native resize handles, but make the client area draggable
         LRESULT hit = ::DefWindowProcW(hwnd, msg, wp, lp);
-        if (hit == HTCLIENT) return HTCAPTION;
+        if (hit == HTCLIENT) {
+            if (m_isEditing) return HTCLIENT;
+            return HTCAPTION; // Draggable client area
+        }
         return hit;
     }
 
     case WM_SIZING: {
-        if (!self || self->m_contentH == 0) break;
+        if (m_contentH == 0) break;
         // Free resize for edge drags
         if (wp == WMSZ_LEFT || wp == WMSZ_RIGHT || wp == WMSZ_TOP || wp == WMSZ_BOTTOM) {
             return TRUE;
         }
 
-        // Corner drag — lock aspect ratio, follow whichever axis the user moved more
+        // Corner drag — lock aspect ratio
         RECT* r = reinterpret_cast<RECT*>(lp);
         const DWORD style = static_cast<DWORD>(::GetWindowLongPtrW(hwnd, GWL_STYLE));
         const DWORD exStyle = static_cast<DWORD>(::GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
@@ -305,30 +379,25 @@ LRESULT CALLBACK PipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         int bw = adj.right - adj.left;
         int bh = adj.bottom - adj.top;
 
-        float aspect = static_cast<float>(self->m_contentW) / static_cast<float>(self->m_contentH);
+        float aspect = static_cast<float>(m_contentW) / static_cast<float>(m_contentH);
 
         int proposedCW = (r->right - r->left) - bw;
         int proposedCH = (r->bottom - r->top) - bh;
         if (proposedCW < 1) proposedCW = 1;
         if (proposedCH < 1) proposedCH = 1;
 
-        // Two candidates: fit-to-width vs fit-to-height
         int cwFromH = static_cast<int>(proposedCH * aspect);
         int chFromW = static_cast<int>(proposedCW / aspect);
 
-        // Pick the one that produces a larger window (follows the cursor outward)
         int finalCW, finalCH;
         if (cwFromH > proposedCW) {
-            // Height-driven produces wider → use width-driven
             finalCW = proposedCW;
             finalCH = chFromW;
         } else {
-            // Width-driven produces taller → use height-driven
             finalCW = cwFromH;
             finalCH = proposedCH;
         }
 
-        // Apply back to RECT, anchoring the correct edges
         bool anchorRight  = (wp == WMSZ_TOPLEFT  || wp == WMSZ_BOTTOMLEFT);
         bool anchorBottom = (wp == WMSZ_TOPLEFT  || wp == WMSZ_TOPRIGHT);
 
@@ -341,18 +410,610 @@ LRESULT CALLBACK PipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return TRUE;
     }
 
+    case WM_NCRBUTTONUP:
+        if (wp == HTCAPTION) {
+            POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+            ShowContextMenu(pt.x, pt.y);
+            return 0;
+        }
+        break;
+
+    case WM_NCLBUTTONDBLCLK:
+        if (wp == HTCAPTION) {
+            EnterEditMode();
+            return 0;
+        }
+        break;
+
+    case WM_CONTEXTMENU: {
+        POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+        if (pt.x == -1 && pt.y == -1) {
+            RECT rc{}; ::GetWindowRect(hwnd, &rc);
+            pt = { rc.left + 20, rc.top + 20 };
+        }
+        ShowContextMenu(pt.x, pt.y);
+        return 0;
+    }
+
+    case WM_RBUTTONUP: {
+        if (m_isEditing) {
+            if (m_annotationEngine.GetTool() != ToolType::None) {
+                m_annotationEngine.SetTool(ToolType::None);
+                RECT rc{}; ::GetClientRect(hwnd, &rc);
+                BuildToolbar(rc.right, rc.bottom);
+            } else {
+                FinishEdit(false);
+            }
+            return 0;
+        }
+        POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+        ::ClientToScreen(hwnd, &pt);
+        ShowContextMenu(pt.x, pt.y);
+        return 0;
+    }
+
+    case WM_LBUTTONDBLCLK:
+        if (!m_isEditing) {
+            EnterEditMode();
+            return 0;
+        }
+        break;
+
+    case WM_LBUTTONDOWN:
+        if (m_isEditing) {
+            OnLButtonDown(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+            return 0;
+        }
+        break;
+
+    case WM_MOUSEMOVE:
+        if (m_isEditing) {
+            OnMouseMove(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+            return 0;
+        }
+        break;
+
+    case WM_LBUTTONUP:
+        if (m_isEditing) {
+            OnLButtonUp(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+            return 0;
+        }
+        break;
+
+    case WM_SETCURSOR:
+        if (m_isEditing) {
+            POINT pt;
+            ::GetCursorPos(&pt);
+            ::ScreenToClient(hwnd, &pt);
+            RECT rc{}; ::GetClientRect(hwnd, &rc);
+            if (::PtInRect(&rc, pt)) {
+                ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32515))); // IDC_CROSS
+                return TRUE;
+            }
+        }
+        break;
+
+    case WM_KEYDOWN:
+        if (m_isEditing) {
+            if (wp == VK_ESCAPE) {
+                if (m_annotationEngine.GetTool() != ToolType::None) {
+                    CommitTextEdit();
+                    m_annotationEngine.SetTool(ToolType::None);
+                    RECT rc{}; ::GetClientRect(hwnd, &rc);
+                    BuildToolbar(rc.right, rc.bottom);
+                } else {
+                    FinishEdit(false);
+                }
+                return 0;
+            }
+            if (::GetKeyState(VK_CONTROL) & 0x8000) {
+                if (wp == 'Z') {
+                    CommitTextEdit();
+                    m_annotationEngine.Undo();
+                    UpdateOverlayFromEngine();
+                    return 0;
+                }
+                if (wp == 'Y') {
+                    CommitTextEdit();
+                    m_annotationEngine.Redo();
+                    UpdateOverlayFromEngine();
+                    return 0;
+                }
+            }
+        }
+        break;
+
+    case WM_COMMAND:
+        if (HIWORD(wp) == EN_KILLFOCUS && reinterpret_cast<HWND>(lp) == m_hTextEdit) {
+            CommitTextEdit();
+            return 0;
+        }
+        break;
+
+    case WM_SIZE: {
+        RECT rc{}; ::GetClientRect(hwnd, &rc);
+        if (m_isEditing) {
+            BuildToolbar(rc.right, rc.bottom);
+        }
+        return 0;
+    }
+
     case WM_CLOSE:
-        // Defer cleanup to the main-thread message loop
-        if (self && self->m_onClose)
-            self->m_onClose();
-        return 0;   // do NOT call DestroyWindow here
+        FinishEdit(false);
+        if (m_onClose) m_onClose();
+        return 0;
 
     case WM_DESTROY:
-        if (self) self->m_hwnd = nullptr;
+        m_hwnd = nullptr;
         return 0;
     }
 
     return ::DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// ---------------------------------------------------------------------------
+// Context Menu
+// ---------------------------------------------------------------------------
+
+void PipWindow::ShowContextMenu(int screenX, int screenY) {
+    HMENU hMenu = ::CreatePopupMenu();
+    ::InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, 301, L"\x270E \x6807\x6CE8\x7F16\x8F91 (Edit)");     // ✎ 标注编辑
+    ::InsertMenuW(hMenu, 1, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
+    ::InsertMenuW(hMenu, 2, MF_BYPOSITION | MF_STRING, 302, L"\x2715 \x5173\x95ED (Close)");            // ✕ 关闭
+
+    ::SetForegroundWindow(m_hwnd);
+    int cmd = ::TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, screenX, screenY, 0, m_hwnd, nullptr);
+    ::DestroyMenu(hMenu);
+
+    switch (cmd) {
+    case 301: EnterEditMode(); break;
+    case 302: if (m_onClose) m_onClose(); break;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// In-place Annotation Editing
+// ---------------------------------------------------------------------------
+
+void PipWindow::EnterEditMode() {
+    m_isEditing = true;
+    m_backupEngine = m_annotationEngine.Clone();
+    m_annotationEngine.SetTool(ToolType::Pen);
+
+    RECT rc{}; ::GetClientRect(m_hwnd, &rc);
+    BuildToolbar(rc.right, rc.bottom);
+    ::ShowWindow(m_hwndToolbar, SW_SHOW);
+    ::InvalidateRect(m_hwndToolbar, nullptr, FALSE);
+}
+
+void PipWindow::FinishEdit(bool apply) {
+    CommitTextEdit();
+
+    if (!apply) {
+        m_annotationEngine.RestoreFrom(m_backupEngine);
+    }
+
+    m_annotationEngine.SetTool(ToolType::None);
+    m_isEditing = false;
+    ::ShowWindow(m_hwndToolbar, SW_HIDE);
+    UpdateOverlayFromEngine();
+}
+
+void PipWindow::CommitTextEdit() {
+    if (!m_hTextEdit) return;
+
+    int len = ::GetWindowTextLengthW(m_hTextEdit);
+    if (len > 0) {
+        std::vector<wchar_t> buf(len + 1);
+        ::GetWindowTextW(m_hTextEdit, buf.data(), len + 1);
+        m_annotationEngine.AddTextShape(m_textEditPos, buf.data());
+        UpdateOverlayFromEngine();
+    }
+
+    ::DestroyWindow(m_hTextEdit);
+    m_hTextEdit = nullptr;
+}
+
+void PipWindow::OnLButtonDown(int x, int y) {
+    if (m_annotationEngine.GetTool() == ToolType::None) return;
+
+    CommitTextEdit();
+
+    RECT rc{}; ::GetClientRect(m_hwnd, &rc);
+    int cw = rc.right; int ch = rc.bottom;
+    if (cw <= 0 || ch <= 0) return;
+
+    int bmpX = x * static_cast<int>(m_contentW) / cw;
+    int bmpY = y * static_cast<int>(m_contentH) / ch;
+
+    if (m_annotationEngine.GetTool() == ToolType::Text) {
+        m_textEditPos = { bmpX, bmpY };
+        m_hTextEdit = ::CreateWindowExW(
+            0, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+            x, y, 120, 24,
+            m_hwnd,
+            reinterpret_cast<HMENU>(static_cast<UINT_PTR>(104)),
+            ::GetModuleHandleW(nullptr), nullptr);
+        ::SendMessageW(m_hTextEdit, WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
+        ::SetFocus(m_hTextEdit);
+    } else {
+        m_isDrawing = true;
+        m_annotationEngine.OnMouseDown({ bmpX, bmpY });
+        ::SetCapture(m_hwnd);
+        UpdateOverlayFromEngine();
+    }
+}
+
+void PipWindow::OnMouseMove(int x, int y) {
+    if (m_isDrawing) {
+        RECT rc{}; ::GetClientRect(m_hwnd, &rc);
+        int cw = rc.right; int ch = rc.bottom;
+        if (cw > 0 && ch > 0) {
+            int bmpX = x * static_cast<int>(m_contentW) / cw;
+            int bmpY = y * static_cast<int>(m_contentH) / ch;
+            m_annotationEngine.OnMouseMove({ bmpX, bmpY });
+            UpdateOverlayFromEngine();
+        }
+    }
+}
+
+void PipWindow::OnLButtonUp(int x, int y) {
+    if (m_isDrawing) {
+        ::ReleaseCapture();
+        m_isDrawing = false;
+        RECT rc{}; ::GetClientRect(m_hwnd, &rc);
+        int cw = rc.right; int ch = rc.bottom;
+        if (cw > 0 && ch > 0) {
+            int bmpX = x * static_cast<int>(m_contentW) / cw;
+            int bmpY = y * static_cast<int>(m_contentH) / ch;
+            m_annotationEngine.OnMouseUp({ bmpX, bmpY });
+        }
+        UpdateOverlayFromEngine();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Toolbar Child Window
+// ---------------------------------------------------------------------------
+
+void PipWindow::CreateToolbarWindow() {
+    m_hwndToolbar = ::CreateWindowExW(
+        0, kToolbarClassName, L"",
+        WS_CHILD | WS_CLIPSIBLINGS,
+        0, 0, 100, 30,
+        m_hwnd, nullptr,
+        ::GetModuleHandleW(nullptr),
+        this);
+}
+
+LRESULT CALLBACK PipWindow::ToolbarWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_NCCREATE) {
+        auto cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+    }
+    auto self = reinterpret_cast<PipWindow*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (self) return self->HandleToolbarMessage(hwnd, msg, wp, lp);
+    return ::DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+LRESULT PipWindow::HandleToolbarMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+    case WM_ERASEBKGND:
+        return 1;
+
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = ::BeginPaint(hwnd, &ps);
+
+        RECT rc{}; ::GetClientRect(hwnd, &rc);
+        int w = rc.right;
+        int h = rc.bottom;
+
+        HDC hdcMem = ::CreateCompatibleDC(hdc);
+        HBITMAP hbmp = ::CreateCompatibleBitmap(hdc, w, h);
+        HGDIOBJ oldBmp = ::SelectObject(hdcMem, hbmp);
+
+        DrawToolbar(hdcMem, w, h);
+
+        ::BitBlt(hdc, 0, 0, w, h, hdcMem, 0, 0, SRCCOPY);
+
+        ::SelectObject(hdcMem, oldBmp);
+        ::DeleteObject(hbmp);
+        ::DeleteDC(hdcMem);
+
+        ::EndPaint(hwnd, &ps);
+        return 0;
+    }
+
+    case WM_SETCURSOR:
+        ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32512))); // IDC_ARROW
+        return TRUE;
+
+    case WM_MOUSEMOVE: {
+        int x = GET_X_LPARAM(lp);
+        int y = GET_Y_LPARAM(lp);
+        POINT pt{ x, y };
+
+        TRACKMOUSEEVENT tme{ sizeof(tme), TME_LEAVE, hwnd, 0 };
+        ::TrackMouseEvent(&tme);
+
+        bool needRepaint = false;
+        for (auto& item : m_toolbarItems) {
+            if (item.isSeparator) continue;
+            bool inside = ::PtInRect(&item.rect, pt);
+            if (inside != item.hovered) {
+                item.hovered = inside;
+                needRepaint = true;
+            }
+        }
+        if (needRepaint) ::InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    }
+
+    case WM_MOUSELEAVE: {
+        bool needRepaint = false;
+        for (auto& item : m_toolbarItems) {
+            if (item.hovered) {
+                item.hovered = false;
+                needRepaint = true;
+            }
+        }
+        if (needRepaint) ::InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    }
+
+    case WM_LBUTTONDOWN: {
+        POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+        for (const auto& item : m_toolbarItems) {
+            if (item.isSeparator) continue;
+            if (::PtInRect(&item.rect, pt)) {
+                CommitTextEdit();
+
+                if (item.action == 1) { FinishEdit(true);  return 0; } // Done
+                if (item.action == 2) { FinishEdit(false); return 0; } // Cancel
+                if (item.action == 3) { m_annotationEngine.Undo(); UpdateOverlayFromEngine(); return 0; }
+                if (item.action == 4) { m_annotationEngine.Redo(); UpdateOverlayFromEngine(); return 0; }
+
+                if (item.action == 5) { // Width
+                    m_annotationEngine.SetStrokeWidth(item.widthVal);
+                    m_annotationEngine.SetFontSize(item.widthVal == 2 ? 14 : (item.widthVal == 4 ? 18 : 26));
+                    RECT rc{}; ::GetClientRect(m_hwnd, &rc);
+                    BuildToolbar(rc.right, rc.bottom);
+                    return 0;
+                }
+
+                if (item.action == 6) { // Color
+                    m_annotationEngine.SetColor(item.color);
+                    RECT rc{}; ::GetClientRect(m_hwnd, &rc);
+                    BuildToolbar(rc.right, rc.bottom);
+                    return 0;
+                }
+
+                if (item.tool != ToolType::None) {
+                    if (m_annotationEngine.GetTool() == item.tool) {
+                        m_annotationEngine.SetTool(ToolType::None);
+                    } else {
+                        m_annotationEngine.SetTool(item.tool);
+                    }
+                    RECT rc{}; ::GetClientRect(m_hwnd, &rc);
+                    BuildToolbar(rc.right, rc.bottom);
+                    return 0;
+                }
+            }
+        }
+        return 0;
+    }
+    }
+    return ::DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void PipWindow::BuildToolbar(int clientW, int clientH) {
+    m_toolbarItems.clear();
+
+    const bool hasSub = (m_annotationEngine.GetTool() != ToolType::None);
+
+    struct Def {
+        ToolType tool;
+        int      action;
+        const wchar_t* label;
+        int      width;
+        bool     isSep;
+    };
+
+    Def defs[] = {
+        { ToolType::Rect,    0, L"矩形",   34, false },
+        { ToolType::Ellipse, 0, L"圆形",   34, false },
+        { ToolType::Arrow,   0, L"箭头",   34, false },
+        { ToolType::Pen,     0, L"画笔",   34, false },
+        { ToolType::Mosaic,  0, L"马赛克", 44, false },
+        { ToolType::Text,    0, L"文本",   34, false },
+        { ToolType::None,    0, nullptr,    4, true  },
+        { ToolType::None,    3, L"撤销",   34, false },
+        { ToolType::None,    4, L"重做",   34, false },
+        { ToolType::None,    0, nullptr,    4, true  },
+        { ToolType::None,    1, L"✓ 完成", 44, false },
+        { ToolType::None,    2, L"✕ 取消", 44, false },
+    };
+
+    constexpr int gap = 2;
+    constexpr int barH = 26;
+    constexpr int subItemH = 24;
+
+    int totalMainW = 0;
+    for (const auto& d : defs) totalMainW += d.width + gap;
+    totalMainW -= gap;
+
+    int tbW = totalMainW + 12;
+    int tbH = hasSub ? (barH + subItemH + 12) : (barH + 10);
+
+    if (tbW > clientW - 8) tbW = clientW - 8;
+    if (tbW < 100) tbW = 100;
+
+    int tbX = (clientW - tbW) / 2;
+    int tbY = clientH - tbH - 6;
+    if (tbY < 4) tbY = 4;
+
+    ::SetWindowPos(m_hwndToolbar, HWND_TOP, tbX, tbY, tbW, tbH, SWP_NOACTIVATE);
+
+    // Primary row inside toolbar local coords
+    int startX = (tbW - totalMainW) / 2;
+    if (startX < 4) startX = 4;
+    int startY = 4;
+
+    int curX = startX;
+    for (const auto& d : defs) {
+        PipToolItem item{};
+        item.rect        = { curX, startY, curX + d.width, startY + barH };
+        item.tool        = d.tool;
+        item.action      = d.action;
+        item.label       = d.label;
+        item.isSeparator = d.isSep;
+        item.selected    = (d.tool != ToolType::None && m_annotationEngine.GetTool() == d.tool);
+        m_toolbarItems.push_back(item);
+        curX += d.width + gap;
+    }
+
+    // Secondary row (if active tool)
+    if (hasSub) {
+        int subY = startY + barH + 4;
+        const int subBarW = 310;
+        int subStartX = (tbW - subBarW) / 2;
+        if (subStartX < 4) subStartX = 4;
+
+        int sx = subStartX;
+        int widths[] = { 2, 4, 8 };
+        const wchar_t* wLabels[] = { L"● 2", L"● 4", L"● 8" };
+        for (int i = 0; i < 3; i++) {
+            PipToolItem item{};
+            item.rect     = { sx, subY, sx + 32, subY + subItemH };
+            item.action   = 5; // Width
+            item.widthVal = widths[i];
+            item.label    = wLabels[i];
+            item.selected = (m_annotationEngine.GetStrokeWidth() == widths[i]);
+            m_toolbarItems.push_back(item);
+            sx += 32 + gap;
+        }
+
+        PipToolItem sep{};
+        sep.rect        = { sx, subY, sx + 4, subY + subItemH };
+        sep.isSeparator = true;
+        m_toolbarItems.push_back(sep);
+        sx += 4 + gap;
+
+        COLORREF colors[] = {
+            RGB(255, 59, 48),   // Red
+            RGB(255, 149, 0),  // Orange
+            RGB(255, 204, 0),  // Yellow
+            RGB(52, 199, 89),  // Green
+            RGB(0, 122, 255),  // Blue
+            RGB(175, 82, 222), // Purple
+            RGB(240, 240, 245),// White
+            RGB(30, 30, 35)    // Dark
+        };
+
+        for (int i = 0; i < 8; i++) {
+            PipToolItem item{};
+            item.rect          = { sx, subY, sx + 22, subY + subItemH };
+            item.action        = 6; // Color
+            item.color         = colors[i];
+            item.isColorChoice = true;
+            item.selected      = (m_annotationEngine.GetColor() == colors[i]);
+            m_toolbarItems.push_back(item);
+            sx += 22 + gap;
+        }
+    }
+
+    ::InvalidateRect(m_hwndToolbar, nullptr, FALSE);
+}
+
+void PipWindow::DrawToolbar(HDC hdc, int clientW, int clientH) {
+    // 1. Draw Toolbar background container
+    RECT bgRect = { 0, 0, clientW, clientH };
+    HBRUSH bgBrush = ::CreateSolidBrush(RGB(32, 32, 38));
+    ::FillRect(hdc, &bgRect, bgBrush);
+    ::DeleteObject(bgBrush);
+
+    HBRUSH borderBrush = ::CreateSolidBrush(RGB(65, 65, 75));
+    ::FrameRect(hdc, &bgRect, borderBrush);
+    ::DeleteObject(borderBrush);
+
+    ::SetBkMode(hdc, TRANSPARENT);
+
+    // 2. Draw Items
+    for (const auto& item : m_toolbarItems) {
+        if (item.isSeparator) {
+            int midX = (item.rect.left + item.rect.right) / 2;
+            HPEN sepPen = ::CreatePen(PS_SOLID, 1, RGB(70, 70, 80));
+            HGDIOBJ oldPen = ::SelectObject(hdc, sepPen);
+            ::MoveToEx(hdc, midX, item.rect.top + 3, nullptr);
+            ::LineTo(hdc, midX, item.rect.bottom - 3);
+            ::SelectObject(hdc, oldPen);
+            ::DeleteObject(sepPen);
+            continue;
+        }
+
+        if (item.isColorChoice) {
+            COLORREF cbg = item.hovered ? RGB(60, 60, 70) : RGB(40, 40, 48);
+            HBRUSH cbgBrush = ::CreateSolidBrush(cbg);
+            ::FillRect(hdc, &item.rect, cbgBrush);
+            ::DeleteObject(cbgBrush);
+
+            int cx = (item.rect.left + item.rect.right) / 2;
+            int cy = (item.rect.top + item.rect.bottom) / 2;
+            int r = 6;
+
+            HBRUSH colBrush = ::CreateSolidBrush(item.color);
+            HPEN borderPen = ::CreatePen(PS_SOLID, 1, item.selected ? RGB(255, 255, 255) : RGB(80, 80, 90));
+            HGDIOBJ oldBrush = ::SelectObject(hdc, colBrush);
+            HGDIOBJ oldPen   = ::SelectObject(hdc, borderPen);
+
+            ::Ellipse(hdc, cx - r, cy - r, cx + r, cy + r);
+
+            if (item.selected) {
+                HPEN ringPen = ::CreatePen(PS_SOLID, 2, RGB(0, 150, 255));
+                ::SelectObject(hdc, ringPen);
+                ::SelectObject(hdc, ::GetStockObject(NULL_BRUSH));
+                ::Ellipse(hdc, cx - r - 2, cy - r - 2, cx + r + 3, cy + r + 3);
+                ::DeleteObject(ringPen);
+            }
+
+            ::SelectObject(hdc, oldBrush);
+            ::SelectObject(hdc, oldPen);
+            ::DeleteObject(colBrush);
+            ::DeleteObject(borderPen);
+            continue;
+        }
+
+        COLORREF btnBg;
+        if (item.selected) {
+            btnBg = RGB(25, 118, 210);
+        } else if (item.action == 1 && item.hovered) { // Done
+            btnBg = RGB(46, 125, 50);
+        } else if (item.action == 2 && item.hovered) { // Cancel
+            btnBg = RGB(198, 40, 40);
+        } else if (item.hovered) {
+            btnBg = RGB(65, 65, 75);
+        } else {
+            btnBg = RGB(45, 45, 54);
+        }
+
+        HBRUSH itemBgBrush = ::CreateSolidBrush(btnBg);
+        ::FillRect(hdc, &item.rect, itemBgBrush);
+        ::DeleteObject(itemBgBrush);
+
+        HBRUSH itemBorderBrush = ::CreateSolidBrush(item.selected ? RGB(70, 160, 245) : (item.hovered ? RGB(90, 90, 100) : RGB(60, 60, 70)));
+        ::FrameRect(hdc, &item.rect, itemBorderBrush);
+        ::DeleteObject(itemBorderBrush);
+
+        if (item.label) {
+            HFONT oldFont = static_cast<HFONT>(::SelectObject(hdc, m_font));
+            ::SetTextColor(hdc, RGB(240, 240, 245));
+            RECT textRect = item.rect;
+            ::DrawTextW(hdc, item.label, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            ::SelectObject(hdc, oldFont);
+        }
+    }
 }
 
 } // namespace nskry

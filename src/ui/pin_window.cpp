@@ -269,6 +269,21 @@ LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         break;
 
+    case WM_SETCURSOR:
+        if (m_isEditing) {
+            POINT pt;
+            ::GetCursorPos(&pt);
+            ::ScreenToClient(hwnd, &pt);
+            if (::PtInRect(&m_toolbarBounds, pt)) {
+                ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32649))); // IDC_HAND
+                return TRUE;
+            } else if (m_annotationEngine.GetTool() != ToolType::None) {
+                ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32515))); // IDC_CROSS
+                return TRUE;
+            }
+        }
+        break;
+
     case WM_PAINT:
         OnPaint(hwnd);
         return 0;
@@ -427,6 +442,8 @@ void PinWindow::CommitTextEdit() {
 void PinWindow::BuildPinToolbar(int clientW, int clientH) {
     m_toolbarItems.clear();
 
+    const bool hasSub = (m_annotationEngine.GetTool() != ToolType::None);
+
     struct Def {
         ToolType tool;
         int      action;
@@ -452,6 +469,7 @@ void PinWindow::BuildPinToolbar(int clientW, int clientH) {
 
     constexpr int gap = 2;
     constexpr int barH = 26;
+    constexpr int subItemH = 24;
 
     int totalW = 0;
     for (const auto& d : defs) totalW += d.width + gap;
@@ -460,6 +478,9 @@ void PinWindow::BuildPinToolbar(int clientW, int clientH) {
     int startX = (clientW - totalW) / 2;
     if (startX < 4) startX = 4;
     int startY = clientH - barH - 6;
+    if (hasSub) {
+        startY = clientH - barH - subItemH - 10;
+    }
     if (startY < 4) startY = 4;
 
     int curX = startX;
@@ -473,6 +494,68 @@ void PinWindow::BuildPinToolbar(int clientW, int clientH) {
         item.selected    = (d.tool != ToolType::None && m_annotationEngine.GetTool() == d.tool);
         m_toolbarItems.push_back(item);
         curX += d.width + gap;
+    }
+
+    if (hasSub) {
+        int subY = startY + barH + 4;
+        const int subBarW = 310;
+        int subStartX = (clientW - subBarW) / 2;
+        if (subStartX < 4) subStartX = 4;
+
+        int sx = subStartX;
+        int widths[] = { 2, 4, 8 };
+        const wchar_t* wLabels[] = { L"● 2", L"● 4", L"● 8" };
+        for (int i = 0; i < 3; i++) {
+            PinToolItem item{};
+            item.rect     = { sx, subY, sx + 32, subY + subItemH };
+            item.action   = 5; // Width
+            item.widthVal = widths[i];
+            item.label    = wLabels[i];
+            item.selected = (m_annotationEngine.GetStrokeWidth() == widths[i]);
+            m_toolbarItems.push_back(item);
+            sx += 32 + gap;
+        }
+
+        PinToolItem sep{};
+        sep.rect        = { sx, subY, sx + 4, subY + subItemH };
+        sep.isSeparator = true;
+        m_toolbarItems.push_back(sep);
+        sx += 4 + gap;
+
+        COLORREF colors[] = {
+            RGB(255, 59, 48),   // Red
+            RGB(255, 149, 0),  // Orange
+            RGB(255, 204, 0),  // Yellow
+            RGB(52, 199, 89),  // Green
+            RGB(0, 122, 255),  // Blue
+            RGB(175, 82, 222), // Purple
+            RGB(240, 240, 245),// White
+            RGB(30, 30, 35)    // Dark
+        };
+
+        for (int i = 0; i < 8; i++) {
+            PinToolItem item{};
+            item.rect          = { sx, subY, sx + 22, subY + subItemH };
+            item.action        = 6; // Color
+            item.color         = colors[i];
+            item.isColorChoice = true;
+            item.selected      = (m_annotationEngine.GetColor() == colors[i]);
+            m_toolbarItems.push_back(item);
+            sx += 22 + gap;
+        }
+    }
+
+    if (!m_toolbarItems.empty()) {
+        m_toolbarBounds = m_toolbarItems.front().rect;
+        for (const auto& it : m_toolbarItems) {
+            if (it.rect.left < m_toolbarBounds.left)     m_toolbarBounds.left   = it.rect.left;
+            if (it.rect.top < m_toolbarBounds.top)       m_toolbarBounds.top    = it.rect.top;
+            if (it.rect.right > m_toolbarBounds.right)   m_toolbarBounds.right  = it.rect.right;
+            if (it.rect.bottom > m_toolbarBounds.bottom) m_toolbarBounds.bottom = it.rect.bottom;
+        }
+        ::InflateRect(&m_toolbarBounds, 2, 2);
+    } else {
+        m_toolbarBounds = {};
     }
 }
 
@@ -488,6 +571,38 @@ void PinWindow::DrawPinToolbar(HDC hdc, int /*clientW*/, int /*clientH*/) {
             ::LineTo(hdc, midX, item.rect.bottom - 3);
             ::SelectObject(hdc, oldPen);
             ::DeleteObject(sepPen);
+            continue;
+        }
+
+        if (item.isColorChoice) {
+            COLORREF bg = item.hovered ? RGB(60, 60, 70) : RGB(40, 40, 48);
+            HBRUSH bgBrush = ::CreateSolidBrush(bg);
+            ::FillRect(hdc, &item.rect, bgBrush);
+            ::DeleteObject(bgBrush);
+
+            int cx = (item.rect.left + item.rect.right) / 2;
+            int cy = (item.rect.top + item.rect.bottom) / 2;
+            int r = 6;
+
+            HBRUSH colBrush = ::CreateSolidBrush(item.color);
+            HPEN borderPen = ::CreatePen(PS_SOLID, 1, item.selected ? RGB(255, 255, 255) : RGB(80, 80, 90));
+            HGDIOBJ oldBrush = ::SelectObject(hdc, colBrush);
+            HGDIOBJ oldPen   = ::SelectObject(hdc, borderPen);
+
+            ::Ellipse(hdc, cx - r, cy - r, cx + r, cy + r);
+
+            if (item.selected) {
+                HPEN ringPen = ::CreatePen(PS_SOLID, 2, RGB(0, 150, 255));
+                ::SelectObject(hdc, ringPen);
+                ::SelectObject(hdc, ::GetStockObject(NULL_BRUSH));
+                ::Ellipse(hdc, cx - r - 2, cy - r - 2, cx + r + 3, cy + r + 3);
+                ::DeleteObject(ringPen);
+            }
+
+            ::SelectObject(hdc, oldBrush);
+            ::SelectObject(hdc, oldPen);
+            ::DeleteObject(colBrush);
+            ::DeleteObject(borderPen);
             continue;
         }
 
@@ -536,6 +651,23 @@ void PinWindow::OnLButtonDown(int x, int y) {
             if (item.action == 3) { m_annotationEngine.Undo(); ::InvalidateRect(m_hwnd, nullptr, FALSE); return; }
             if (item.action == 4) { m_annotationEngine.Redo(); ::InvalidateRect(m_hwnd, nullptr, FALSE); return; }
 
+            if (item.action == 5) { // Width
+                m_annotationEngine.SetStrokeWidth(item.widthVal);
+                m_annotationEngine.SetFontSize(item.widthVal == 2 ? 14 : (item.widthVal == 4 ? 18 : 26));
+                RECT rc{}; ::GetClientRect(m_hwnd, &rc);
+                BuildPinToolbar(rc.right, rc.bottom);
+                ::InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+
+            if (item.action == 6) { // Color
+                m_annotationEngine.SetColor(item.color);
+                RECT rc{}; ::GetClientRect(m_hwnd, &rc);
+                BuildPinToolbar(rc.right, rc.bottom);
+                ::InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+
             if (item.tool != ToolType::None) {
                 if (m_annotationEngine.GetTool() == item.tool) {
                     m_annotationEngine.SetTool(ToolType::None);
@@ -549,6 +681,9 @@ void PinWindow::OnLButtonDown(int x, int y) {
             }
         }
     }
+
+    // Ignore clicks in toolbar area that missed a button
+    if (::PtInRect(&m_toolbarBounds, pt)) return;
 
     // 2. Annotation Canvas drawing
     if (m_annotationEngine.GetTool() != ToolType::None) {

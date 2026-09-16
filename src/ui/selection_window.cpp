@@ -810,6 +810,7 @@ void SelectionWindow::FinishWithAction(SelectionAction action) {
                 m_hdcSnapshot, m_finalRect.left, m_finalRect.top,
                 result.crop.width, result.crop.height);
         }
+        result.annotationEngine = m_annotationEngine.Clone();
 
         m_capturedBitmap = nullptr; // transferred to caller
     } else {
@@ -822,7 +823,7 @@ void SelectionWindow::FinishWithAction(SelectionAction action) {
     Close();
 
     if (m_onComplete)
-        m_onComplete(action, result);
+        m_onComplete(action, std::move(result));
 }
 
 // ============================================================================
