@@ -5,7 +5,14 @@
 #include "ui/pip_window.h"
 #include "ui/pin_window.h"
 #include "ui/selection_window.h"
+#include "ui/settings/settings_window.h"
+#include "core/command_registry.h"
+#include "core/hotkey_manager.h"
 #include "core/plugin_manager.h"
+#include "core/plugin_package_manager.h"
+#include "core/plugin_update_manager.h"
+#include "core/plugin_registry.h"
+#include "core/settings_manager.h"
 
 // GDI+ for PNG saving (needs min/max workaround with NOMINMAX)
 #include <algorithm>
@@ -26,7 +33,9 @@ static std::shared_ptr<nskry::D3DDevice>         g_device;
 static std::unique_ptr<nskry::CaptureSession>    g_capture;
 static std::unique_ptr<nskry::PipWindow>         g_pip;
 static std::unique_ptr<nskry::SelectionWindow>   g_selectionWindow;
+static std::unique_ptr<nskry::SettingsWindow>    g_settingsWindow;
 static std::vector<std::unique_ptr<nskry::PinWindow>> g_pins;
+static nskry::SettingsWindowServices*             g_settingsServices = nullptr;
 
 static ULONG_PTR g_gdiplusToken = 0;
 
@@ -34,10 +43,9 @@ static ULONG_PTR g_gdiplusToken = 0;
 // Constants
 // ============================================================================
 
-static constexpr int  HOTKEY_CAPTURE = 1;
-static constexpr int  HOTKEY_QUIT    = 2;
 static constexpr UINT WM_CLEANUP     = WM_APP + 1;
 static constexpr UINT WM_USER_TRAY   = WM_USER + 1;
+static constexpr UINT WM_SETTINGS_CLOSED = WM_APP + 42;
 
 // ============================================================================
 // Forward declarations
@@ -45,12 +53,15 @@ static constexpr UINT WM_USER_TRAY   = WM_USER + 1;
 
 static LRESULT CALLBACK MainWndProc(HWND, UINT, WPARAM, LPARAM);
 static void ShowSelectionOverlay();
+static void ShowSettings();
 static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionResult result);
 static void StartPiP(HWND targetHwnd, nskry::CropRegion crop, nskry::AnnotationEngine engine = {});
 static void CleanupPip();
 static void CopyBitmapToClipboard(HBITMAP hbmp);
 static void SaveBitmapToFile(HBITMAP hbmp, int w, int h);
 static int  GetPngEncoderClsid(CLSID* pClsid);
+static bool RunPluginPackageCli(int& exitCode);
+static bool SetRunAtStartup(bool enabled);
 
 // ============================================================================
 // WinMain
@@ -62,6 +73,9 @@ int WINAPI wWinMain(
     [[maybe_unused]] PWSTR     pCmdLine,
     [[maybe_unused]] int       nCmdShow)
 {
+    int packageCliExitCode = 0;
+    if (RunPluginPackageCli(packageCliExitCode)) return packageCliExitCode;
+
     winrt::init_apartment(winrt::apartment_type::single_threaded);
     ::SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
@@ -93,6 +107,33 @@ int WINAPI wWinMain(
         0, 0, 0, 0,
         HWND_MESSAGE, nullptr, hInstance, nullptr);
 
+    // Stage A core services: settings drive stable command IDs, which in turn
+    // drive global hotkey registrations. UI can later edit settings without
+    // reaching into main.cpp globals.
+    auto& settings = nskry::SettingsManager::Instance();
+    settings.Load();
+
+    auto& commands = nskry::CommandRegistry::Instance();
+    commands.Register(L"core.capture", []() { ShowSelectionOverlay(); });
+    commands.Register(L"core.exit", []() { ::PostQuitMessage(0); });
+    commands.Register(L"core.settings", []() { ShowSettings(); });
+
+    auto& hotkeys = nskry::HotkeyManager::Instance();
+    hotkeys.Initialize(g_mainHwnd);
+    if (!hotkeys.Register(L"core.capture", settings.GetHotkey(L"core.capture"))) {
+        ::MessageBoxW(nullptr,
+            (L"Failed to register capture shortcut: " + settings.GetHotkey(L"core.capture") +
+             L".\nAnother program may be using it.").c_str(),
+            L"Nskry", MB_ICONERROR);
+        return 1;
+    }
+    if (!hotkeys.Register(L"core.exit", settings.GetHotkey(L"core.exit"))) {
+        ::MessageBoxW(nullptr,
+            (L"Failed to register exit shortcut: " + settings.GetHotkey(L"core.exit") +
+             L".\nYou can still quit from the tray menu.").c_str(),
+            L"Nskry", MB_ICONWARNING);
+    }
+
     // Plugin Manager initialization
     NskryHostContext hostCtx{};
     hostCtx.mainHwnd = g_mainHwnd;
@@ -102,17 +143,68 @@ int WINAPI wWinMain(
         // Can be hooked to toast or status
     };
     hostCtx.copyBitmapToClipboard = CopyBitmapToClipboard;
-    nskry::PluginManager::Instance().Initialize(&hostCtx);
-
-    // Global hotkeys
-    if (!::RegisterHotKey(g_mainHwnd, HOTKEY_CAPTURE, MOD_CONTROL | MOD_ALT, 'A')) {
-        ::MessageBoxW(nullptr,
-            L"Failed to register Ctrl+Alt+A.\n"
-            L"Another program may be using this shortcut.",
-            L"Nskry", MB_ICONERROR);
-        return 1;
+    nskry::PluginRegistry pluginRegistry;
+    nskry::PluginPackageManager packageManager(pluginRegistry);
+    nskry::PluginUpdateManager pluginUpdateManager(pluginRegistry, packageManager);
+    std::wstring packageError;
+    if (!pluginRegistry.Initialize() || !packageManager.Initialize() ||
+        !packageManager.ApplyPendingOperations(&packageError) || !pluginRegistry.Load()) {
+        std::wstring registryError = L"Plugin registry could not be initialized. Plugins will be unavailable this session.";
+        if (!packageError.empty()) registryError += L"\n\n" + packageError;
+        ::MessageBoxW(nullptr, registryError.c_str(), L"Nskry", MB_ICONWARNING);
+    } else {
+        nskry::PluginManager::Instance().Initialize(pluginRegistry, hostCtx);
     }
-    ::RegisterHotKey(g_mainHwnd, HOTKEY_QUIT, MOD_CONTROL | MOD_ALT, 'Q');
+
+    nskry::SettingsWindowServices settingsServices;
+    settingsServices.getSettings = [&settings]() { return settings.GetUserSettings(); };
+    settingsServices.applySettings = [&settings, &hotkeys](const nskry::UserSettings& next, std::wstring& error) {
+        const nskry::UserSettings previous = settings.GetUserSettings();
+        if (next.captureShortcut.empty() || next.exitShortcut.empty()) { error = L"Shortcuts cannot be empty."; return false; }
+        if (next.captureShortcut != previous.captureShortcut && !hotkeys.Rebind(L"core.capture", next.captureShortcut)) {
+            error = L"The capture shortcut is invalid or already in use."; return false;
+        }
+        if (next.exitShortcut != previous.exitShortcut && !hotkeys.Rebind(L"core.exit", next.exitShortcut)) {
+            if (next.captureShortcut != previous.captureShortcut) hotkeys.Rebind(L"core.capture", previous.captureShortcut);
+            error = L"The exit shortcut is invalid or already in use."; return false;
+        }
+        if (next.runAtStartup != previous.runAtStartup && !SetRunAtStartup(next.runAtStartup)) {
+            if (next.captureShortcut != previous.captureShortcut) hotkeys.Rebind(L"core.capture", previous.captureShortcut);
+            if (next.exitShortcut != previous.exitShortcut) hotkeys.Rebind(L"core.exit", previous.exitShortcut);
+            error = L"Unable to update the Windows startup setting."; return false;
+        }
+        settings.SetUserSettings(next);
+        if (!settings.Save()) { error = L"Unable to save settings.json."; return false; }
+        return true;
+    };
+    settingsServices.getPlugins = [&pluginRegistry]() {
+        std::vector<nskry::SettingsPluginItem> items;
+        for (const nskry::PluginRecord* record : pluginRegistry.GetAll()) {
+            nskry::SettingsPluginItem item;
+            item.id = record->manifest.id; item.name = record->manifest.name; item.version = record->manifest.version;
+            item.author = record->manifest.author; item.enabled = record->enabled;
+            item.status = record->enabled ? (record->loaded ? L"Enabled · Loaded" : L"Enabled · Not loaded") : L"Disabled";
+            items.push_back(std::move(item));
+        }
+        return items;
+    };
+    settingsServices.setPluginEnabled = [&pluginRegistry](const std::wstring& id, bool enabled) { return pluginRegistry.SetEnabled(id, enabled); };
+    settingsServices.uninstallPlugin = [&packageManager](const std::wstring& id, std::wstring& error) {
+        const auto result = packageManager.Uninstall(id); error = result.message; return result.success;
+    };
+    settingsServices.inspectPluginPackage = [&packageManager](const std::wstring& path, nskry::PluginManifest& manifest, std::wstring& error) {
+        return packageManager.InspectPackage(path, manifest, &error);
+    };
+    settingsServices.installThirdPartyPlugin = [&packageManager](const std::wstring& path) {
+        return packageManager.InstallPackage(path, nskry::PluginSource::ThirdParty);
+    };
+    settingsServices.checkPluginUpdates = [&pluginUpdateManager, &settings](std::wstring& error) {
+        return pluginUpdateManager.CheckForUpdates(settings.GetOfficialPluginCatalogUrl(), &error);
+    };
+    settingsServices.downloadPluginUpdate = [&pluginUpdateManager](const nskry::PluginUpdate& update) {
+        return pluginUpdateManager.DownloadAndStage(update);
+    };
+    g_settingsServices = &settingsServices;
 
     // System Tray Icon
     NOTIFYICONDATAW nid{};
@@ -122,15 +214,15 @@ int WINAPI wWinMain(
     nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_USER_TRAY;
     nid.hIcon            = ::LoadIconW(nullptr, MAKEINTRESOURCEW(32512)); /* IDI_APPLICATION */
-    wcscpy_s(nid.szTip, L"Nskry (Ctrl+Alt+A)");
+    const std::wstring captureShortcut = settings.GetHotkey(L"core.capture");
+    wcscpy_s(nid.szTip, (L"Nskry (" + captureShortcut + L")").c_str());
     ::Shell_NotifyIconW(NIM_ADD, &nid);
 
     // Notify user
-    ::MessageBoxW(nullptr,
-        L"Nskry is running in the background.\n\n"
-        L"  Ctrl+Alt+A \u2014 capture a window\n"
-        L"  Ctrl+Alt+Q \u2014 quit",
-        L"Nskry", MB_ICONINFORMATION);
+    const std::wstring startupMessage = std::wstring(L"Nskry is running in the background.\n\n") +
+        L"  " + settings.GetHotkey(L"core.capture") + L" \u2014 capture a window\n" +
+        L"  " + settings.GetHotkey(L"core.exit") + L" \u2014 quit";
+    ::MessageBoxW(nullptr, startupMessage.c_str(), L"Nskry", MB_ICONINFORMATION);
 
     // Message loop
     MSG msg{};
@@ -145,12 +237,75 @@ int WINAPI wWinMain(
     CleanupPip();
     g_pins.clear();
     g_selectionWindow.reset();
-    ::UnregisterHotKey(g_mainHwnd, HOTKEY_CAPTURE);
-    ::UnregisterHotKey(g_mainHwnd, HOTKEY_QUIT);
+    g_settingsWindow.reset();
+    g_settingsServices = nullptr;
+    nskry::HotkeyManager::Instance().Shutdown();
+    nskry::CommandRegistry::Instance().Clear();
     g_device.reset();
     Gdiplus::GdiplusShutdown(g_gdiplusToken);
 
     return static_cast<int>(msg.wParam);
+}
+
+// Package CLI is intentionally small: installers and future Settings UI use
+// the same PluginPackageManager rather than maintaining another install path.
+static bool RunPluginPackageCli(int& exitCode) {
+    int argc = 0;
+    LPWSTR* argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
+    if (!argv) return false;
+
+    std::wstring packagePath;
+    nskry::PluginSource source = nskry::PluginSource::Local;
+    bool silent = false;
+    for (int i = 1; i < argc; ++i) {
+        const std::wstring arg = argv[i];
+        if (arg == L"--install-plugin" && i + 1 < argc) packagePath = argv[++i];
+        else if (arg == L"--source" && i + 1 < argc) {
+            const std::wstring value = argv[++i];
+            if (value == L"official") source = nskry::PluginSource::Official;
+            else if (value == L"third_party") source = nskry::PluginSource::ThirdParty;
+        } else if (arg == L"--silent") {
+            silent = true;
+        }
+    }
+    ::LocalFree(argv);
+    if (packagePath.empty()) return false;
+
+    nskry::PluginRegistry registry;
+    nskry::PluginPackageManager packageManager(registry);
+    nskry::PluginPackageResult result;
+    if (!registry.Initialize() || !packageManager.Initialize() || !registry.Load()) {
+        result.message = L"Plugin package service could not be initialized.";
+    } else {
+        result = packageManager.InstallPackage(packagePath, source);
+    }
+    exitCode = result.success ? 0 : 1;
+    if (!silent) {
+        ::MessageBoxW(nullptr, result.message.c_str(), L"Nskry Plugin Installer",
+            result.success ? MB_ICONINFORMATION : MB_ICONERROR);
+    }
+    return true;
+}
+
+static bool SetRunAtStartup(bool enabled) {
+    HKEY key{};
+    const wchar_t* path = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    if (::RegCreateKeyExW(HKEY_CURRENT_USER, path, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS) return false;
+    LONG result = ERROR_SUCCESS;
+    if (enabled) {
+        wchar_t executable[MAX_PATH]{};
+        if (::GetModuleFileNameW(nullptr, executable, MAX_PATH) == 0) result = ERROR_FILE_NOT_FOUND;
+        else {
+            const std::wstring command = L"\"" + std::wstring(executable) + L"\"";
+            result = ::RegSetValueExW(key, L"Nskry", 0, REG_SZ,
+                reinterpret_cast<const BYTE*>(command.c_str()), static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t)));
+        }
+    } else {
+        result = ::RegDeleteValueW(key, L"Nskry");
+        if (result == ERROR_FILE_NOT_FOUND) result = ERROR_SUCCESS;
+    }
+    ::RegCloseKey(key);
+    return result == ERROR_SUCCESS;
 }
 
 // ============================================================================
@@ -160,28 +315,35 @@ int WINAPI wWinMain(
 static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_HOTKEY:
-        if (wp == HOTKEY_CAPTURE) ShowSelectionOverlay();
-        if (wp == HOTKEY_QUIT)    ::PostQuitMessage(0);
+        nskry::CommandRegistry::Instance().Execute(
+            nskry::HotkeyManager::Instance().CommandForHotkeyId(static_cast<int>(wp)));
         return 0;
     case WM_CLEANUP:
         CleanupPip();
         return 0;
+    case WM_SETTINGS_CLOSED:
+        g_settingsWindow.reset();
+        return 0;
     case WM_USER_TRAY:
         if (LOWORD(lp) == WM_LBUTTONDBLCLK) {
-            ShowSelectionOverlay();
+            nskry::CommandRegistry::Instance().Execute(L"core.capture");
         }
         else if (LOWORD(lp) == WM_RBUTTONUP) {
             POINT pt;
             ::GetCursorPos(&pt);
             HMENU hMenu = ::CreatePopupMenu();
-            ::InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, 1001, L"Capture (Ctrl+Alt+A)");
-            ::InsertMenuW(hMenu, 1, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
-            ::InsertMenuW(hMenu, 2, MF_BYPOSITION | MF_STRING, 1002, L"Quit (Ctrl+Alt+Q)");
+            const std::wstring captureLabel = L"Capture (" + nskry::SettingsManager::Instance().GetHotkey(L"core.capture") + L")";
+            const std::wstring exitLabel = L"Quit (" + nskry::SettingsManager::Instance().GetHotkey(L"core.exit") + L")";
+            ::InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, 1001, captureLabel.c_str());
+            ::InsertMenuW(hMenu, 1, MF_BYPOSITION | MF_STRING, 1003, L"Settings...");
+            ::InsertMenuW(hMenu, 2, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
+            ::InsertMenuW(hMenu, 3, MF_BYPOSITION | MF_STRING, 1002, exitLabel.c_str());
             ::SetForegroundWindow(hwnd);
             int cmd = ::TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hwnd, nullptr);
             ::DestroyMenu(hMenu);
-            if (cmd == 1001) ShowSelectionOverlay();
-            if (cmd == 1002) ::PostQuitMessage(0);
+            if (cmd == 1001) nskry::CommandRegistry::Instance().Execute(L"core.capture");
+            if (cmd == 1003) nskry::CommandRegistry::Instance().Execute(L"core.settings");
+            if (cmd == 1002) nskry::CommandRegistry::Instance().Execute(L"core.exit");
         }
         return 0;
     case WM_DESTROY:
@@ -189,6 +351,14 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     return ::DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+static void ShowSettings() {
+    if (!g_settingsServices || g_settingsWindow) return;
+    g_settingsWindow = std::make_unique<nskry::SettingsWindow>(*g_settingsServices, []() {
+        ::PostMessageW(g_mainHwnd, WM_SETTINGS_CLOSED, 0, 0);
+    });
+    g_settingsWindow->Show(g_mainHwnd);
 }
 
 static void CleanupPip() {

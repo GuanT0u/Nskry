@@ -1,6 +1,5 @@
 #include "pch.h"
 #include "core/plugin_manager.h"
-#include <shlwapi.h>
 
 namespace nskry {
 
@@ -9,92 +8,95 @@ PluginManager& PluginManager::Instance() {
     return s_instance;
 }
 
-void PluginManager::Initialize(const NskryHostContext* hostCtx) {
+void PluginManager::Initialize(PluginRegistry& registry, const NskryHostContext& hostContext) {
     if (m_initialized) return;
+    m_registry = &registry;
+    m_hostContext = hostContext;
     m_initialized = true;
 
-    // Determine executable directory
-    wchar_t exePath[MAX_PATH] = { 0 };
-    ::GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-    ::PathRemoveFileSpecW(exePath);
-
-    std::wstring pluginsDir = exePath;
-    pluginsDir += L"\\plugins";
-
-    ScanAndLoad(pluginsDir, hostCtx);
+    // Startup is deliberately opt-in. All normal plugins remain installed and
+    // enabled, but consume no DLL/runtime memory until their command is used.
+    for (const PluginRecord* record : m_registry->GetAll()) {
+        if (record->enabled && record->manifest.loadPolicy == PluginLoadPolicy::Startup) {
+            EnsureLoaded(record->manifest.id);
+        }
+    }
 }
 
 void PluginManager::Shutdown() {
-    if (!m_initialized) return;
-
-    // Shutdown and free in reverse order
-    for (auto it = m_plugins.rbegin(); it != m_plugins.rend(); ++it) {
-        if (it->fnShutdown) {
-            it->fnShutdown();
-        }
-        if (it->hModule) {
-            ::FreeLibrary(it->hModule);
-        }
+    for (auto it = m_plugins.begin(); it != m_plugins.end();) {
+        const std::wstring id = it->first;
+        ++it;
+        Unload(id);
     }
     m_plugins.clear();
+    m_registry = nullptr;
+    m_hostContext = {};
     m_initialized = false;
 }
 
-void PluginManager::ScanAndLoad(const std::wstring& pluginsDir, const NskryHostContext* hostCtx) {
-    std::wstring searchPattern = pluginsDir + L"\\*.dll";
-    WIN32_FIND_DATAW fd{};
-    HANDLE hFind = ::FindFirstFileW(searchPattern.c_str(), &fd);
-    if (hFind == INVALID_HANDLE_VALUE) return;
+bool PluginManager::EnsureLoaded(const std::wstring& pluginId) {
+    if (!m_initialized || !m_registry || pluginId.empty()) return false;
+    if (m_plugins.contains(pluginId)) return true;
 
-    do {
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-
-        std::wstring fullPath = pluginsDir + L"\\" + fd.cFileName;
-        HMODULE hMod = ::LoadLibraryW(fullPath.c_str());
-        if (!hMod) continue;
-
-        auto pInfo     = reinterpret_cast<decltype(&nskry_plugin_info)>(::GetProcAddress(hMod, "nskry_plugin_info"));
-        auto pInit     = reinterpret_cast<decltype(&nskry_plugin_init)>(::GetProcAddress(hMod, "nskry_plugin_init"));
-        auto pExecute  = reinterpret_cast<decltype(&nskry_plugin_execute)>(::GetProcAddress(hMod, "nskry_plugin_execute"));
-        auto pShutdown = reinterpret_cast<decltype(&nskry_plugin_shutdown)>(::GetProcAddress(hMod, "nskry_plugin_shutdown"));
-
-        if (!pInfo || !pInit || !pExecute || !pShutdown) {
-            ::FreeLibrary(hMod);
-            continue;
-        }
-
-        const NskryPluginInfo* info = pInfo();
-        if (!info || !pInit(hostCtx)) {
-            ::FreeLibrary(hMod);
-            continue;
-        }
-
-        PluginEntry entry;
-        entry.hModule    = hMod;
-        entry.info       = *info;
-        entry.fnInfo     = pInfo;
-        entry.fnInit     = pInit;
-        entry.fnExecute  = pExecute;
-        entry.fnShutdown = pShutdown;
-
-        m_plugins.push_back(std::move(entry));
-
-    } while (::FindNextFileW(hFind, &fd));
-
-    ::FindClose(hFind);
+    const PluginRecord* record = m_registry->Find(pluginId);
+    if (!record || !record->enabled || !record->manifest.IsCompatibleWithHost()) return false;
+    return LoadPlugin(*record);
 }
 
-void PluginManager::ExecutePlugin(const wchar_t* pluginId, const NskryHostContext* hostCtx) {
-    if (!pluginId || !hostCtx) return;
+bool PluginManager::LoadPlugin(const PluginRecord& record) {
+    const std::wstring dllPath = record.installPath + L"\\" + record.manifest.entry;
+    const DWORD flags = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
+    HMODULE module = ::LoadLibraryExW(dllPath.c_str(), nullptr, flags);
+    if (!module) return false;
 
-    for (auto& plugin : m_plugins) {
-        if (plugin.info.id && wcscmp(plugin.info.id, pluginId) == 0) {
-            if (plugin.fnExecute) {
-                plugin.fnExecute(hostCtx);
-            }
-            break;
-        }
+    const auto fnInfo = reinterpret_cast<decltype(&nskry_plugin_info)>(::GetProcAddress(module, "nskry_plugin_info"));
+    const auto fnInit = reinterpret_cast<decltype(&nskry_plugin_init)>(::GetProcAddress(module, "nskry_plugin_init"));
+    const auto fnExecute = reinterpret_cast<decltype(&nskry_plugin_execute)>(::GetProcAddress(module, "nskry_plugin_execute"));
+    const auto fnShutdown = reinterpret_cast<decltype(&nskry_plugin_shutdown)>(::GetProcAddress(module, "nskry_plugin_shutdown"));
+    if (!fnInfo || !fnInit || !fnExecute || !fnShutdown) {
+        ::FreeLibrary(module);
+        return false;
     }
+
+    // This check is runtime ABI validation, not metadata discovery: all data
+    // displayed before load still comes exclusively from manifest.json.
+    const NskryPluginInfo* runtimeInfo = fnInfo();
+    if (!runtimeInfo || !runtimeInfo->id || record.manifest.id != runtimeInfo->id || !fnInit(&m_hostContext)) {
+        ::FreeLibrary(module);
+        return false;
+    }
+
+    PluginEntry entry;
+    entry.hModule = module;
+    entry.id = record.manifest.id;
+    entry.fnExecute = fnExecute;
+    entry.fnShutdown = fnShutdown;
+    m_plugins.emplace(entry.id, std::move(entry));
+    m_registry->SetLoaded(record.manifest.id, true);
+    return true;
+}
+
+bool PluginManager::Unload(const std::wstring& pluginId) {
+    const auto it = m_plugins.find(pluginId);
+    if (it == m_plugins.end()) return false;
+    if (it->second.fnShutdown) it->second.fnShutdown();
+    if (it->second.hModule) ::FreeLibrary(it->second.hModule);
+    m_plugins.erase(it);
+    if (m_registry) m_registry->SetLoaded(pluginId, false);
+    return true;
+}
+
+bool PluginManager::ExecutePlugin(const std::wstring& pluginId, const NskryHostContext& hostContext) {
+    if (!EnsureLoaded(pluginId)) return false;
+    const auto it = m_plugins.find(pluginId);
+    if (it == m_plugins.end() || !it->second.fnExecute) return false;
+    it->second.fnExecute(&hostContext);
+    return true;
+}
+
+bool PluginManager::IsLoaded(const std::wstring& pluginId) const {
+    return m_plugins.contains(pluginId);
 }
 
 } // namespace nskry

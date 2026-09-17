@@ -1,38 +1,42 @@
 #pragma once
 
+#include "core/plugin_registry.h"
 #include "sdk/nskry_plugin.h"
-#include <vector>
 #include <string>
-#include <memory>
+#include <unordered_map>
 
 namespace nskry {
 
 struct PluginEntry {
     HMODULE         hModule = nullptr;
-    NskryPluginInfo info{};
-    decltype(&nskry_plugin_info)     fnInfo = nullptr;
-    decltype(&nskry_plugin_init)     fnInit = nullptr;
+    std::wstring    id;
     decltype(&nskry_plugin_execute)  fnExecute = nullptr;
     decltype(&nskry_plugin_shutdown) fnShutdown = nullptr;
 };
 
+/// Runtime-only plugin service. Installation metadata and enablement belong to
+/// PluginRegistry; packages and updates will belong to later services.
 class PluginManager {
 public:
     static PluginManager& Instance();
 
-    void Initialize(const NskryHostContext* hostCtx);
+    void Initialize(PluginRegistry& registry, const NskryHostContext& hostContext);
     void Shutdown();
 
-    const std::vector<PluginEntry>& GetPlugins() const { return m_plugins; }
-    void ExecutePlugin(const wchar_t* pluginId, const NskryHostContext* hostCtx);
+    bool EnsureLoaded(const std::wstring& pluginId);
+    bool Unload(const std::wstring& pluginId);
+    bool ExecutePlugin(const std::wstring& pluginId, const NskryHostContext& hostContext);
+    bool IsLoaded(const std::wstring& pluginId) const;
 
 private:
     PluginManager() = default;
     ~PluginManager() { Shutdown(); }
 
-    void ScanAndLoad(const std::wstring& pluginsDir, const NskryHostContext* hostCtx);
+    bool LoadPlugin(const PluginRecord& record);
 
-    std::vector<PluginEntry> m_plugins;
+    PluginRegistry* m_registry = nullptr;
+    NskryHostContext m_hostContext{};
+    std::unordered_map<std::wstring, PluginEntry> m_plugins;
     bool m_initialized = false;
 };
 

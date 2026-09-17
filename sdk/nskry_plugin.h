@@ -3,8 +3,8 @@
 // ============================================================================
 //
 // Include this file in your plugin project to develop Nskry plugins.
-// Plugins are DLLs placed in the `plugins/` directory next to nskry.exe.
-// They are loaded at startup and integrated into the screenshot toolbar.
+// A plugin package is installed under %LOCALAPPDATA%\Nskry\plugins\<id>.
+// The host reads manifest.json before loading this DLL, normally on first use.
 //
 // Minimal plugin example:
 //
@@ -28,6 +28,9 @@
 #include <cstdint>
 #include <windows.h>
 #include <d3d11.h>
+
+#define NSKRY_VERSION L"0.4.0"
+#define NSKRY_PLUGIN_API_VERSION 1
 
 #ifdef NSKRY_PLUGIN_EXPORTS
 #  define NSKRY_API __declspec(dllexport)

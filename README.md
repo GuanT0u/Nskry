@@ -37,6 +37,7 @@ C++20 · Win32 API · D3D11 · Windows.Graphics.Capture · GDI+ · ~78KB 可执�
 
 - [项目交接文档](docs/HANDOFF.md) — 完整架构、决策、构建说明
 - [插件 SDK](sdk/nskry_plugin.h) — 插件开发接口
+- [安装器构建说明](installer/README.md) — per-user Setup 与可选官方插件打包
 
 ## License
 
