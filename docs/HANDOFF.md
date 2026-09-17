@@ -1,7 +1,7 @@
 # Nskry — 项目交接文档
 
-> **最后更新**：2026-09-16
-> **项目状态**：Phase 1 + Phase 2 + Phase 3 完成，核心截图、标注编辑与置顶批注功能完全可用
+> **最后更新**：2026-09-17
+> **项目状态**：Phase 1 + Phase 2 + Phase 3 完成，全部核心功能通过实测验证，工作区纯净，就绪 Phase 4
 > **项目路径**：`d:\codes\Nskry`
 
 ---
@@ -11,7 +11,7 @@
 Nskry 是一款轻量级 Windows 工具，融合了"QQ截图式的流畅框选交互"与"实时画中画（PiP）局部窗口动态监视"功能，并配备完整的矢量截图标注编辑器与置顶二次批注功能。
 
 **核心卖点**：
-- 极致轻量：完整包含标注引擎的可执行文件仅 ~113KB，运行时 RAM < 20MB
+- 极致轻量：完整包含标注引擎、实时 GPU PiP、插件系统的可执行文件仅 ~135KB，运行时 RAM < 20MB
 - GPU 零拷贝：WGC 捕获 → `CopySubresourceRegion` 裁剪 → SwapChain 直出，全程不经过 CPU 内存
 - 穿透遮挡：基于 Windows.Graphics.Capture (WGC)，即使目标窗口被遮挡也能实时捕获
 - 完整标注系统：矩形、椭圆、箭头、自由画笔、马赛克、文字标注，带色板与粗细选择，支持撤销/重做
@@ -152,3 +152,57 @@ cmd /c "`"$vcvars`" > nul 2>&1 && cmake --build build"
 | PiP 编辑模式 | 鼠标拖拽绘制 | 实时 GPU Alpha-Blend 在 60FPS 视频上叠加标注 |
 | PiP 编辑模式 | `Ctrl+Z` / `Ctrl+Y` | 撤销 / 重做监控图层标注 |
 | PiP 编辑模式 | 点击 `✓` / `✕` | 确认保留标注或撤销本次批注并返回拖拽模式 |
+
+---
+
+## 8. 核心踩坑与技术攻坚记录 (新 Agent 必读)
+
+在开发与实测过程中解决过若干极为隐蔽的底层图形学与 Win32 机制陷阱，切勿回退或破坏以下机制：
+
+### 8.1 DXGI Flip-Model SwapChain 遮挡子窗口陷阱
+- **现象**：`PipWindow` 使用 `DXGI_SWAP_EFFECT_FLIP_DISCARD` 模式。DWM 会将 SwapChain 的呈现表面直接绑定至 HWND 客户区，**导致该 HWND 的任何 `WS_CHILD` 子窗口（如工具栏、文字输入框）全部被翻转链画面遮挡在最底层**。
+- **解决方案**：二级工具栏 `m_hwndToolbar` 与文字输入框 `m_hTextEdit` 必须创建为 **Owned `WS_POPUP` 顶级窗口**（`WS_POPUP`, `WS_EX_TOPMOST | WS_EX_TOOLWINDOW`，其 Owner 为 `m_hwnd`）。在 DWM 桌面合成层中，Owned Popup 窗口天生位于 Owner 窗口之上，浮动在 DirectX 表面之上。
+
+### 8.2 Win32 `CreateWindowExW` Popup 窗口的 `hMenu` 陷阱
+- **现象**：对于 `WS_CHILD` 窗口，第 10 个参数 `hMenu` 用于传递子控件 ID（如 `(HMENU)104`）。但对于 `WS_POPUP` 窗口，Windows 严格将其解析为真正的菜单句柄指针！传入 `(HMENU)104` 会导致 `CreateWindowExW` 直接失败报错 `ERROR_INVALID_MENU_HANDLE` (1401) 并返回 NULL。
+- **解决方案**：为 `WS_POPUP` 样式的工具栏或编辑框创建窗口时，第 10 个参数 `hMenu` 必须传 `nullptr`。
+
+### 8.3 GDI+ 在透明 32位 ARGB 表面的文字 Alpha 通道丢失陷阱
+- **现象**：在透明的 32bpp 标注缓存表面上绘制文字时，GDI+ 默认的 ClearType 亚像素抗锯齿只针对底色计算 RGB，**但在完全透明的画板上会将目标 Alpha 通道强制写为 0**！在 D3D11 使用 `SrcAlpha` 进行 Alpha 混合时，`Color * Alpha = 0`，导致文字标注 100% 隐形。
+- **解决方案**：在 `AnnotationEngine::Draw` 绘制文字前，必须显式调用 `g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit)`。这强制 GDI+ 使用灰度抗锯齿并写入完整的 Alpha 通道（Alpha = 255），配合文字描边/投影即可清晰可见。
+
+### 8.4 动态画中画的实时马赛克取样机制
+- **现象**：马赛克图元 `MosaicShape::Draw` 需要从底图取样均值颜色。静态截图有固定 `HBITMAP`，而 PiP 监控每秒 60 帧由 GPU 渲染，没有常驻的 CPU 底图位图。
+- **解决方案**：通过 `PipWindow::GetLastFrameHdc()` 利用缓存的 `D3D11_USAGE_STAGING` 纹理将最新捕获帧的显存映射至 Top-down GDI DIBSection (`guard.hdc`)，提供给标注引擎取样。所有 D3D Context 访问均受 `m_renderMutex` 线程锁保护。若取样失败，则回退为磨砂渐变色块保底。
+
+### 8.5 `WM_WINDOWPOSCHANGED` 意外销毁文本框
+- **现象**：当 Owned Popup 创建显示时，Windows 会向其父窗口分发 `WM_WINDOWPOSCHANGED`。若在此处无条件调用 `CommitTextEdit()`，会导致输入框刚被创建就立刻被销毁。
+- **解决方案**：在 `WM_WINDOWPOSCHANGED` 中必须检查 `!(pos->flags & SWP_NOMOVE)`，仅当窗口真实发生移动时才提交文字，防止误杀。
+
+---
+
+## 9. 后续开发路线图 (Incoming Roadmap)
+
+### Phase 4: 截长图 (Scrolling Screenshot)
+- **目标**：支持在滚动页面（长网页、终端、代码编辑器、聊天记录）中一键滚动合成超长截图。
+- **关键设计**：
+  1. 框选目标滚动区域，识别滚动条或目标 HWND。
+  2. 向目标窗口发送滚轮或滚动指令（`WM_MOUSEWHEEL` / `WM_VSCROLL`）。
+  3. 利用 WGC 连续提取每屏竖向图像切片。
+  4. 基于特征行哈希匹配（Normalized Cross Correlation / Row Hash Matching）自动计算竖向位移 $\Delta y$。
+  5. 拼接缝合为单一超高分辨率 PNG 画布并弹出标准标注/保存面板。
+
+### Phase 5: OCR 文字识别插件 (OCR Plugin)
+- **目标**：实现为独立扩展 `plugins/nskry_ocr.dll`。
+- **关键设计**：
+  1. 基于 SDK 接口 `sdk/nskry_plugin.h`，导出标准 4 个 C-ABI 函数。
+  2. 采用 Windows 10/11 内置的原生 `Windows.Media.Ocr.OcrEngine` API，零第三方模型依赖，无额外动态库体积负担，离线支持中英双语。
+  3. 在截图工具栏上暴露 `[T]` OCR 图标；识别完成后弹出可复制/分段的半透明文本框覆盖层。
+
+### Phase 6: 屏幕录制插件 (Screen Recording Plugin)
+- **目标**：实现为独立扩展 `plugins/nskry_recorder.dll`。
+- **关键设计**：
+  1. 复用核心的 WGC + D3D11 零拷贝捕获管线。
+  2. 使用 Windows Media Foundation (`IMFSinkWriter`) 支持 GPU 硬件编码输出标准 H.264 `.mp4`。
+  3. 支持轻量级局部 GIF 动图导出（内置 NeuQuant / Octree 调色板量化算法）。
+
