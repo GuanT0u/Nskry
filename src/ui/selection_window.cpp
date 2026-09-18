@@ -9,8 +9,8 @@ namespace nskry {
 // Construction
 // ============================================================================
 
-SelectionWindow::SelectionWindow(CompletionCallback onComplete)
-    : m_onComplete(std::move(onComplete))
+SelectionWindow::SelectionWindow(CompletionCallback onComplete, std::vector<PluginToolbarAction> pluginActions)
+    : m_onComplete(std::move(onComplete)), m_pluginActions(std::move(pluginActions))
 {
     m_windows = WindowEnumerator::GetAllVisibleWindows();
 
@@ -366,6 +366,10 @@ void SelectionWindow::OnLButtonDown(int x, int y) {
                     FinishWithAction(item.action);
                     return;
 
+                case ToolbarItemType::PluginAction:
+                    FinishWithAction(SelectionAction::Plugin, item.pluginId);
+                    return;
+
                 case ToolbarItemType::ToolToggle:
                     if (m_annotationEngine.GetTool() == item.tool) {
                         m_annotationEngine.SetTool(ToolType::None);
@@ -547,6 +551,7 @@ void SelectionWindow::BuildToolbar(RECT selRect) {
     int totalMainW = 0;
     for (const auto& def : mainDefs) totalMainW += def.width + gap;
     totalMainW -= gap;
+    if (!m_pluginActions.empty()) totalMainW += static_cast<int>(m_pluginActions.size()) * (76 + gap);
 
     // Center horizontally relative to selection
     int centerX = (selRect.left + selRect.right) / 2;
@@ -575,7 +580,7 @@ void SelectionWindow::BuildToolbar(RECT selRect) {
         ToolbarItem item{};
         item.rect        = { curX, mainY, curX + def.width, mainY + barH };
         item.type        = def.type;
-        item.label       = def.label;
+        item.label       = def.label ? def.label : L"";
         item.tool        = def.tool;
         item.action      = def.action;
         item.isSeparator = def.isSep;
@@ -583,6 +588,16 @@ void SelectionWindow::BuildToolbar(RECT selRect) {
 
         m_toolbarItems.push_back(item);
         curX += def.width + gap;
+    }
+
+    for (const PluginToolbarAction& action : m_pluginActions) {
+        ToolbarItem item{};
+        item.rect = { curX, mainY, curX + 76, mainY + barH };
+        item.type = ToolbarItemType::PluginAction;
+        item.label = action.label;
+        item.pluginId = action.id;
+        m_toolbarItems.push_back(std::move(item));
+        curX += 76 + gap;
     }
 
     // Populate Secondary Sub-bar (if tool is active)
@@ -709,12 +724,12 @@ void SelectionWindow::DrawToolbar(HDC hdc) {
         ::FrameRect(hdc, &item.rect, borderBrush);
         ::DeleteObject(borderBrush);
 
-        if (item.label) {
+        if (!item.label.empty()) {
             HFONT oldFont = static_cast<HFONT>(::SelectObject(hdc, m_font));
 
             ::SetTextColor(hdc, item.selected ? RGB(255, 255, 255) : RGB(235, 235, 240));
             RECT textRect = item.rect;
-            ::DrawTextW(hdc, item.label, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            ::DrawTextW(hdc, item.label.c_str(), -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             ::SelectObject(hdc, oldFont);
         }
     }
@@ -776,7 +791,7 @@ HBITMAP SelectionWindow::CaptureSelectedRegion(RECT localRect) {
 // Finish and invoke callback
 // ============================================================================
 
-void SelectionWindow::FinishWithAction(SelectionAction action) {
+void SelectionWindow::FinishWithAction(SelectionAction action, std::wstring pluginId) {
     SelectionResult result{};
 
     if (action != SelectionAction::Cancel) {
@@ -793,12 +808,14 @@ void SelectionWindow::FinishWithAction(SelectionAction action) {
         }
 
         result.targetHwnd  = m_targetHwnd;
+        result.pluginId = std::move(pluginId);
         result.bitmap      = m_capturedBitmap;
         result.bitmapWidth = m_finalRect.right  - m_finalRect.left;
         result.bitmapHeight= m_finalRect.bottom - m_finalRect.top;
 
         int screenLeft = m_finalRect.left + m_vX;
         int screenTop  = m_finalRect.top  + m_vY;
+        result.screenRegion = { screenLeft, screenTop, screenLeft + result.bitmapWidth, screenTop + result.bitmapHeight };
         result.crop.x      = screenLeft - m_targetBounds.left;
         result.crop.y      = screenTop  - m_targetBounds.top;
         result.crop.width  = result.bitmapWidth;

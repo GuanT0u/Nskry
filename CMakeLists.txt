@@ -62,3 +62,6 @@ target_link_libraries(Nskry PRIVATE
 
 # Precompiled header
 target_precompile_headers(Nskry PRIVATE src/pch.h)
+
+# Official plugins use the same packaged form that Settings and Setup consume.
+add_subdirectory(plugins/nskry-scroll)

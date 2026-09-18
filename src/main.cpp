@@ -377,7 +377,7 @@ static void ShowSelectionOverlay() {
         [](nskry::SelectionAction action, nskry::SelectionResult result) {
             g_selectionWindow.reset();
             OnSelectionComplete(action, std::move(result));
-        });
+        }, nskry::PluginManager::Instance().GetEnabledToolbarActions());
     g_selectionWindow->Show();
 }
 
@@ -390,7 +390,7 @@ static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionR
     case nskry::SelectionAction::Copy:
         if (result.bitmap) {
             CopyBitmapToClipboard(result.bitmap);
-            // SetClipboardData takes ownership — don't delete
+            ::DeleteObject(result.bitmap);
         }
         break;
 
@@ -415,6 +415,21 @@ static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionR
         if (result.bitmap) ::DeleteObject(result.bitmap);
         if (result.targetHwnd)
             StartPiP(result.targetHwnd, result.crop, std::move(result.annotationEngine));
+        break;
+
+    case nskry::SelectionAction::Plugin:
+        if (result.bitmap && !result.pluginId.empty()) {
+            NskryHostContext context{};
+            context.mainHwnd = g_mainHwnd;
+            context.d3dDevice = g_device ? g_device->Device() : nullptr;
+            context.d3dContext = g_device ? g_device->Context() : nullptr;
+            context.capturedBitmap = result.bitmap;
+            context.capturedRegion = result.screenRegion;
+            context.sourceHwnd = result.targetHwnd;
+            context.copyBitmapToClipboard = CopyBitmapToClipboard;
+            nskry::PluginManager::Instance().ExecutePlugin(result.pluginId, context);
+            ::DeleteObject(result.bitmap);
+        }
         break;
 
     case nskry::SelectionAction::Cancel:
@@ -465,9 +480,43 @@ static void StartPiP(HWND targetHwnd, nskry::CropRegion crop, nskry::AnnotationE
 // ============================================================================
 
 static void CopyBitmapToClipboard(HBITMAP hbmp) {
-    if (!::OpenClipboard(g_mainHwnd)) return;
+    if (!hbmp) return;
+    BITMAP bitmapInfo{};
+    if (!::GetObjectW(hbmp, sizeof(bitmapInfo), &bitmapInfo) || bitmapInfo.bmWidth <= 0 || bitmapInfo.bmHeight <= 0) return;
+
+    BITMAPINFOHEADER header{};
+    header.biSize = sizeof(header);
+    header.biWidth = bitmapInfo.bmWidth;
+    header.biHeight = bitmapInfo.bmHeight; // bottom-up CF_DIB
+    header.biPlanes = 1;
+    header.biBitCount = 32;
+    header.biCompression = BI_RGB;
+    header.biSizeImage = static_cast<DWORD>(bitmapInfo.bmWidth * bitmapInfo.bmHeight * 4ULL);
+
+    HGLOBAL dib = ::GlobalAlloc(GMEM_MOVEABLE, sizeof(header) + header.biSizeImage);
+    if (!dib) return;
+    void* memory = ::GlobalLock(dib);
+    if (!memory) { ::GlobalFree(dib); return; }
+    std::memcpy(memory, &header, sizeof(header));
+    BITMAPINFO request{};
+    request.bmiHeader = header;
+    HDC dc = ::GetDC(nullptr);
+    const int rows = ::GetDIBits(dc, hbmp, 0, bitmapInfo.bmHeight,
+        static_cast<BYTE*>(memory) + sizeof(header), &request, DIB_RGB_COLORS);
+    ::ReleaseDC(nullptr, dc);
+    ::GlobalUnlock(dib);
+    if (rows != bitmapInfo.bmHeight) { ::GlobalFree(dib); return; }
+
+    HBITMAP bitmapCopy = static_cast<HBITMAP>(::CopyImage(hbmp, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION));
+    bool opened = false;
+    for (int attempt = 0; attempt < 6 && !opened; ++attempt) {
+        opened = ::OpenClipboard(nullptr) != FALSE;
+        if (!opened) ::Sleep(20);
+    }
+    if (!opened) { ::GlobalFree(dib); if (bitmapCopy) ::DeleteObject(bitmapCopy); return; }
     ::EmptyClipboard();
-    ::SetClipboardData(CF_BITMAP, hbmp);
+    if (!::SetClipboardData(CF_DIB, dib)) ::GlobalFree(dib);
+    if (bitmapCopy && !::SetClipboardData(CF_BITMAP, bitmapCopy)) ::DeleteObject(bitmapCopy);
     ::CloseClipboard();
 }
 

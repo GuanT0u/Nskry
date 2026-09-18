@@ -35,10 +35,9 @@ Name: "custom"; Description: "Custom installation"; Flags: iscustom
 
 [Components]
 Name: "core"; Description: "Nskry Core"; Types: full compact custom; Flags: fixed
-Name: "plugin_ocr"; Description: "Official plugin: OCR"; Types: full
+#ifexist "bundled\nskry-scroll.nskryplugin"
 Name: "plugin_scroll"; Description: "Official plugin: Long Screenshot"; Types: full
-Name: "plugin_translate"; Description: "Official plugin: Translation"; Types: full
-Name: "plugin_record"; Description: "Official plugin: Screen Recording"; Types: full
+#endif
 
 [Tasks]
 Name: "startup"; Description: "Start Nskry when I sign in"; GroupDescription: "Options:"; Flags: checkedonce
@@ -46,21 +45,18 @@ Name: "launch"; Description: "Launch Nskry after installation"; GroupDescription
 
 [Files]
 Source: "..\build\Nskry.exe"; DestDir: "{app}"; Flags: ignoreversion
-; A missing optional package is deliberately skipped, so Core-only releases
-; remain buildable. Add the named .nskryplugin before building a release.
-Source: "bundled\nskry-ocr.nskryplugin"; DestDir: "{app}\bundled"; Components: plugin_ocr; Flags: ignoreversion skipifsourcedoesntexist
+; A component is shown only when its package exists at installer compile time.
+#ifexist "bundled\nskry-scroll.nskryplugin"
 Source: "bundled\nskry-scroll.nskryplugin"; DestDir: "{app}\bundled"; Components: plugin_scroll; Flags: ignoreversion skipifsourcedoesntexist
-Source: "bundled\nskry-translate.nskryplugin"; DestDir: "{app}\bundled"; Components: plugin_translate; Flags: ignoreversion skipifsourcedoesntexist
-Source: "bundled\nskry-record.nskryplugin"; DestDir: "{app}\bundled"; Components: plugin_record; Flags: ignoreversion skipifsourcedoesntexist
+#endif
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Nskry"; ValueData: """{app}\{#AppExeName}"""; Tasks: startup; Flags: uninsdeletevalue
 
 [Run]
-Filename: "{app}\{#AppExeName}"; Parameters: "--install-plugin ""{app}\bundled\nskry-ocr.nskryplugin"" --silent --source official"; Components: plugin_ocr; Check: BundledPackageExists('nskry-ocr.nskryplugin'); Flags: runhidden waituntilterminated
+#ifexist "bundled\nskry-scroll.nskryplugin"
 Filename: "{app}\{#AppExeName}"; Parameters: "--install-plugin ""{app}\bundled\nskry-scroll.nskryplugin"" --silent --source official"; Components: plugin_scroll; Check: BundledPackageExists('nskry-scroll.nskryplugin'); Flags: runhidden waituntilterminated
-Filename: "{app}\{#AppExeName}"; Parameters: "--install-plugin ""{app}\bundled\nskry-translate.nskryplugin"" --silent --source official"; Components: plugin_translate; Check: BundledPackageExists('nskry-translate.nskryplugin'); Flags: runhidden waituntilterminated
-Filename: "{app}\{#AppExeName}"; Parameters: "--install-plugin ""{app}\bundled\nskry-record.nskryplugin"" --silent --source official"; Components: plugin_record; Check: BundledPackageExists('nskry-record.nskryplugin'); Flags: runhidden waituntilterminated
+#endif
 Filename: "{app}\{#AppExeName}"; Description: "Launch Nskry"; Tasks: launch; Flags: nowait postinstall skipifsilent
 
 [Code]

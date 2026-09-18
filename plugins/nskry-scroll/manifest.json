@@ -1,0 +1,17 @@
+{
+  "manifest_version": 1,
+  "id": "nskry-scroll",
+  "name": "Long Screenshot",
+  "version": "0.4.3",
+  "author": "Nskry Team",
+  "description": "Interactive scrolling capture with manual/automatic modes and live preview.",
+  "runtime": {
+    "entry": "nskry-scroll.dll",
+    "architecture": "x64",
+    "api_version": 1,
+    "load_policy": "on_demand"
+  },
+  "capabilities": ["toolbar_action"],
+  "compatibility": { "nskry_min": "0.4.0", "nskry_max": null },
+  "source": { "homepage": "https://github.com/GuanT0u/Nskry", "repository": "https://github.com/GuanT0u/Nskry" }
+}

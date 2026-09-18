@@ -98,6 +98,7 @@ bool PluginManifest::LoadFromFile(const std::wstring& path, PluginManifest& mani
     }
     std::wstring update;
     if (FindObject(json, L"update", update)) FindString(update, L"url", result.updateUrl);
+    result.toolbarAction = std::regex_search(json, std::wregex(LR"json("toolbar_action")json"));
 
     if (!IsSafePluginId(result.id) || !IsSafeEntryName(result.entry)) {
         SetError(error, L"Plugin id or entry file name is unsafe.");

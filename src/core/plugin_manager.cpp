@@ -99,4 +99,14 @@ bool PluginManager::IsLoaded(const std::wstring& pluginId) const {
     return m_plugins.contains(pluginId);
 }
 
+std::vector<PluginToolbarAction> PluginManager::GetEnabledToolbarActions() const {
+    std::vector<PluginToolbarAction> actions;
+    if (!m_registry) return actions;
+    for (const PluginRecord* record : m_registry->GetAll()) {
+        if (record->enabled && record->manifest.toolbarAction)
+            actions.push_back({ record->manifest.id, record->manifest.name });
+    }
+    return actions;
+}
+
 } // namespace nskry

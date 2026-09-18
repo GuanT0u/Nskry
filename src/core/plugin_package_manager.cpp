@@ -237,6 +237,20 @@ PluginPackageResult PluginPackageManager::InstallPackage(const std::wstring& pac
         }
         std::vector<PendingOperation> operations;
         ReadPending(operations);
+        // Keep only the newest staged update for a plugin. This also prevents
+        // repeated development installs from applying obsolete packages first.
+        std::erase_if(operations, [&](const PendingOperation& pending) {
+            if (pending.type != PendingType::Update || pending.pluginId != manifest.id ||
+                !IsSafeRelativeStagingPath(pending.stagedPath)) return false;
+            std::wstring relative = pending.stagedPath;
+            std::replace(relative.begin(), relative.end(), L'/', L'\\');
+            const std::wstring obsoleteStage = m_registry.AppRoot() + L"\\" + relative;
+            if (IsChildOf(m_updatesRoot, obsoleteStage) &&
+                ::GetFileAttributesW(obsoleteStage.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                DeleteTree(m_updatesRoot, obsoleteStage);
+            }
+            return true;
+        });
         operations.push_back({ PendingType::Update, manifest.id,
             L"staging/pending-updates/" + updateStage.substr(m_updatesRoot.size() + 1) });
         if (!WritePending(operations)) {

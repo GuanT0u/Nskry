@@ -72,6 +72,7 @@ struct NskryHostContext {
 
     // Host utility callbacks
     void (*showNotification)(const wchar_t* msg, int durationMs);
+    // Copies bitmap data; ownership remains with the caller.
     void (*copyBitmapToClipboard)(HBITMAP hbmp);
 };
 

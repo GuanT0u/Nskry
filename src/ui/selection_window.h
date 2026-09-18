@@ -3,6 +3,7 @@
 #include "interop/window_enumerator.h"
 #include "capture/capture_session.h"
 #include "ui/annotation/annotation_engine.h"
+#include "core/plugin_manager.h"
 #include <functional>
 #include <vector>
 #include <mutex>
@@ -18,6 +19,7 @@ enum class SelectionAction {
     Save,       // Save screenshot to file
     Pin,        // Pin static screenshot on top of desktop
     PiP,        // Start WGC live capture PiP
+    Plugin,     // Execute a lazy-loaded toolbar plugin
     Cancel      // User cancelled (ESC / right-click)
 };
 
@@ -30,6 +32,8 @@ struct SelectionResult {
     int                   bitmapHeight{};
     std::vector<uint32_t> overlayPixels;   // Transparent ARGB annotation overlay for PiP
     AnnotationEngine      annotationEngine; // Preserves vector shapes for secondary editing
+    std::wstring          pluginId;
+    RECT                  screenRegion{};
 
     SelectionResult() = default;
     SelectionResult(SelectionResult&&) noexcept            = default;
@@ -42,6 +46,8 @@ struct SelectionResult {
         , bitmapHeight(other.bitmapHeight)
         , overlayPixels(other.overlayPixels)
         , annotationEngine(other.annotationEngine.Clone())
+        , pluginId(other.pluginId)
+        , screenRegion(other.screenRegion)
     {}
     SelectionResult& operator=(const SelectionResult& other) {
         if (this != &other) {
@@ -52,6 +58,8 @@ struct SelectionResult {
             bitmapHeight = other.bitmapHeight;
             overlayPixels = other.overlayPixels;
             annotationEngine = other.annotationEngine.Clone();
+            pluginId = other.pluginId;
+            screenRegion = other.screenRegion;
         }
         return *this;
     }
@@ -65,7 +73,7 @@ class SelectionWindow {
 public:
     using CompletionCallback = std::function<void(SelectionAction action, SelectionResult result)>;
 
-    explicit SelectionWindow(CompletionCallback onComplete);
+    explicit SelectionWindow(CompletionCallback onComplete, std::vector<PluginToolbarAction> pluginActions = {});
     ~SelectionWindow();
 
     SelectionWindow(const SelectionWindow&)            = delete;
@@ -93,7 +101,8 @@ private:
         Undo,
         Redo,
         WidthChoice,   // Stroke width
-        ColorChoice    // Palette color
+        ColorChoice,   // Palette color
+        PluginAction
     };
 
     struct ToolbarItem {
@@ -103,7 +112,8 @@ private:
         ToolType        tool   = ToolType::None;
         COLORREF        color  = 0;
         int             widthVal = 0;
-        const wchar_t*  label = nullptr;
+        std::wstring    label;
+        std::wstring    pluginId;
         bool            hovered  = false;
         bool            selected = false;
         bool            isSeparator = false;
@@ -113,7 +123,7 @@ private:
     void DrawToolbar(HDC hdc);
     void DrawInfoBox(HDC hdc, RECT selectionRect);
     HBITMAP CaptureSelectedRegion(RECT localRect);
-    void FinishWithAction(SelectionAction action);
+    void FinishWithAction(SelectionAction action, std::wstring pluginId = {});
     void CommitTextEdit();
 
     // ---- Members ----
@@ -162,6 +172,7 @@ private:
     AnnotationEngine m_annotationEngine;
     HWND             m_hTextEdit{};
     POINT            m_textEditPos{};
+    std::vector<PluginToolbarAction> m_pluginActions;
 
     static constexpr wchar_t kClassName[] = L"NskrySelectionWindow";
     static inline std::once_flag s_classOnce;
