@@ -74,6 +74,10 @@ struct NskryHostContext {
     void (*showNotification)(const wchar_t* msg, int durationMs);
     // Copies bitmap data; ownership remains with the caller.
     void (*copyBitmapToClipboard)(HBITMAP hbmp);
+
+    // Opens the host crop/annotation workflow. Ownership of the bitmap is
+    // transferred to the host; plugins must not use or delete it afterwards.
+    void (*openBitmapEditor)(HBITMAP hbmp, int width, int height);
 };
 
 // ---- Functions every plugin DLL must export ----

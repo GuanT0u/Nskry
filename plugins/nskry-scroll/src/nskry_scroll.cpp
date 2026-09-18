@@ -9,11 +9,11 @@
 namespace {
 constexpr UINT_PTR kCaptureTimer = 1;
 constexpr UINT kCaptureIntervalMs = 320;
-constexpr UINT kAutoScrollIntervalMs = 950;
-constexpr int kAutoButton = 101, kCopyButton = 102, kCancelButton = 103;
+constexpr UINT kAutoScrollIntervalMs = 900;
+constexpr int kAutoButton = 101, kCopyButton = 102, kEditButton = 103, kCancelButton = 104;
 
 struct Frame { int width{}, height{}; std::vector<unsigned int> pixels; };
-NskryPluginInfo kInfo{ L"Long Screenshot", L"nskry-scroll", L"0.4.3", L"Nskry Team",
+NskryPluginInfo kInfo{ L"Long Screenshot", L"nskry-scroll", L"0.4.5", L"Nskry Team",
     L"Interactive scrolling capture with live preview", nullptr, NSKRY_CAP_TOOLBAR_ACTION };
 
 bool ReadBitmap(HBITMAP bitmap, Frame& frame) {
@@ -131,7 +131,7 @@ private:
     }
 
     void CreatePanel() {
-        constexpr int width = 300;
+        constexpr int width = 364;
         const int screenHeight = static_cast<int>(m_virtual.bottom - m_virtual.top);
         const int height = (std::min)(560, (std::max)(360, screenHeight - 40));
         int x = m_context.capturedRegion.right + 12, y = (std::max)(m_virtual.top + 12, m_context.capturedRegion.top);
@@ -142,8 +142,9 @@ private:
             WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, width, height, m_context.mainHwnd, nullptr, ::GetModuleHandleW(L"nskry-scroll.dll"), this);
         RECT client{}; ::GetClientRect(m_panel, &client); const int controlsY = client.bottom - 42;
         m_autoButton = ::CreateWindowExW(0, L"BUTTON", L"Auto scroll", WS_CHILD | WS_VISIBLE, 10, controlsY, 105, 30, m_panel, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kAutoButton)), nullptr, nullptr);
-        ::CreateWindowExW(0, L"BUTTON", L"Copy", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 121, controlsY, 72, 30, m_panel, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopyButton)), nullptr, nullptr);
-        ::CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE, 199, controlsY, 72, 30, m_panel, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelButton)), nullptr, nullptr);
+        ::CreateWindowExW(0, L"BUTTON", L"Copy", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 121, controlsY, 64, 30, m_panel, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopyButton)), nullptr, nullptr);
+        ::CreateWindowExW(0, L"BUTTON", L"Edit", WS_CHILD | WS_VISIBLE, 191, controlsY, 64, 30, m_panel, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kEditButton)), nullptr, nullptr);
+        ::CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE, 261, controlsY, 76, 30, m_panel, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelButton)), nullptr, nullptr);
         m_status = ::CreateWindowExW(0, L"STATIC", L"Scroll manually, or start auto scroll", WS_CHILD | WS_VISIBLE | SS_CENTER, 8, controlsY - 30, client.right - 16, 22, m_panel, nullptr, nullptr, nullptr);
         ::ShowWindow(m_panel, SW_SHOW); ::UpdateWindow(m_panel);
     }
@@ -152,7 +153,7 @@ private:
         switch (message) {
         case WM_TIMER: Tick(); return 0;
         case WM_COMMAND:
-            if (LOWORD(wp) == kAutoButton) ToggleAuto(); else if (LOWORD(wp) == kCopyButton) Finish(true); else if (LOWORD(wp) == kCancelButton) Finish(false); return 0;
+            if (LOWORD(wp) == kAutoButton) ToggleAuto(); else if (LOWORD(wp) == kCopyButton) Finish(true); else if (LOWORD(wp) == kEditButton) Edit(); else if (LOWORD(wp) == kCancelButton) Finish(false); return 0;
         case WM_PAINT: PaintPanel(); return 0;
         case WM_CLOSE: Finish(false); return 0;
         }
@@ -188,18 +189,50 @@ private:
 
     bool PanelOverlapsCapture() const { RECT panel{}, intersection{}; ::GetWindowRect(m_panel, &panel); return ::IntersectRect(&intersection, &panel, &m_context.capturedRegion) != FALSE; }
 
+    void UpdateCaptureStatus() {
+        const std::wstring status = std::to_wstring(m_stitched.width) + L" × " + std::to_wstring(m_stitched.height) + L" · " + std::to_wstring(m_frames) + L" frames";
+        ::SetWindowTextW(m_status, status.c_str()); ::InvalidateRect(m_panel, nullptr, FALSE);
+    }
+
+    // Commits only a bounded, confidently aligned increment.  This is called
+    // while the page is still moving as well as at its final resting point.
+    bool AppendFrame(Frame&& next, int maximumAdvance) {
+        const int advance = FindAdvance(m_last, next);
+        if (!advance || advance > maximumAdvance) return false;
+        if (m_stitched.pixels.size() + static_cast<size_t>(advance) * next.width > 100000000) {
+            m_auto = false; ::SetWindowTextW(m_autoButton, L"Auto scroll");
+            ::SetWindowTextW(m_status, L"Maximum capture size reached"); return false;
+        }
+        m_stitched.pixels.insert(m_stitched.pixels.end(), next.pixels.end() - static_cast<size_t>(advance) * next.width, next.pixels.end());
+        m_stitched.height += advance; m_last = std::move(next); m_probe = m_last; ++m_frames;
+        m_noProgressCount = 0; m_autoStepAdvanced = true; UpdateCaptureStatus();
+        return true;
+    }
+
     void Tick() {
         if (m_auto && !m_waitingForSettle && ::GetTickCount64() - m_lastAutoScroll >= kAutoScrollIntervalMs) {
             POINT center{ (m_context.capturedRegion.left + m_context.capturedRegion.right) / 2, (m_context.capturedRegion.top + m_context.capturedRegion.bottom) / 2 };
             HWND target = ::WindowFromPoint(center); if (!target || target == m_panel || target == m_overlay) target = m_context.sourceHwnd;
-            ::PostMessageW(target, WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<WORD>(-WHEEL_DELTA * 2)), MAKELPARAM(center.x, center.y));
-            m_waitingForSettle = true; m_stableSamples = 0; return;
+            // One wheel notch per step keeps each automatic increment easy to
+            // align and gives the user a chance to pause before overshooting.
+            ::PostMessageW(target, WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<WORD>(-WHEEL_DELTA)), MAKELPARAM(center.x, center.y));
+            m_waitingForSettle = true; m_autoStepAdvanced = false; m_stableSamples = 0; return;
         }
         const bool hide = PanelOverlapsCapture(); if (hide) { ::ShowWindow(m_panel, SW_HIDE); ::Sleep(15); }
         Frame next; const bool captured = CaptureScreenRegion(m_context.capturedRegion, next); if (hide) ::ShowWindow(m_panel, SW_SHOWNOACTIVATE); if (!captured) return;
         if (FrameDifference(m_probe, next) > 2) {
-            m_probe = std::move(next); m_stableSamples = 0;
-            ::SetWindowTextW(m_status, m_auto ? L"Scrolling… waiting for page to settle" : L"Scrolling manually…");
+            // Do not defer all work until scrolling stops.  Small deltas are
+            // appended as they arrive; a fast/large delta is deliberately held
+            // back for the resting-frame check below instead of guessing.
+            // A live step is capped near one eighth of the viewport. That is
+            // frequent enough to preserve a continuous swipe without trying
+            // to recover from a single very long flick.
+            const int incrementalLimit = (std::max)(24, m_last.height / 8);
+            if (!AppendFrame(std::move(next), incrementalLimit)) {
+                m_probe = std::move(next);
+                ::SetWindowTextW(m_status, m_auto ? L"Scrolling… collecting small increments" : L"Scrolling manually… collecting increments");
+            }
+            m_stableSamples = 0;
             return;
         }
         if (++m_stableSamples < 2) return;
@@ -208,22 +241,19 @@ private:
             m_probe = std::move(next);
             if (m_waitingForSettle) {
                 m_waitingForSettle = false; m_lastAutoScroll = ::GetTickCount64();
-                if (++m_noProgressCount >= 2) { m_auto = false; ::SetWindowTextW(m_autoButton, L"Auto scroll"); ::SetWindowTextW(m_status, L"Reached the end of the page"); }
+                if (!m_autoStepAdvanced && ++m_noProgressCount >= 2) { m_auto = false; ::SetWindowTextW(m_autoButton, L"Auto scroll"); ::SetWindowTextW(m_status, L"Reached the end of the page"); }
             }
             return;
         }
-        const int advance = FindAdvance(m_last, next);
-        if (!advance) {
+        // The resting frame is always checked too, so the last short movement
+        // is not lost even if it happened just before the user released input.
+        const int restingLimit = (std::max)(24, m_last.height / 2);
+        if (!AppendFrame(std::move(next), restingLimit)) {
             m_probe = std::move(next); m_waitingForSettle = false; m_auto = false;
             ::SetWindowTextW(m_autoButton, L"Auto scroll"); ::SetWindowTextW(m_status, L"Could not align this step · scroll a shorter distance");
             return;
         }
-        if (m_stitched.pixels.size() + static_cast<size_t>(advance) * next.width > 100000000) { m_auto = false; ::SetWindowTextW(m_autoButton, L"Auto scroll"); ::SetWindowTextW(m_status, L"Maximum capture size reached"); return; }
-        m_stitched.pixels.insert(m_stitched.pixels.end(), next.pixels.end() - static_cast<size_t>(advance) * next.width, next.pixels.end());
-        m_stitched.height += advance; m_last = std::move(next); m_probe = m_last; ++m_frames;
         m_waitingForSettle = false; m_lastAutoScroll = ::GetTickCount64(); m_noProgressCount = 0;
-        const std::wstring status = std::to_wstring(m_stitched.width) + L" × " + std::to_wstring(m_stitched.height) + L" · " + std::to_wstring(m_frames) + L" frames";
-        ::SetWindowTextW(m_status, status.c_str()); ::InvalidateRect(m_panel, nullptr, FALSE);
     }
 
     void ToggleAuto() { m_auto = !m_auto; m_waitingForSettle = false; m_lastAutoScroll = m_auto ? 0 : ::GetTickCount64(); ::SetWindowTextW(m_autoButton, m_auto ? L"Pause" : L"Auto scroll"); ::SetWindowTextW(m_status, m_auto ? L"Auto scrolling slowly…" : L"Paused · manual scrolling enabled"); }
@@ -233,8 +263,16 @@ private:
         m_finished = true; ::PostMessageW(m_panel, WM_NULL, 0, 0);
     }
 
+    void Edit() {
+        if (m_finished) return;
+        HBITMAP bitmap = MakeBitmap(m_stitched);
+        if (!bitmap || !m_context.openBitmapEditor) { if (bitmap) ::DeleteObject(bitmap); return; }
+        m_context.openBitmapEditor(bitmap, m_stitched.width, m_stitched.height);
+        Finish(false);
+    }
+
     NskryHostContext m_context{}; Frame m_last, m_probe, m_stitched; RECT m_virtual{}; HWND m_panel{}, m_overlay{}, m_autoButton{}, m_status{};
-    bool m_auto = false, m_finished = false, m_waitingForSettle = false;
+    bool m_auto = false, m_finished = false, m_waitingForSettle = false, m_autoStepAdvanced = false;
     int m_frames = 1, m_stableSamples = 0, m_noProgressCount = 0; ULONGLONG m_lastAutoScroll{};
 };
 } // namespace

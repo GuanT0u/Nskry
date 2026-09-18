@@ -98,6 +98,12 @@ void PinWindow::Show() {
     }
 }
 
+void PinWindow::ShowInEditMode() {
+    Show();
+    if (!m_isEditing) EnterEditMode();
+    if (m_hwnd) ::SetForegroundWindow(m_hwnd);
+}
+
 LRESULT CALLBACK PinWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_NCCREATE) {
         auto cs = reinterpret_cast<CREATESTRUCTW*>(lp);

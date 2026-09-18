@@ -20,6 +20,9 @@ public:
     PinWindow& operator=(const PinWindow&) = delete;
 
     void Show();
+    // Opens the existing annotation toolbar immediately (used after a long
+    // capture has been cropped in its pre-edit view).
+    void ShowInEditMode();
     [[nodiscard]] HWND Hwnd() const { return m_hwnd; }
 
 private:

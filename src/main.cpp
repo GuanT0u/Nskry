@@ -4,6 +4,7 @@
 #include "capture/capture_session.h"
 #include "ui/pip_window.h"
 #include "ui/pin_window.h"
+#include "ui/long_image_crop_window.h"
 #include "ui/selection_window.h"
 #include "ui/settings/settings_window.h"
 #include "core/command_registry.h"
@@ -34,6 +35,7 @@ static std::unique_ptr<nskry::CaptureSession>    g_capture;
 static std::unique_ptr<nskry::PipWindow>         g_pip;
 static std::unique_ptr<nskry::SelectionWindow>   g_selectionWindow;
 static std::unique_ptr<nskry::SettingsWindow>    g_settingsWindow;
+static std::unique_ptr<nskry::LongImageCropWindow> g_longImageEditor;
 static std::vector<std::unique_ptr<nskry::PinWindow>> g_pins;
 static nskry::SettingsWindowServices*             g_settingsServices = nullptr;
 
@@ -46,6 +48,7 @@ static ULONG_PTR g_gdiplusToken = 0;
 static constexpr UINT WM_CLEANUP     = WM_APP + 1;
 static constexpr UINT WM_USER_TRAY   = WM_USER + 1;
 static constexpr UINT WM_SETTINGS_CLOSED = WM_APP + 42;
+static constexpr UINT WM_LONG_IMAGE_EDITOR_CLOSED = WM_APP + 43;
 
 // ============================================================================
 // Forward declarations
@@ -58,6 +61,7 @@ static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionR
 static void StartPiP(HWND targetHwnd, nskry::CropRegion crop, nskry::AnnotationEngine engine = {});
 static void CleanupPip();
 static void CopyBitmapToClipboard(HBITMAP hbmp);
+static void OpenBitmapEditor(HBITMAP hbmp, int width, int height);
 static void SaveBitmapToFile(HBITMAP hbmp, int w, int h);
 static int  GetPngEncoderClsid(CLSID* pClsid);
 static bool RunPluginPackageCli(int& exitCode);
@@ -143,6 +147,7 @@ int WINAPI wWinMain(
         // Can be hooked to toast or status
     };
     hostCtx.copyBitmapToClipboard = CopyBitmapToClipboard;
+    hostCtx.openBitmapEditor = OpenBitmapEditor;
     nskry::PluginRegistry pluginRegistry;
     nskry::PluginPackageManager packageManager(pluginRegistry);
     nskry::PluginUpdateManager pluginUpdateManager(pluginRegistry, packageManager);
@@ -236,6 +241,7 @@ int WINAPI wWinMain(
     ::Shell_NotifyIconW(NIM_DELETE, &nid);
     CleanupPip();
     g_pins.clear();
+    g_longImageEditor.reset();
     g_selectionWindow.reset();
     g_settingsWindow.reset();
     g_settingsServices = nullptr;
@@ -324,6 +330,9 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_SETTINGS_CLOSED:
         g_settingsWindow.reset();
         return 0;
+    case WM_LONG_IMAGE_EDITOR_CLOSED:
+        g_longImageEditor.reset();
+        return 0;
     case WM_USER_TRAY:
         if (LOWORD(lp) == WM_LBUTTONDBLCLK) {
             nskry::CommandRegistry::Instance().Execute(L"core.capture");
@@ -364,6 +373,27 @@ static void ShowSettings() {
 static void CleanupPip() {
     g_capture.reset();
     g_pip.reset();
+}
+
+static void OpenBitmapEditor(HBITMAP hbmp, int width, int height) {
+    if (!hbmp || width <= 0 || height <= 0) {
+        if (hbmp) ::DeleteObject(hbmp);
+        return;
+    }
+    // A capture session owns its editor. Keeping one focused avoids two large
+    // live DIBs consuming memory if the toolbar button is clicked repeatedly.
+    if (g_longImageEditor) {
+        ::DeleteObject(hbmp);
+        return;
+    }
+    g_longImageEditor = std::make_unique<nskry::LongImageCropWindow>(hbmp, width, height,
+        [](HBITMAP cropped, int croppedWidth, int croppedHeight) {
+            auto pin = std::make_unique<nskry::PinWindow>(cropped, croppedWidth, croppedHeight);
+            pin->ShowInEditMode();
+            g_pins.push_back(std::move(pin));
+        },
+        []() { ::PostMessageW(g_mainHwnd, WM_LONG_IMAGE_EDITOR_CLOSED, 0, 0); });
+    g_longImageEditor->Show(g_mainHwnd);
 }
 
 // ============================================================================
@@ -427,6 +457,7 @@ static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionR
             context.capturedRegion = result.screenRegion;
             context.sourceHwnd = result.targetHwnd;
             context.copyBitmapToClipboard = CopyBitmapToClipboard;
+            context.openBitmapEditor = OpenBitmapEditor;
             nskry::PluginManager::Instance().ExecutePlugin(result.pluginId, context);
             ::DeleteObject(result.bitmap);
         }
