@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.24)
 project(Nskry LANGUAGES CXX)
 
+include(CTest)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -11,6 +13,7 @@ add_executable(Nskry WIN32
     src/main.cpp
     src/core/command_registry.cpp
     src/core/hotkey_manager.cpp
+    src/core/json.cpp
     src/core/plugin_manifest.cpp
     src/core/plugin_manager.cpp
     src/core/plugin_package_manager.cpp
@@ -66,3 +69,24 @@ target_precompile_headers(Nskry PRIVATE src/pch.h)
 
 # Official plugins use the same packaged form that Settings and Setup consume.
 add_subdirectory(plugins/nskry-scroll)
+
+if (BUILD_TESTING)
+    add_executable(NskryCoreTests
+        tests/json_manifest_tests.cpp
+        src/core/json.cpp
+        src/core/plugin_manifest.cpp
+        src/update/semver.cpp
+    )
+    target_include_directories(NskryCoreTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} src sdk)
+    target_compile_definitions(NskryCoreTests PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        WINRT_LEAN_AND_MEAN
+        UNICODE
+        _UNICODE
+    )
+    if (MSVC)
+        target_compile_options(NskryCoreTests PRIVATE /utf-8)
+    endif()
+    add_test(NAME NskryCoreTests COMMAND NskryCoreTests)
+endif()

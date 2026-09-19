@@ -61,8 +61,18 @@ bool PluginManager::LoadPlugin(const PluginRecord& record) {
 
     // This check is runtime ABI validation, not metadata discovery: all data
     // displayed before load still comes exclusively from manifest.json.
-    const NskryPluginInfo* runtimeInfo = fnInfo();
-    if (!runtimeInfo || !runtimeInfo->id || record.manifest.id != runtimeInfo->id || !fnInit(&m_hostContext)) {
+    const NskryPluginInfo* runtimeInfo = nullptr;
+    bool initialized = false;
+    try {
+        runtimeInfo = fnInfo();
+        initialized = runtimeInfo && runtimeInfo->structSize >= sizeof(NskryPluginInfo) &&
+            runtimeInfo->apiVersion == NSKRY_PLUGIN_API_VERSION && runtimeInfo->id && runtimeInfo->version &&
+            record.manifest.apiVersion == runtimeInfo->apiVersion && record.manifest.id == runtimeInfo->id &&
+            record.manifest.version == runtimeInfo->version && fnInit(&m_hostContext) != 0;
+    } catch (...) {
+        initialized = false;
+    }
+    if (!initialized) {
         ::FreeLibrary(module);
         return false;
     }
@@ -80,7 +90,9 @@ bool PluginManager::LoadPlugin(const PluginRecord& record) {
 bool PluginManager::Unload(const std::wstring& pluginId) {
     const auto it = m_plugins.find(pluginId);
     if (it == m_plugins.end()) return false;
-    if (it->second.fnShutdown) it->second.fnShutdown();
+    if (it->second.fnShutdown) {
+        try { it->second.fnShutdown(); } catch (...) {}
+    }
     if (it->second.hModule) ::FreeLibrary(it->second.hModule);
     m_plugins.erase(it);
     if (m_registry) m_registry->SetLoaded(pluginId, false);
@@ -91,8 +103,12 @@ bool PluginManager::ExecutePlugin(const std::wstring& pluginId, const NskryHostC
     if (!EnsureLoaded(pluginId)) return false;
     const auto it = m_plugins.find(pluginId);
     if (it == m_plugins.end() || !it->second.fnExecute) return false;
-    it->second.fnExecute(&hostContext);
-    return true;
+    try {
+        it->second.fnExecute(&hostContext);
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 bool PluginManager::IsLoaded(const std::wstring& pluginId) const {
@@ -103,7 +119,7 @@ std::vector<PluginToolbarAction> PluginManager::GetEnabledToolbarActions() const
     std::vector<PluginToolbarAction> actions;
     if (!m_registry) return actions;
     for (const PluginRecord* record : m_registry->GetAll()) {
-        if (record->enabled && record->manifest.toolbarAction)
+        if (record->enabled && record->manifest.toolbarAction && record->manifest.IsCompatibleWithHost())
             actions.push_back({ record->manifest.id, record->manifest.name });
     }
     return actions;

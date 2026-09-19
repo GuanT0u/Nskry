@@ -3,7 +3,7 @@
 ; through Nskry.exe's PackageManager CLI, never installed by Setup itself.
 
 #define AppName "Nskry"
-#define AppVersion "0.4.0"
+#define AppVersion "0.5.0"
 #define AppPublisher "Nskry"
 #define AppExeName "Nskry.exe"
 

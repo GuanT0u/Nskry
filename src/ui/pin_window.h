@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <windows.h>
 #include <mutex>
 #include <vector>
@@ -12,17 +13,19 @@ namespace nskry {
 /// and in-place annotation editing.
 class PinWindow {
 public:
+    using CloseCallback = std::function<void(PinWindow*)>;
+
     /// Takes ownership of the HBITMAP.
-    PinWindow(HBITMAP bitmap, int width, int height);
+    PinWindow(HBITMAP bitmap, int width, int height, CloseCallback closed = {});
     ~PinWindow();
 
     PinWindow(const PinWindow&)            = delete;
     PinWindow& operator=(const PinWindow&) = delete;
 
-    void Show();
+    [[nodiscard]] bool Show();
     // Opens the existing annotation toolbar immediately (used after a long
     // capture has been cropped in its pre-edit view).
-    void ShowInEditMode();
+    [[nodiscard]] bool ShowInEditMode();
     [[nodiscard]] HWND Hwnd() const { return m_hwnd; }
 
 private:
@@ -57,6 +60,8 @@ private:
 
     void BuildPinToolbar(int clientW, int clientH);
     void DrawPinToolbar(HDC hdc, int clientW, int clientH);
+    RECT ImageRect() const;
+    bool ClientPointToBitmap(int x, int y, POINT& bitmapPoint, bool clampToImage = false) const;
 
     HWND    m_hwnd{};
     HBITMAP m_bitmap{};
@@ -70,11 +75,12 @@ private:
     RECT             m_toolbarBounds{};
     bool             m_isDrawing = false;
     HFONT            m_font{};
-    HFONT            m_fontIcon{};
 
     // In-place text input
     HWND             m_hTextEdit{};
     POINT            m_textEditPos{};
+    CloseCallback    m_closed;
+    bool             m_destroying = false;
 
     static constexpr wchar_t kClassName[] = L"NskryPinWindow";
     static inline std::once_flag s_classOnce;

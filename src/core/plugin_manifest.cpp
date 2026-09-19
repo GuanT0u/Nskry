@@ -1,60 +1,16 @@
 #include "pch.h"
+#include "core/json.h"
 #include "core/plugin_manifest.h"
 #include "sdk/nskry_plugin.h"
-
-#include <fstream>
-#include <regex>
+#include "update/semver.h"
 
 namespace nskry {
 namespace {
 
-bool ReadUtf8File(const std::wstring& path, std::wstring& content) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input) return false;
-    const std::string bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-    if (bytes.empty()) { content.clear(); return true; }
-    const int required = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), static_cast<int>(bytes.size()), nullptr, 0);
-    if (required <= 0) return false;
-    content.resize(required);
-    return ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), static_cast<int>(bytes.size()), content.data(), required) > 0;
-}
-
-bool FindString(const std::wstring& json, const wchar_t* key, std::wstring& value) {
-    const std::wregex pattern(std::wstring(LR"json(")json") + key + LR"json("\s*:\s*"([^"\\]*)")json");
-    std::wsmatch match;
-    if (!std::regex_search(json, match, pattern)) return false;
-    value = match[1].str();
-    return true;
-}
-
-bool FindUInt(const std::wstring& json, const wchar_t* key, unsigned int& value) {
-    const std::wregex pattern(std::wstring(LR"json(")json") + key + LR"json("\s*:\s*(\d+))json");
-    std::wsmatch match;
-    if (!std::regex_search(json, match, pattern)) return false;
-    try { value = static_cast<unsigned int>(std::stoul(match[1].str())); return true; }
-    catch (const std::exception&) { return false; }
-}
-
-bool FindObject(const std::wstring& json, const wchar_t* key, std::wstring& object) {
-    const std::wregex pattern(std::wstring(LR"json(")json") + key + LR"json("\s*:\s*\{([\s\S]*?)\})json");
-    std::wsmatch match;
-    if (!std::regex_search(json, match, pattern)) return false;
-    object = match[1].str();
-    return true;
-}
-
-int CompareVersion(const std::wstring& left, const std::wstring& right) {
-    std::wstringstream leftStream(left), rightStream(right);
-    std::wstring leftPart, rightPart;
-    while (true) {
-        const bool leftMore = static_cast<bool>(std::getline(leftStream, leftPart, L'.'));
-        const bool rightMore = static_cast<bool>(std::getline(rightStream, rightPart, L'.'));
-        if (!leftMore && !rightMore) return 0;
-        int leftNumber = 0, rightNumber = 0;
-        try { if (leftMore) leftNumber = std::stoi(leftPart); } catch (const std::exception&) { return 0; }
-        try { if (rightMore) rightNumber = std::stoi(rightPart); } catch (const std::exception&) { return 0; }
-        if (leftNumber != rightNumber) return leftNumber < rightNumber ? -1 : 1;
-    }
+bool OptionalString(const json::Value& object, std::wstring_view key, std::wstring& value) {
+    const json::Value* member = object.Find(key);
+    if (!member || member->IsNull()) return true;
+    return object.GetString(key, value);
 }
 
 void SetError(std::wstring* error, const wchar_t* message) {
@@ -64,47 +20,96 @@ void SetError(std::wstring* error, const wchar_t* message) {
 } // namespace
 
 bool PluginManifest::LoadFromFile(const std::wstring& path, PluginManifest& manifest, std::wstring* error) {
-    std::wstring json;
-    if (!ReadUtf8File(path, json)) { SetError(error, L"Unable to read manifest.json as UTF-8."); return false; }
+    json::Value root;
+    std::wstring parseError;
+    if (!json::ParseUtf8File(path, root, &parseError) || !root.IsObject()) {
+        if (error) *error = parseError.empty() ? L"Manifest root must be a JSON object."
+                                              : L"Invalid manifest.json: " + parseError;
+        return false;
+    }
 
     PluginManifest result;
     unsigned int manifestVersion = 0;
-    if (!FindUInt(json, L"manifest_version", manifestVersion) || manifestVersion != 1 ||
-        !FindString(json, L"id", result.id) || !FindString(json, L"name", result.name) ||
-        !FindString(json, L"version", result.version)) {
+    if (!root.GetUnsigned(L"manifest_version", manifestVersion) || manifestVersion != 1 ||
+        !root.GetString(L"id", result.id) || !root.GetString(L"name", result.name) ||
+        !root.GetString(L"version", result.version)) {
         SetError(error, L"Manifest is missing required top-level metadata.");
         return false;
     }
     result.manifestVersion = static_cast<int>(manifestVersion);
-    FindString(json, L"author", result.author);
-    FindString(json, L"description", result.description);
-    FindString(json, L"homepage", result.homepage);
-    FindString(json, L"repository", result.repository);
+    if (!OptionalString(root, L"author", result.author) ||
+        !OptionalString(root, L"description", result.description) ||
+        !OptionalString(root, L"homepage", result.homepage) ||
+        !OptionalString(root, L"repository", result.repository)) {
+        SetError(error, L"Manifest contains invalid optional metadata.");
+        return false;
+    }
 
-    std::wstring runtime;
-    if (!FindObject(json, L"runtime", runtime) || !FindString(runtime, L"entry", result.entry) ||
-        !FindString(runtime, L"architecture", result.architecture) || !FindUInt(runtime, L"api_version", result.apiVersion)) {
+    const json::Value* runtime = root.Find(L"runtime");
+    if (!runtime || !runtime->IsObject() || !runtime->GetString(L"entry", result.entry) ||
+        !runtime->GetString(L"architecture", result.architecture) ||
+        !runtime->GetUnsigned(L"api_version", result.apiVersion)) {
         SetError(error, L"Manifest runtime metadata is incomplete.");
         return false;
     }
     std::wstring loadPolicy;
-    if (FindString(runtime, L"load_policy", loadPolicy) && loadPolicy == L"startup") result.loadPolicy = PluginLoadPolicy::Startup;
-    else if (!loadPolicy.empty() && loadPolicy != L"on_demand") { SetError(error, L"Unsupported plugin load policy."); return false; }
-
-    std::wstring compatibility;
-    if (FindObject(json, L"compatibility", compatibility)) {
-        FindString(compatibility, L"nskry_min", result.nskryMinVersion);
-        FindString(compatibility, L"nskry_max", result.nskryMaxVersion);
+    if (!OptionalString(*runtime, L"load_policy", loadPolicy)) {
+        SetError(error, L"Manifest load policy must be a string.");
+        return false;
     }
-    std::wstring update;
-    if (FindObject(json, L"update", update)) FindString(update, L"url", result.updateUrl);
-    result.toolbarAction = std::regex_search(json, std::wregex(LR"json("toolbar_action")json"));
+    if (loadPolicy == L"startup") result.loadPolicy = PluginLoadPolicy::Startup;
+    else if (!loadPolicy.empty() && loadPolicy != L"on_demand") {
+        SetError(error, L"Unsupported plugin load policy.");
+        return false;
+    }
+
+    if (const json::Value* compatibility = root.Find(L"compatibility")) {
+        if (!compatibility->IsObject() ||
+            !OptionalString(*compatibility, L"nskry_min", result.nskryMinVersion) ||
+            !OptionalString(*compatibility, L"nskry_max", result.nskryMaxVersion)) {
+            SetError(error, L"Manifest compatibility metadata is invalid.");
+            return false;
+        }
+    }
+    if (const json::Value* source = root.Find(L"source")) {
+        if (!source->IsObject() || !OptionalString(*source, L"homepage", result.homepage) ||
+            !OptionalString(*source, L"repository", result.repository)) {
+            SetError(error, L"Manifest source metadata is invalid.");
+            return false;
+        }
+    }
+    if (const json::Value* update = root.Find(L"update")) {
+        if (!update->IsObject() || !OptionalString(*update, L"url", result.updateUrl)) {
+            SetError(error, L"Manifest update metadata is invalid.");
+            return false;
+        }
+    }
+    if (const json::Value* capabilities = root.Find(L"capabilities")) {
+        const json::Value::Array* array = capabilities->AsArray();
+        if (!array) {
+            SetError(error, L"Manifest capabilities must be an array.");
+            return false;
+        }
+        for (const json::Value& capability : *array) {
+            const std::wstring* name = capability.AsString();
+            if (!name) {
+                SetError(error, L"Manifest capabilities must contain only strings.");
+                return false;
+            }
+            if (*name == L"toolbar_action") result.toolbarAction = true;
+        }
+    }
 
     if (!IsSafePluginId(result.id) || !IsSafeEntryName(result.entry)) {
         SetError(error, L"Plugin id or entry file name is unsafe.");
         return false;
     }
-    if (!result.IsCompatibleWithHost(error)) return false;
+    if (!SemVer::IsValid(result.version) ||
+        (!result.nskryMinVersion.empty() && !SemVer::IsValid(result.nskryMinVersion)) ||
+        (!result.nskryMaxVersion.empty() && !SemVer::IsValid(result.nskryMaxVersion))) {
+        SetError(error, L"Plugin version or compatibility range is not valid SemVer.");
+        return false;
+    }
     manifest = std::move(result);
     return true;
 }
@@ -126,10 +131,10 @@ bool PluginManifest::IsSafeEntryName(const std::wstring& entry) {
 bool PluginManifest::IsCompatibleWithHost(std::wstring* error) const {
     if (architecture != L"x64") { SetError(error, L"Plugin architecture must be x64."); return false; }
     if (apiVersion != NSKRY_PLUGIN_API_VERSION) { SetError(error, L"Plugin API version is not supported by this Nskry build."); return false; }
-    if (!nskryMinVersion.empty() && CompareVersion(NSKRY_VERSION, nskryMinVersion) < 0) {
+    if (!nskryMinVersion.empty() && SemVer::Compare(NSKRY_VERSION, nskryMinVersion) < 0) {
         SetError(error, L"Plugin requires a newer Nskry version."); return false;
     }
-    if (!nskryMaxVersion.empty() && CompareVersion(NSKRY_VERSION, nskryMaxVersion) > 0) {
+    if (!nskryMaxVersion.empty() && SemVer::Compare(NSKRY_VERSION, nskryMaxVersion) > 0) {
         SetError(error, L"Plugin does not support this Nskry version."); return false;
     }
     return true;

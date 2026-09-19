@@ -38,6 +38,7 @@ static std::unique_ptr<nskry::SettingsWindow>    g_settingsWindow;
 static std::unique_ptr<nskry::LongImageCropWindow> g_longImageEditor;
 static std::vector<std::unique_ptr<nskry::PinWindow>> g_pins;
 static nskry::SettingsWindowServices*             g_settingsServices = nullptr;
+static bool                                      g_captureWorkflowActive = false;
 
 static ULONG_PTR g_gdiplusToken = 0;
 
@@ -49,6 +50,7 @@ static constexpr UINT WM_CLEANUP     = WM_APP + 1;
 static constexpr UINT WM_USER_TRAY   = WM_USER + 1;
 static constexpr UINT WM_SETTINGS_CLOSED = WM_APP + 42;
 static constexpr UINT WM_LONG_IMAGE_EDITOR_CLOSED = WM_APP + 43;
+static constexpr UINT WM_PIN_CLOSED = WM_APP + 44;
 
 // ============================================================================
 // Forward declarations
@@ -60,8 +62,10 @@ static void ShowSettings();
 static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionResult result);
 static void StartPiP(HWND targetHwnd, nskry::CropRegion crop, nskry::AnnotationEngine engine = {});
 static void CleanupPip();
-static void CopyBitmapToClipboard(HBITMAP hbmp);
+static int32_t CopyBitmapToClipboard(HBITMAP hbmp);
 static void OpenBitmapEditor(HBITMAP hbmp, int width, int height);
+static void ShowPluginNotification(const wchar_t* message, int durationMs);
+static void NotifyPinClosed(nskry::PinWindow* pin);
 static void SaveBitmapToFile(HBITMAP hbmp, int w, int h);
 static int  GetPngEncoderClsid(CLSID* pClsid);
 static bool RunPluginPackageCli(int& exitCode);
@@ -140,12 +144,12 @@ int WINAPI wWinMain(
 
     // Plugin Manager initialization
     NskryHostContext hostCtx{};
+    hostCtx.structSize = sizeof(hostCtx);
+    hostCtx.apiVersion = NSKRY_PLUGIN_API_VERSION;
     hostCtx.mainHwnd = g_mainHwnd;
     hostCtx.d3dDevice = g_device ? g_device->Device() : nullptr;
     hostCtx.d3dContext = g_device ? g_device->Context() : nullptr;
-    hostCtx.showNotification = [](const wchar_t* msg, int durationMs) {
-        // Can be hooked to toast or status
-    };
+    hostCtx.showNotification = ShowPluginNotification;
     hostCtx.copyBitmapToClipboard = CopyBitmapToClipboard;
     hostCtx.openBitmapEditor = OpenBitmapEditor;
     nskry::PluginRegistry pluginRegistry;
@@ -188,7 +192,8 @@ int WINAPI wWinMain(
             nskry::SettingsPluginItem item;
             item.id = record->manifest.id; item.name = record->manifest.name; item.version = record->manifest.version;
             item.author = record->manifest.author; item.enabled = record->enabled;
-            item.status = record->enabled ? (record->loaded ? L"Enabled · Loaded" : L"Enabled · Not loaded") : L"Disabled";
+            if (!record->manifest.IsCompatibleWithHost()) item.status = L"Incompatible with this Nskry version";
+            else item.status = record->enabled ? (record->loaded ? L"Enabled · Loaded" : L"Enabled · Not loaded") : L"Disabled";
             items.push_back(std::move(item));
         }
         return items;
@@ -333,6 +338,11 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LONG_IMAGE_EDITOR_CLOSED:
         g_longImageEditor.reset();
         return 0;
+    case WM_PIN_CLOSED: {
+        const auto* closed = reinterpret_cast<nskry::PinWindow*>(lp);
+        std::erase_if(g_pins, [closed](const auto& pin) { return pin.get() == closed; });
+        return 0;
+    }
     case WM_USER_TRAY:
         if (LOWORD(lp) == WM_LBUTTONDBLCLK) {
             nskry::CommandRegistry::Instance().Execute(L"core.capture");
@@ -388,12 +398,15 @@ static void OpenBitmapEditor(HBITMAP hbmp, int width, int height) {
     }
     g_longImageEditor = std::make_unique<nskry::LongImageCropWindow>(hbmp, width, height,
         [](HBITMAP cropped, int croppedWidth, int croppedHeight) {
-            auto pin = std::make_unique<nskry::PinWindow>(cropped, croppedWidth, croppedHeight);
-            pin->ShowInEditMode();
-            g_pins.push_back(std::move(pin));
+            auto pin = std::make_unique<nskry::PinWindow>(cropped, croppedWidth, croppedHeight, NotifyPinClosed);
+            if (pin->ShowInEditMode()) g_pins.push_back(std::move(pin));
+            else ShowPluginNotification(L"The annotation window could not be created.", 3500);
         },
         []() { ::PostMessageW(g_mainHwnd, WM_LONG_IMAGE_EDITOR_CLOSED, 0, 0); });
-    g_longImageEditor->Show(g_mainHwnd);
+    if (!g_longImageEditor->Show(g_mainHwnd)) {
+        g_longImageEditor.reset();
+        ShowPluginNotification(L"The long screenshot editor could not be created.", 3500);
+    }
 }
 
 // ============================================================================
@@ -401,12 +414,18 @@ static void OpenBitmapEditor(HBITMAP hbmp, int width, int height) {
 // ============================================================================
 
 static void ShowSelectionOverlay() {
+    if (g_captureWorkflowActive) {
+        ShowPluginNotification(L"A capture or plugin workflow is already active.", 2500);
+        return;
+    }
+    g_captureWorkflowActive = true;
     g_selectionWindow.reset();
 
     g_selectionWindow = std::make_unique<nskry::SelectionWindow>(
         [](nskry::SelectionAction action, nskry::SelectionResult result) {
             g_selectionWindow.reset();
             OnSelectionComplete(action, std::move(result));
+            g_captureWorkflowActive = false;
         }, nskry::PluginManager::Instance().GetEnabledToolbarActions());
     g_selectionWindow->Show();
 }
@@ -419,7 +438,8 @@ static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionR
     switch (action) {
     case nskry::SelectionAction::Copy:
         if (result.bitmap) {
-            CopyBitmapToClipboard(result.bitmap);
+            if (!CopyBitmapToClipboard(result.bitmap))
+                ShowPluginNotification(L"The screenshot could not be copied to the clipboard.", 3500);
             ::DeleteObject(result.bitmap);
         }
         break;
@@ -434,9 +454,9 @@ static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionR
     case nskry::SelectionAction::Pin:
         if (result.bitmap) {
             auto pin = std::make_unique<nskry::PinWindow>(
-                result.bitmap, result.bitmapWidth, result.bitmapHeight);
-            pin->Show();
-            g_pins.push_back(std::move(pin));
+                result.bitmap, result.bitmapWidth, result.bitmapHeight, NotifyPinClosed);
+            if (pin->Show()) g_pins.push_back(std::move(pin));
+            else ShowPluginNotification(L"The pin window could not be created.", 3500);
             // PinWindow takes ownership of bitmap
         }
         break;
@@ -450,15 +470,19 @@ static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionR
     case nskry::SelectionAction::Plugin:
         if (result.bitmap && !result.pluginId.empty()) {
             NskryHostContext context{};
+            context.structSize = sizeof(context);
+            context.apiVersion = NSKRY_PLUGIN_API_VERSION;
             context.mainHwnd = g_mainHwnd;
             context.d3dDevice = g_device ? g_device->Device() : nullptr;
             context.d3dContext = g_device ? g_device->Context() : nullptr;
             context.capturedBitmap = result.bitmap;
             context.capturedRegion = result.screenRegion;
             context.sourceHwnd = result.targetHwnd;
+            context.showNotification = ShowPluginNotification;
             context.copyBitmapToClipboard = CopyBitmapToClipboard;
             context.openBitmapEditor = OpenBitmapEditor;
-            nskry::PluginManager::Instance().ExecutePlugin(result.pluginId, context);
+            if (!nskry::PluginManager::Instance().ExecutePlugin(result.pluginId, context))
+                ShowPluginNotification(L"The plugin could not be loaded or did not complete successfully.", 3500);
             ::DeleteObject(result.bitmap);
         }
         break;
@@ -510,10 +534,14 @@ static void StartPiP(HWND targetHwnd, nskry::CropRegion crop, nskry::AnnotationE
 // Clipboard
 // ============================================================================
 
-static void CopyBitmapToClipboard(HBITMAP hbmp) {
-    if (!hbmp) return;
+static int32_t CopyBitmapToClipboard(HBITMAP hbmp) {
+    if (!hbmp) return 0;
     BITMAP bitmapInfo{};
-    if (!::GetObjectW(hbmp, sizeof(bitmapInfo), &bitmapInfo) || bitmapInfo.bmWidth <= 0 || bitmapInfo.bmHeight <= 0) return;
+    if (!::GetObjectW(hbmp, sizeof(bitmapInfo), &bitmapInfo) || bitmapInfo.bmWidth <= 0 || bitmapInfo.bmHeight <= 0) return 0;
+
+    const unsigned long long imageBytes = static_cast<unsigned long long>(bitmapInfo.bmWidth) *
+        static_cast<unsigned long long>(bitmapInfo.bmHeight) * 4ULL;
+    if (imageBytes > MAXDWORD || imageBytes > SIZE_MAX - sizeof(BITMAPINFOHEADER)) return 0;
 
     BITMAPINFOHEADER header{};
     header.biSize = sizeof(header);
@@ -522,21 +550,22 @@ static void CopyBitmapToClipboard(HBITMAP hbmp) {
     header.biPlanes = 1;
     header.biBitCount = 32;
     header.biCompression = BI_RGB;
-    header.biSizeImage = static_cast<DWORD>(bitmapInfo.bmWidth * bitmapInfo.bmHeight * 4ULL);
+    header.biSizeImage = static_cast<DWORD>(imageBytes);
 
     HGLOBAL dib = ::GlobalAlloc(GMEM_MOVEABLE, sizeof(header) + header.biSizeImage);
-    if (!dib) return;
+    if (!dib) return 0;
     void* memory = ::GlobalLock(dib);
-    if (!memory) { ::GlobalFree(dib); return; }
+    if (!memory) { ::GlobalFree(dib); return 0; }
     std::memcpy(memory, &header, sizeof(header));
     BITMAPINFO request{};
     request.bmiHeader = header;
     HDC dc = ::GetDC(nullptr);
+    if (!dc) { ::GlobalUnlock(dib); ::GlobalFree(dib); return 0; }
     const int rows = ::GetDIBits(dc, hbmp, 0, bitmapInfo.bmHeight,
         static_cast<BYTE*>(memory) + sizeof(header), &request, DIB_RGB_COLORS);
     ::ReleaseDC(nullptr, dc);
     ::GlobalUnlock(dib);
-    if (rows != bitmapInfo.bmHeight) { ::GlobalFree(dib); return; }
+    if (rows != bitmapInfo.bmHeight) { ::GlobalFree(dib); return 0; }
 
     HBITMAP bitmapCopy = static_cast<HBITMAP>(::CopyImage(hbmp, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION));
     bool opened = false;
@@ -544,11 +573,36 @@ static void CopyBitmapToClipboard(HBITMAP hbmp) {
         opened = ::OpenClipboard(nullptr) != FALSE;
         if (!opened) ::Sleep(20);
     }
-    if (!opened) { ::GlobalFree(dib); if (bitmapCopy) ::DeleteObject(bitmapCopy); return; }
-    ::EmptyClipboard();
-    if (!::SetClipboardData(CF_DIB, dib)) ::GlobalFree(dib);
-    if (bitmapCopy && !::SetClipboardData(CF_BITMAP, bitmapCopy)) ::DeleteObject(bitmapCopy);
+    if (!opened) { ::GlobalFree(dib); if (bitmapCopy) ::DeleteObject(bitmapCopy); return 0; }
+    if (!::EmptyClipboard()) {
+        ::CloseClipboard(); ::GlobalFree(dib); if (bitmapCopy) ::DeleteObject(bitmapCopy); return 0;
+    }
+    const bool dibPublished = ::SetClipboardData(CF_DIB, dib) != nullptr;
+    if (!dibPublished) ::GlobalFree(dib);
+    const bool bitmapPublished = bitmapCopy && ::SetClipboardData(CF_BITMAP, bitmapCopy) != nullptr;
+    if (bitmapCopy && !bitmapPublished) ::DeleteObject(bitmapCopy);
     ::CloseClipboard();
+    return dibPublished || bitmapPublished ? 1 : 0;
+}
+
+static void ShowPluginNotification(const wchar_t* message, int durationMs) {
+    if (!message || !*message || !g_mainHwnd) return;
+    if (!nskry::SettingsManager::Instance().GetUserSettings().notifications) return;
+    NOTIFYICONDATAW notification{};
+    notification.cbSize = sizeof(notification);
+    notification.hWnd = g_mainHwnd;
+    notification.uID = 1;
+    notification.uFlags = NIF_INFO;
+    notification.dwInfoFlags = NIIF_INFO;
+    notification.uTimeout = static_cast<UINT>((std::clamp)(durationMs, 1000, 30000));
+    ::wcsncpy_s(notification.szInfo, message, _TRUNCATE);
+    ::wcsncpy_s(notification.szInfoTitle, L"Nskry", _TRUNCATE);
+    ::Shell_NotifyIconW(NIM_MODIFY, &notification);
+}
+
+static void NotifyPinClosed(nskry::PinWindow* pin) {
+    if (pin && g_mainHwnd)
+        ::PostMessageW(g_mainHwnd, WM_PIN_CLOSED, 0, reinterpret_cast<LPARAM>(pin));
 }
 
 // ============================================================================

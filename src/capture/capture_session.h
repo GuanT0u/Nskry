@@ -5,6 +5,7 @@
 #include <functional>
 #include <mutex>
 #include <atomic>
+#include <condition_variable>
 
 namespace nskry {
 
@@ -73,6 +74,14 @@ private:
     FrameCallback      m_callback;
     std::mutex         m_callbackMutex;
     std::atomic<bool>  m_capturing{ false };
+    std::atomic<bool>  m_stopped{ false };
+
+    // Event revocation prevents new callbacks, while this counter drains any
+    // FrameArrived handler that was already in flight before Stop().  The
+    // CaptureSession and its consumer may only be destroyed after it reaches 0.
+    std::atomic<unsigned int> m_activeFrameCallbacks{ 0 };
+    std::mutex                m_frameDrainMutex;
+    std::condition_variable   m_frameDrainCv;
 
     winrt::event_token m_frameToken{};
     winrt::event_token m_closedToken{};

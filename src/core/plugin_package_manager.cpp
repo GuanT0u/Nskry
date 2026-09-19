@@ -1,9 +1,10 @@
 #include "pch.h"
+#include "core/json.h"
 #include "core/plugin_package_manager.h"
 #include "update/package_verifier.h"
 
 #include <fstream>
-#include <regex>
+#include <sstream>
 
 namespace nskry {
 namespace {
@@ -61,25 +62,6 @@ bool ValidateTreeRecursive(const std::wstring& root, const std::wstring& path, s
     } while (::FindNextFileW(find, &data));
     ::FindClose(find);
     return true;
-}
-
-std::string ToUtf8(const std::wstring& value) {
-    if (value.empty()) return {};
-    const int required = ::WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
-    std::string result(required, '\0');
-    ::WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), result.data(), required, nullptr, nullptr);
-    return result;
-}
-
-bool ReadUtf8File(const std::wstring& path, std::wstring& content) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input) return false;
-    const std::string bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-    if (bytes.empty()) { content.clear(); return true; }
-    const int required = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), static_cast<int>(bytes.size()), nullptr, 0);
-    if (required <= 0) return false;
-    content.resize(required);
-    return ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), static_cast<int>(bytes.size()), content.data(), required) > 0;
 }
 
 std::wstring QuoteArgument(const std::wstring& value) {
@@ -184,7 +166,8 @@ bool PluginPackageManager::InspectPackage(const std::wstring& packagePath, Plugi
     };
     const bool valid = ExtractToStaging(packagePath, stage, error) &&
         ValidateExtractedTree(stage, error) &&
-        PluginManifest::LoadFromFile(stage + L"\\manifest.json", manifest, error);
+        PluginManifest::LoadFromFile(stage + L"\\manifest.json", manifest, error) &&
+        manifest.IsCompatibleWithHost(error);
     if (valid) {
         const DWORD entryAttributes = ::GetFileAttributesW((stage + L"\\" + manifest.entry).c_str());
         if (entryAttributes == INVALID_FILE_ATTRIBUTES || (entryAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
@@ -218,6 +201,10 @@ PluginPackageResult PluginPackageManager::InstallPackage(const std::wstring& pac
         cleanupStage();
         return result;
     }
+    if (!manifest.IsCompatibleWithHost(&result.message)) {
+        cleanupStage();
+        return result;
+    }
     const DWORD entryAttributes = ::GetFileAttributesW((stage + L"\\" + manifest.entry).c_str());
     if (entryAttributes == INVALID_FILE_ATTRIBUTES || (entryAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
         result.message = L"Package entry DLL is missing.";
@@ -236,7 +223,11 @@ PluginPackageResult PluginPackageManager::InstallPackage(const std::wstring& pac
             return result;
         }
         std::vector<PendingOperation> operations;
-        ReadPending(operations);
+        if (!ReadPending(operations)) {
+            result.message = L"Unable to read pending plugin operations.";
+            DeleteTree(m_updatesRoot, updateStage);
+            return result;
+        }
         // Keep only the newest staged update for a plugin. This also prevents
         // repeated development installs from applying obsolete packages first.
         std::erase_if(operations, [&](const PendingOperation& pending) {
@@ -287,7 +278,10 @@ PluginPackageResult PluginPackageManager::Uninstall(const std::wstring& pluginId
         return result;
     }
     std::vector<PendingOperation> operations;
-    ReadPending(operations);
+    if (!ReadPending(operations)) {
+        result.message = L"Unable to read pending plugin operations.";
+        return result;
+    }
     operations.push_back({ PendingType::Delete, pluginId, {} });
     if (!WritePending(operations)) {
         result.message = L"Unable to record pending plugin removal.";
@@ -301,14 +295,19 @@ PluginPackageResult PluginPackageManager::Uninstall(const std::wstring& pluginId
 
 bool PluginPackageManager::ReadPending(std::vector<PendingOperation>& operations) const {
     operations.clear();
-    std::wstring json;
-    if (!ReadUtf8File(m_pendingPath, json)) return true;
-    const std::wregex item(LR"json(\{\s*"type"\s*:\s*"(update|delete)"\s*,\s*"id"\s*:\s*"([^"\\]+)"\s*,\s*"staged_path"\s*:\s*"([^"\\]*)"\s*\})json");
-    for (std::wsregex_iterator it(json.begin(), json.end(), item), end; it != end; ++it) {
-        const std::wstring type = (*it)[1].str();
-        const std::wstring id = (*it)[2].str();
-        const std::wstring stagedPath = (*it)[3].str();
-        if (!PluginManifest::IsSafePluginId(id) || (type == L"update" && !IsSafeRelativeStagingPath(stagedPath))) continue;
+    if (::GetFileAttributesW(m_pendingPath.c_str()) == INVALID_FILE_ATTRIBUTES) return true;
+    json::Value root;
+    if (!json::ParseUtf8File(m_pendingPath, root) || !root.IsObject()) return false;
+    const json::Value* operationValue = root.Find(L"operations");
+    const json::Value::Array* operationArray = operationValue ? operationValue->AsArray() : nullptr;
+    if (!operationArray) return false;
+    for (const json::Value& item : *operationArray) {
+        std::wstring type, id, stagedPath;
+        if (!item.IsObject() || !item.GetString(L"type", type) || !item.GetString(L"id", id) ||
+            !item.GetString(L"staged_path", stagedPath) ||
+            (type != L"update" && type != L"delete") || !PluginManifest::IsSafePluginId(id) ||
+            (type == L"update" && !IsSafeRelativeStagingPath(stagedPath)) ||
+            (type == L"delete" && !stagedPath.empty())) return false;
         operations.push_back({ type == L"update" ? PendingType::Update : PendingType::Delete, id, stagedPath });
     }
     return true;
@@ -319,19 +318,21 @@ bool PluginPackageManager::WritePending(const std::vector<PendingOperation>& ope
         if (::GetFileAttributesW(m_pendingPath.c_str()) != INVALID_FILE_ATTRIBUTES) return ::DeleteFileW(m_pendingPath.c_str()) != FALSE;
         return true;
     }
-    std::ofstream output(m_pendingPath, std::ios::binary | std::ios::trunc);
-    if (!output) return false;
-    output << "{\n  \"operations\": [";
+    std::wostringstream output;
+    output << L"{\n  \"operations\": [";
     bool first = true;
     for (const auto& operation : operations) {
-        if (!first) output << ',';
-        output << "\n    {\"type\": \"" << (operation.type == PendingType::Update ? "update" : "delete")
-               << "\", \"id\": \"" << ToUtf8(operation.pluginId)
-               << "\", \"staged_path\": \"" << ToUtf8(operation.stagedPath) << "\"}";
+        if (!first) output << L',';
+        output << L"\n    {\"type\": \"" << (operation.type == PendingType::Update ? L"update" : L"delete")
+               << L"\", \"id\": \"" << json::EscapeString(operation.pluginId)
+               << L"\", \"staged_path\": \"" << json::EscapeString(operation.stagedPath) << L"\"}";
         first = false;
     }
-    output << "\n  ]\n}\n";
-    return static_cast<bool>(output);
+    output << L"\n  ]\n}\n";
+    std::string bytes;
+    if (!json::ToUtf8(output.str(), bytes)) return false;
+    std::ofstream file(m_pendingPath, std::ios::binary | std::ios::trunc);
+    return file && static_cast<bool>(file.write(bytes.data(), static_cast<std::streamsize>(bytes.size())));
 }
 
 bool PluginPackageManager::ApplyPendingOperations(std::wstring* error) {

@@ -97,7 +97,7 @@ void SettingsWindow::CreateControls() {
     m_pluginUninstall = control(BS_PUSHBUTTON, L"Uninstall", IDC_PLUGIN_UNINSTALL, 175, 315, 100, 28);
     m_pluginInstall = control(BS_PUSHBUTTON, L"Install third-party plugin...", IDC_PLUGIN_INSTALL, 288, 315, 190, 28);
     m_pluginCheckUpdates = control(BS_PUSHBUTTON, L"Check for updates", IDC_PLUGIN_CHECK_UPDATES, 492, 315, 170, 28);
-    m_aboutText = ::CreateWindowExW(0, L"STATIC", L"Nskry\n\nLightweight Windows capture and PiP utility.\n\nVersion 0.4.0\nPlugin API version 1", WS_CHILD | SS_LEFT,
+    m_aboutText = ::CreateWindowExW(0, L"STATIC", L"Nskry\n\nLightweight Windows capture and PiP utility.\n\nVersion 0.5.0\nPlugin API version 2", WS_CHILD | SS_LEFT,
         52, 72, 520, 180, m_hwnd, nullptr, nullptr, nullptr);
     m_apply = control(WS_VISIBLE | BS_DEFPUSHBUTTON, L"Apply", IDC_APPLY, 580, 420, 110, 30);
     SelectPage(0);

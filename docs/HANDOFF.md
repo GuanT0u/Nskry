@@ -1,7 +1,7 @@
 # Nskry — 项目交接文档
 
 > **最后更新**：2026-09-17
-> **项目状态**：Phase 1 + Phase 2 + Phase 3 完成，全部核心功能通过实测验证，工作区纯净，就绪 Phase 4
+> **项目状态**：Stage A-G 已完成；Phase 4 截长图已实现为独立插件并可构建运行，OCR/翻译/录屏尚未开发
 > **项目路径**：`d:\codes\Nskry`
 
 ---
@@ -73,7 +73,7 @@ d:\codes\Nskry\
 ├── sdk/
 │   └── nskry_plugin.h                      # 插件 SDK 公开头文件
 ├── build/
-│   └── Nskry.exe                           # 已编译可执行文件 (Release, ~113KB)
+│   └── Nskry.exe                           # 已编译可执行文件 (Release)
 └── src/
     ├── pch.h                               # 预编译头 (Windows/D3D/WinRT/STL)
     ├── main.cpp                            # WinMain + 热键 + 托盘 + 插件生命周期
@@ -125,8 +125,14 @@ d:\codes\Nskry\
 $vsPath = "C:\Program Files\Microsoft Visual Studio\18\Community"
 $vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvars64.bat"
 
-# 2. 编译
-cmd /c "`"$vcvars`" > nul 2>&1 && cmake --build build"
+# 2. 配置并构建（同时生成 installer/bundled/nskry-scroll.nskryplugin）
+cmd /c "`"$vcvars`" > nul 2>&1 && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build"
+```
+
+构建安装器（需要 Inno Setup 6）：
+
+```powershell
+iscc installer/NskrySetup.iss
 ```
 
 ---
@@ -183,7 +189,9 @@ cmd /c "`"$vcvars`" > nul 2>&1 && cmake --build build"
 
 ## 9. 后续开发路线图 (Incoming Roadmap)
 
-### Phase 4: 截长图 (Scrolling Screenshot)
+### Phase 4: 截长图 (Scrolling Screenshot) — 已实现
+- **状态**：由 `plugins/nskry-scroll` 提供，打包为 `installer/bundled/nskry-scroll.nskryplugin`，通过统一插件包安装/加载链路接入。
+- **当前能力**：框选目标区域、手动/自动滚动采集、连续帧位移匹配与增量拼接、实时预览、暂停/取消、长图裁剪及后续标注入口。
 - **目标**：支持在滚动页面（长网页、终端、代码编辑器、聊天记录）中一键滚动合成超长截图。
 - **关键设计**：
   1. 框选目标滚动区域，识别滚动条或目标 HWND。
@@ -191,6 +199,8 @@ cmd /c "`"$vcvars`" > nul 2>&1 && cmake --build build"
   3. 利用 WGC 连续提取每屏竖向图像切片。
   4. 基于特征行哈希匹配（Normalized Cross Correlation / Row Hash Matching）自动计算竖向位移 $\Delta y$。
   5. 拼接缝合为单一超高分辨率 PNG 画布并弹出标准标注/保存面板。
+
+插件源码、manifest 与 CMake 打包配置位于 `plugins/nskry-scroll/`；发布时先构建插件包，再构建 Inno Setup 安装器。
 
 ### Phase 5: OCR 文字识别插件 (OCR Plugin)
 - **目标**：实现为独立扩展 `plugins/nskry_ocr.dll`。
@@ -205,4 +215,3 @@ cmd /c "`"$vcvars`" > nul 2>&1 && cmake --build build"
   1. 复用核心的 WGC + D3D11 零拷贝捕获管线。
   2. 使用 Windows Media Foundation (`IMFSinkWriter`) 支持 GPU 硬件编码输出标准 H.264 `.mp4`。
   3. 支持轻量级局部 GIF 动图导出（内置 NeuQuant / Octree 调色板量化算法）。
-

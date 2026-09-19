@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/pin_window.h"
+#include <algorithm>
 #include <windowsx.h>
 #include <commdlg.h>
 
@@ -26,8 +27,8 @@ static int GetPngEncoderClsidHelper(CLSID* pClsid) {
     return -1;
 }
 
-PinWindow::PinWindow(HBITMAP bitmap, int width, int height)
-    : m_bitmap(bitmap), m_width(width), m_height(height)
+PinWindow::PinWindow(HBITMAP bitmap, int width, int height, CloseCallback closed)
+    : m_bitmap(bitmap), m_width(width), m_height(height), m_closed(std::move(closed))
 {
     std::call_once(s_classOnce, [] {
         WNDCLASSEXW wc{};
@@ -45,42 +46,52 @@ PinWindow::PinWindow(HBITMAP bitmap, int width, int height)
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
 
-    m_fontIcon = ::CreateFontW(
-        -14, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Symbol");
-
-    // Initial window size: clamp to reasonable screen fraction
-    constexpr int kMaxInitW = 800;
-    const float aspect = static_cast<float>(width) / static_cast<float>(height);
-    int winW = width, winH = height;
-    if (winW > kMaxInitW) {
-        winW = kMaxInitW;
-        winH = static_cast<int>(winW / aspect);
-    }
-    if (winH < 60) {
-        winH = 60;
-        winW = static_cast<int>(winH * aspect);
-    }
-
     const DWORD style   = WS_POPUP | WS_THICKFRAME | WS_CAPTION | WS_SYSMENU;
     const DWORD exStyle = WS_EX_TOPMOST | WS_EX_TOOLWINDOW;
 
-    RECT rc = { 0, 0, winW, winH };
-    ::AdjustWindowRectEx(&rc, style, FALSE, exStyle);
+    if (!m_bitmap || m_width <= 0 || m_height <= 0) return;
+
+    POINT cursor{};
+    ::GetCursorPos(&cursor);
+    MONITORINFO monitorInfo{ sizeof(monitorInfo) };
+    const HMONITOR monitor = ::MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY);
+    RECT workArea{ 0, 0, 1024, 768 };
+    if (monitor && ::GetMonitorInfoW(monitor, &monitorInfo)) workArea = monitorInfo.rcWork;
+
+    RECT nonClient{ 0, 0, 0, 0 };
+    if (!::AdjustWindowRectEx(&nonClient, style, FALSE, exStyle)) return;
+    const int nonClientW = nonClient.right - nonClient.left;
+    const int nonClientH = nonClient.bottom - nonClient.top;
+    const int workW = (std::max)(1, static_cast<int>(workArea.right - workArea.left));
+    const int workH = (std::max)(1, static_cast<int>(workArea.bottom - workArea.top));
+    const int maxClientW = (std::max)(1, (std::min)(800, workW - nonClientW));
+    const int maxClientH = (std::max)(1, workH - nonClientH);
+    const double scale = (std::min)({ 1.0,
+        static_cast<double>(maxClientW) / m_width,
+        static_cast<double>(maxClientH) / m_height });
+
+    constexpr int kToolbarClientWidth = 428;
+    int winW = (std::max)(1, static_cast<int>(m_width * scale));
+    int winH = (std::max)(60, static_cast<int>(m_height * scale));
+    winW = (std::min)((std::max)(winW, (std::min)(kToolbarClientWidth, maxClientW)), maxClientW);
+    winH = (std::min)(winH, maxClientH);
+
+    const int outerW = winW + nonClientW;
+    const int outerH = winH + nonClientH;
+    const int x = workArea.left + (workW - outerW) / 2;
+    const int y = workArea.top + (workH - outerH) / 2;
 
     m_hwnd = ::CreateWindowExW(
         exStyle, kClassName, L"Nskry Pin",
         style,
-        CW_USEDEFAULT, CW_USEDEFAULT,
-        rc.right - rc.left, rc.bottom - rc.top,
+        x, y, outerW, outerH,
         nullptr, nullptr, ::GetModuleHandleW(nullptr), this);
 }
 
 PinWindow::~PinWindow() {
+    m_destroying = true;
     CommitTextEdit();
     if (m_font)     { ::DeleteObject(m_font); m_font = nullptr; }
-    if (m_fontIcon) { ::DeleteObject(m_fontIcon); m_fontIcon = nullptr; }
     if (m_hwnd) {
         ::DestroyWindow(m_hwnd);
         m_hwnd = nullptr;
@@ -91,17 +102,18 @@ PinWindow::~PinWindow() {
     }
 }
 
-void PinWindow::Show() {
-    if (m_hwnd) {
-        ::ShowWindow(m_hwnd, SW_SHOWNA);
-        ::UpdateWindow(m_hwnd);
-    }
+bool PinWindow::Show() {
+    if (!m_hwnd) return false;
+    ::ShowWindow(m_hwnd, SW_SHOWNA);
+    ::UpdateWindow(m_hwnd);
+    return true;
 }
 
-void PinWindow::ShowInEditMode() {
-    Show();
+bool PinWindow::ShowInEditMode() {
+    if (!Show()) return false;
     if (!m_isEditing) EnterEditMode();
     if (m_hwnd) ::SetForegroundWindow(m_hwnd);
+    return m_hwnd != nullptr;
 }
 
 LRESULT CALLBACK PinWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -110,6 +122,16 @@ LRESULT CALLBACK PinWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
     }
     auto self = reinterpret_cast<PinWindow*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (msg == WM_NCDESTROY && self) {
+        self->m_hwnd = nullptr;
+        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        auto closed = self->m_destroying ? CloseCallback{} : std::move(self->m_closed);
+        const LRESULT result = ::DefWindowProcW(hwnd, msg, wp, lp);
+        if (closed) {
+            try { closed(self); } catch (...) { /* Never unwind through Win32. */ }
+        }
+        return result;
+    }
     if (self) return self->HandleMessage(hwnd, msg, wp, lp);
     return ::DefWindowProcW(hwnd, msg, wp, lp);
 }
@@ -172,6 +194,16 @@ LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         else              r->bottom = r->top   + finalCH + bh;
 
         return TRUE;
+    }
+
+    case WM_GETMINMAXINFO: {
+        auto* limits = reinterpret_cast<MINMAXINFO*>(lp);
+        if (limits) {
+            // The primary toolbar is 420 px wide; keep every action reachable.
+            limits->ptMinTrackSize.x = (std::max)(limits->ptMinTrackSize.x, 440L);
+            limits->ptMinTrackSize.y = (std::max)(limits->ptMinTrackSize.y, 120L);
+        }
+        return 0;
     }
 
     case WM_NCRBUTTONUP:
@@ -305,7 +337,6 @@ LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 1;
 
     case WM_DESTROY:
-        m_hwnd = nullptr;
         return 0;
     }
     return ::DefWindowProcW(hwnd, msg, wp, lp);
@@ -337,28 +368,40 @@ void PinWindow::ShowContextMenu(int screenX, int screenY) {
 }
 
 void PinWindow::CopyToClipboard() {
-    if (!m_bitmap) return;
+    if (!m_bitmap || m_width <= 0 || m_height <= 0) return;
 
     HDC hdcScreen = ::GetDC(nullptr);
+    if (!hdcScreen) return;
     HDC hdcSrc = ::CreateCompatibleDC(hdcScreen);
     HDC hdcDst = ::CreateCompatibleDC(hdcScreen);
     HBITMAP hbmpClone = ::CreateCompatibleBitmap(hdcScreen, m_width, m_height);
-
-    HGDIOBJ oldSrc = ::SelectObject(hdcSrc, m_bitmap);
-    HGDIOBJ oldDst = ::SelectObject(hdcDst, hbmpClone);
-    ::BitBlt(hdcDst, 0, 0, m_width, m_height, hdcSrc, 0, 0, SRCCOPY);
-
-    ::SelectObject(hdcSrc, oldSrc);
-    ::SelectObject(hdcDst, oldDst);
-    ::DeleteDC(hdcSrc);
-    ::DeleteDC(hdcDst);
+    HGDIOBJ oldSrc = nullptr;
+    HGDIOBJ oldDst = nullptr;
+    bool copied = false;
+    if (hdcSrc && hdcDst && hbmpClone) {
+        oldSrc = ::SelectObject(hdcSrc, m_bitmap);
+        oldDst = ::SelectObject(hdcDst, hbmpClone);
+        if (oldSrc && oldSrc != HGDI_ERROR && oldDst && oldDst != HGDI_ERROR) {
+            copied = ::BitBlt(hdcDst, 0, 0, m_width, m_height, hdcSrc, 0, 0, SRCCOPY) != FALSE;
+        }
+    }
+    if (oldSrc && oldSrc != HGDI_ERROR) ::SelectObject(hdcSrc, oldSrc);
+    if (oldDst && oldDst != HGDI_ERROR) ::SelectObject(hdcDst, oldDst);
+    if (hdcSrc) ::DeleteDC(hdcSrc);
+    if (hdcDst) ::DeleteDC(hdcDst);
     ::ReleaseDC(nullptr, hdcScreen);
 
+    if (!copied) {
+        if (hbmpClone) ::DeleteObject(hbmpClone);
+        return;
+    }
+
+    bool clipboardOwnsBitmap = false;
     if (::OpenClipboard(m_hwnd)) {
-        ::EmptyClipboard();
-        ::SetClipboardData(CF_BITMAP, hbmpClone);
+        if (::EmptyClipboard() && ::SetClipboardData(CF_BITMAP, hbmpClone)) clipboardOwnsBitmap = true;
         ::CloseClipboard();
     }
+    if (!clipboardOwnsBitmap) ::DeleteObject(hbmpClone);
 }
 
 void PinWindow::SaveToFile() {
@@ -409,17 +452,26 @@ void PinWindow::FinishEdit(bool apply) {
 
     if (apply && !m_annotationEngine.IsEmpty()) {
         HDC hdcScreen = ::GetDC(nullptr);
-        HDC hdcMem = ::CreateCompatibleDC(hdcScreen);
-        HGDIOBJ old = ::SelectObject(hdcMem, m_bitmap);
-        RECT fullRect = { 0, 0, m_width, m_height };
-        HBITMAP baked = m_annotationEngine.BakeToBitmap(hdcMem, fullRect, m_width, m_height);
-        ::SelectObject(hdcMem, old);
-        ::DeleteDC(hdcMem);
-        ::ReleaseDC(nullptr, hdcScreen);
+        HDC hdcMem = hdcScreen ? ::CreateCompatibleDC(hdcScreen) : nullptr;
+        HBITMAP baked = nullptr;
+        HGDIOBJ old = nullptr;
+        if (hdcMem) {
+            old = ::SelectObject(hdcMem, m_bitmap);
+            if (old && old != HGDI_ERROR) {
+                RECT fullRect = { 0, 0, m_width, m_height };
+                baked = m_annotationEngine.BakeToBitmap(hdcMem, fullRect, m_width, m_height);
+                ::SelectObject(hdcMem, old);
+            }
+            ::DeleteDC(hdcMem);
+        }
+        if (hdcScreen) ::ReleaseDC(nullptr, hdcScreen);
 
         if (baked) {
             ::DeleteObject(m_bitmap);
             m_bitmap = baked;
+        } else {
+            ::MessageBoxW(m_hwnd, L"Failed to apply annotations.", L"Nskry", MB_ICONERROR);
+            return;
         }
     }
 
@@ -433,16 +485,19 @@ void PinWindow::FinishEdit(bool apply) {
 void PinWindow::CommitTextEdit() {
     if (!m_hTextEdit) return;
 
-    int len = ::GetWindowTextLengthW(m_hTextEdit);
+    // Clear the member before DestroyWindow: destroying the edit control emits
+    // EN_KILLFOCUS and can otherwise re-enter this method with the same HWND.
+    HWND edit = m_hTextEdit;
+    m_hTextEdit = nullptr;
+    int len = ::GetWindowTextLengthW(edit);
     if (len > 0) {
         std::vector<wchar_t> buf(len + 1);
-        ::GetWindowTextW(m_hTextEdit, buf.data(), len + 1);
+        ::GetWindowTextW(edit, buf.data(), len + 1);
         m_annotationEngine.AddTextShape(m_textEditPos, buf.data());
     }
 
-    ::DestroyWindow(m_hTextEdit);
-    m_hTextEdit = nullptr;
-    ::InvalidateRect(m_hwnd, nullptr, FALSE);
+    if (::IsWindow(edit)) ::DestroyWindow(edit);
+    if (m_hwnd) ::InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void PinWindow::BuildPinToolbar(int clientW, int clientH) {
@@ -572,11 +627,13 @@ void PinWindow::DrawPinToolbar(HDC hdc, int /*clientW*/, int /*clientH*/) {
         if (item.isSeparator) {
             int midX = (item.rect.left + item.rect.right) / 2;
             HPEN sepPen = ::CreatePen(PS_SOLID, 1, RGB(70, 70, 80));
-            HGDIOBJ oldPen = ::SelectObject(hdc, sepPen);
-            ::MoveToEx(hdc, midX, item.rect.top + 3, nullptr);
-            ::LineTo(hdc, midX, item.rect.bottom - 3);
-            ::SelectObject(hdc, oldPen);
-            ::DeleteObject(sepPen);
+            HGDIOBJ oldPen = sepPen ? ::SelectObject(hdc, sepPen) : nullptr;
+            if (oldPen && oldPen != HGDI_ERROR) {
+                ::MoveToEx(hdc, midX, item.rect.top + 3, nullptr);
+                ::LineTo(hdc, midX, item.rect.bottom - 3);
+                ::SelectObject(hdc, oldPen);
+            }
+            if (sepPen) ::DeleteObject(sepPen);
             continue;
         }
 
@@ -592,23 +649,29 @@ void PinWindow::DrawPinToolbar(HDC hdc, int /*clientW*/, int /*clientH*/) {
 
             HBRUSH colBrush = ::CreateSolidBrush(item.color);
             HPEN borderPen = ::CreatePen(PS_SOLID, 1, item.selected ? RGB(255, 255, 255) : RGB(80, 80, 90));
-            HGDIOBJ oldBrush = ::SelectObject(hdc, colBrush);
-            HGDIOBJ oldPen   = ::SelectObject(hdc, borderPen);
+            HGDIOBJ oldBrush = colBrush ? ::SelectObject(hdc, colBrush) : nullptr;
+            HGDIOBJ oldPen   = borderPen ? ::SelectObject(hdc, borderPen) : nullptr;
 
-            ::Ellipse(hdc, cx - r, cy - r, cx + r, cy + r);
+            if (oldBrush && oldBrush != HGDI_ERROR && oldPen && oldPen != HGDI_ERROR) {
+                ::Ellipse(hdc, cx - r, cy - r, cx + r, cy + r);
+            }
 
             if (item.selected) {
                 HPEN ringPen = ::CreatePen(PS_SOLID, 2, RGB(0, 150, 255));
-                ::SelectObject(hdc, ringPen);
-                ::SelectObject(hdc, ::GetStockObject(NULL_BRUSH));
-                ::Ellipse(hdc, cx - r - 2, cy - r - 2, cx + r + 3, cy + r + 3);
-                ::DeleteObject(ringPen);
+                HGDIOBJ previousPen = ringPen ? ::SelectObject(hdc, ringPen) : nullptr;
+                HGDIOBJ previousBrush = ::SelectObject(hdc, ::GetStockObject(NULL_BRUSH));
+                if (previousPen && previousPen != HGDI_ERROR && previousBrush && previousBrush != HGDI_ERROR) {
+                    ::Ellipse(hdc, cx - r - 2, cy - r - 2, cx + r + 3, cy + r + 3);
+                }
+                if (previousBrush && previousBrush != HGDI_ERROR) ::SelectObject(hdc, previousBrush);
+                if (previousPen && previousPen != HGDI_ERROR) ::SelectObject(hdc, previousPen);
+                if (ringPen) ::DeleteObject(ringPen);
             }
 
-            ::SelectObject(hdc, oldBrush);
-            ::SelectObject(hdc, oldPen);
-            ::DeleteObject(colBrush);
-            ::DeleteObject(borderPen);
+            if (oldBrush && oldBrush != HGDI_ERROR) ::SelectObject(hdc, oldBrush);
+            if (oldPen && oldPen != HGDI_ERROR) ::SelectObject(hdc, oldPen);
+            if (colBrush) ::DeleteObject(colBrush);
+            if (borderPen) ::DeleteObject(borderPen);
             continue;
         }
 
@@ -641,6 +704,45 @@ void PinWindow::DrawPinToolbar(HDC hdc, int /*clientW*/, int /*clientH*/) {
             ::SelectObject(hdc, oldFont);
         }
     }
+}
+
+RECT PinWindow::ImageRect() const {
+    if (!m_hwnd || m_width <= 0 || m_height <= 0) return {};
+    RECT client{};
+    if (!::GetClientRect(m_hwnd, &client)) return {};
+    const int clientW = client.right - client.left;
+    const int clientH = client.bottom - client.top;
+    if (clientW <= 0 || clientH <= 0) return {};
+
+    const double scale = (std::min)(
+        static_cast<double>(clientW) / m_width,
+        static_cast<double>(clientH) / m_height);
+    const int imageW = (std::max)(1, static_cast<int>(m_width * scale));
+    const int imageH = (std::max)(1, static_cast<int>(m_height * scale));
+    const int left = (clientW - imageW) / 2;
+    const int top = (clientH - imageH) / 2;
+    return { left, top, left + imageW, top + imageH };
+}
+
+bool PinWindow::ClientPointToBitmap(int x, int y, POINT& bitmapPoint, bool clampToImage) const {
+    const RECT image = ImageRect();
+    POINT clientPoint{ x, y };
+    if (image.right <= image.left || image.bottom <= image.top) {
+        return false;
+    }
+    if (!::PtInRect(&image, clientPoint)) {
+        if (!clampToImage) return false;
+        x = (std::clamp)(x, static_cast<int>(image.left), static_cast<int>(image.right - 1));
+        y = (std::clamp)(y, static_cast<int>(image.top), static_cast<int>(image.bottom - 1));
+    }
+
+    const int imageW = image.right - image.left;
+    const int imageH = image.bottom - image.top;
+    bitmapPoint.x = (std::clamp)(static_cast<int>(
+        static_cast<long long>(x - image.left) * m_width / imageW), 0, m_width - 1);
+    bitmapPoint.y = (std::clamp)(static_cast<int>(
+        static_cast<long long>(y - image.top) * m_height / imageH), 0, m_height - 1);
+    return true;
 }
 
 void PinWindow::OnLButtonDown(int x, int y) {
@@ -695,27 +797,32 @@ void PinWindow::OnLButtonDown(int x, int y) {
     if (m_annotationEngine.GetTool() != ToolType::None) {
         CommitTextEdit();
 
-        RECT rc{}; ::GetClientRect(m_hwnd, &rc);
-        int cw = rc.right; int ch = rc.bottom;
-        if (cw <= 0 || ch <= 0) return;
-
-        int bmpX = x * m_width / cw;
-        int bmpY = y * m_height / ch;
+        POINT bitmapPoint{};
+        if (!ClientPointToBitmap(x, y, bitmapPoint)) return;
 
         if (m_annotationEngine.GetTool() == ToolType::Text) {
-            m_textEditPos = { bmpX, bmpY };
+            m_textEditPos = bitmapPoint;
+            RECT client{};
+            ::GetClientRect(m_hwnd, &client);
+            const int clientW = static_cast<int>(client.right - client.left);
+            const int clientH = static_cast<int>(client.bottom - client.top);
+            const int editW = (std::min)(120, (std::max)(1, clientW));
+            const int editX = (std::clamp)(x, 0, (std::max)(0, clientW - editW));
+            const int editY = (std::clamp)(y, 0, (std::max)(0, clientH - 24));
             m_hTextEdit = ::CreateWindowExW(
                 0, L"EDIT", L"",
                 WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-                x, y, 120, 24,
+                editX, editY, editW, 24,
                 m_hwnd,
                 reinterpret_cast<HMENU>(static_cast<UINT_PTR>(102)),
                 ::GetModuleHandleW(nullptr), nullptr);
-            ::SendMessageW(m_hTextEdit, WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
-            ::SetFocus(m_hTextEdit);
+            if (m_hTextEdit) {
+                if (m_font) ::SendMessageW(m_hTextEdit, WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
+                ::SetFocus(m_hTextEdit);
+            }
         } else {
             m_isDrawing = true;
-            m_annotationEngine.OnMouseDown({ bmpX, bmpY });
+            m_annotationEngine.OnMouseDown(bitmapPoint);
             ::SetCapture(m_hwnd);
             ::InvalidateRect(m_hwnd, nullptr, FALSE);
         }
@@ -724,12 +831,9 @@ void PinWindow::OnLButtonDown(int x, int y) {
 
 void PinWindow::OnMouseMove(int x, int y) {
     if (m_isDrawing) {
-        RECT rc{}; ::GetClientRect(m_hwnd, &rc);
-        int cw = rc.right; int ch = rc.bottom;
-        if (cw > 0 && ch > 0) {
-            int bmpX = x * m_width / cw;
-            int bmpY = y * m_height / ch;
-            m_annotationEngine.OnMouseMove({ bmpX, bmpY });
+        POINT bitmapPoint{};
+        if (ClientPointToBitmap(x, y, bitmapPoint, true)) {
+            m_annotationEngine.OnMouseMove(bitmapPoint);
             ::InvalidateRect(m_hwnd, nullptr, FALSE);
         }
         return;
@@ -753,50 +857,56 @@ void PinWindow::OnLButtonUp(int x, int y) {
     if (m_isDrawing) {
         ::ReleaseCapture();
         m_isDrawing = false;
-        RECT rc{}; ::GetClientRect(m_hwnd, &rc);
-        int cw = rc.right; int ch = rc.bottom;
-        if (cw > 0 && ch > 0) {
-            int bmpX = x * m_width / cw;
-            int bmpY = y * m_height / ch;
-            m_annotationEngine.OnMouseUp({ bmpX, bmpY });
+        POINT bitmapPoint{};
+        if (ClientPointToBitmap(x, y, bitmapPoint, true)) {
+            m_annotationEngine.OnMouseUp(bitmapPoint);
         }
         ::InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
 
 void PinWindow::OnPaint(HWND hwnd) {
-    PAINTSTRUCT ps;
+    PAINTSTRUCT ps{};
     HDC hdc = ::BeginPaint(hwnd, &ps);
+    if (!hdc) return;
 
     RECT rc{};
     ::GetClientRect(hwnd, &rc);
     int clientW = rc.right;
     int clientH = rc.bottom;
 
-    HDC hdcMem = ::CreateCompatibleDC(hdc);
-    HGDIOBJ old = ::SelectObject(hdcMem, m_bitmap);
+    ::FillRect(hdc, &rc, static_cast<HBRUSH>(::GetStockObject(BLACK_BRUSH)));
+    const RECT image = ImageRect();
+    HDC hdcMem = (m_bitmap && image.right > image.left && image.bottom > image.top)
+        ? ::CreateCompatibleDC(hdc) : nullptr;
+    HGDIOBJ old = hdcMem ? ::SelectObject(hdcMem, m_bitmap) : nullptr;
+    const bool sourceReady = old && old != HGDI_ERROR;
 
     // 1. Draw base bitmap
-    ::SetStretchBltMode(hdc, HALFTONE);
-    ::SetBrushOrgEx(hdc, 0, 0, nullptr);
-
-    ::StretchBlt(hdc, 0, 0, clientW, clientH,
-                 hdcMem, 0, 0, m_width, m_height, SRCCOPY);
-
-    // 2. Draw annotations in edit mode
-    if (m_isEditing) {
-        Gdiplus::Graphics g(hdc);
-        g.ScaleTransform(
-            static_cast<float>(clientW) / static_cast<float>(m_width),
-            static_cast<float>(clientH) / static_cast<float>(m_height));
-        m_annotationEngine.Draw(g, hdcMem, 0, 0, m_width, m_height);
-
-        // Draw Pin Toolbar
-        DrawPinToolbar(hdc, clientW, clientH);
+    if (sourceReady) {
+        ::SetStretchBltMode(hdc, HALFTONE);
+        ::SetBrushOrgEx(hdc, 0, 0, nullptr);
+        ::StretchBlt(hdc, image.left, image.top, image.right - image.left, image.bottom - image.top,
+                     hdcMem, 0, 0, m_width, m_height, SRCCOPY);
     }
 
-    ::SelectObject(hdcMem, old);
-    ::DeleteDC(hdcMem);
+    // 2. Draw annotations in edit mode
+    if (m_isEditing && sourceReady) {
+        Gdiplus::Graphics g(hdc);
+        Gdiplus::Matrix transform(
+            static_cast<Gdiplus::REAL>(image.right - image.left) / m_width, 0.0f,
+            0.0f, static_cast<Gdiplus::REAL>(image.bottom - image.top) / m_height,
+            static_cast<Gdiplus::REAL>(image.left), static_cast<Gdiplus::REAL>(image.top));
+        g.SetTransform(&transform);
+        m_annotationEngine.Draw(g, hdcMem, 0, 0, m_width, m_height);
+    }
+
+    // Draw the toolbar even when the source bitmap could not be selected, so
+    // users can still cancel editing or close the window.
+    if (m_isEditing) DrawPinToolbar(hdc, clientW, clientH);
+
+    if (sourceReady) ::SelectObject(hdcMem, old);
+    if (hdcMem) ::DeleteDC(hdcMem);
 
     ::EndPaint(hwnd, &ps);
 }

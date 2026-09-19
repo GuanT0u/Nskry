@@ -10,13 +10,27 @@ bool Parse(const std::wstring& value, Parts& parts) {
     static const std::wregex pattern(LR"(^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z.-]+)?$)");
     std::wsmatch match;
     if (!std::regex_match(value, match, pattern)) return false;
-    try { parts.major = std::stoi(match[1]); parts.minor = std::stoi(match[2]); parts.patch = std::stoi(match[3]); parts.prerelease = match[4]; return true; }
+    try { parts.major = std::stoi(match[1]); parts.minor = std::stoi(match[2]); parts.patch = std::stoi(match[3]); parts.prerelease = match[4]; }
     catch (...) { return false; }
+    if (!parts.prerelease.empty()) {
+        std::wstringstream identifiers(parts.prerelease);
+        std::wstring identifier;
+        while (std::getline(identifiers, identifier, L'.')) {
+            const bool numeric = !identifier.empty() &&
+                std::all_of(identifier.begin(), identifier.end(), [](wchar_t ch) { return ch >= L'0' && ch <= L'9'; });
+            if (numeric && identifier.size() > 1 && identifier.front() == L'0') return false;
+        }
+    }
+    return true;
 }
 int CompareIdentifier(const std::wstring& left, const std::wstring& right) {
-    const bool leftNumber = !left.empty() && std::all_of(left.begin(), left.end(), iswdigit);
-    const bool rightNumber = !right.empty() && std::all_of(right.begin(), right.end(), iswdigit);
-    if (leftNumber && rightNumber) { const int a = std::stoi(left), b = std::stoi(right); return a == b ? 0 : (a < b ? -1 : 1); }
+    const auto asciiDigit = [](wchar_t ch) { return ch >= L'0' && ch <= L'9'; };
+    const bool leftNumber = !left.empty() && std::all_of(left.begin(), left.end(), asciiDigit);
+    const bool rightNumber = !right.empty() && std::all_of(right.begin(), right.end(), asciiDigit);
+    if (leftNumber && rightNumber) {
+        if (left.size() != right.size()) return left.size() < right.size() ? -1 : 1;
+        return left == right ? 0 : (left < right ? -1 : 1);
+    }
     if (leftNumber != rightNumber) return leftNumber ? -1 : 1;
     return left == right ? 0 : (left < right ? -1 : 1);
 }

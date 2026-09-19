@@ -1,22 +1,23 @@
 #include "pch.h"
+#include "core/json.h"
 #include "core/settings_manager.h"
 
 #include <fstream>
-#include <regex>
+#include <sstream>
 
 namespace nskry {
 namespace {
 
 const std::wstring kEmptyValue;
 
-std::wstring JsonEscape(const std::wstring& value) {
-    std::wstring escaped;
-    escaped.reserve(value.size());
-    for (const wchar_t ch : value) {
-        if (ch == L'\\' || ch == L'\"') escaped.push_back(L'\\');
-        escaped.push_back(ch);
-    }
-    return escaped;
+bool ReadOptionalString(const json::Value& object, std::wstring_view key, std::wstring& value) {
+    const json::Value* member = object.Find(key);
+    return !member || (member->AsString() && object.GetString(key, value));
+}
+
+bool ReadOptionalBool(const json::Value& object, std::wstring_view key, bool& value) {
+    const json::Value* member = object.Find(key);
+    return !member || (member->AsBool() && object.GetBool(key, value));
 }
 
 std::wstring GetLocalAppDataPath() {
@@ -69,37 +70,43 @@ bool SettingsManager::Load() {
     SetDefaults();
     if (m_settingsPath.empty()) return false;
 
-    std::wifstream input(m_settingsPath);
-    if (!input) return Save();
+    if (::GetFileAttributesW(m_settingsPath.c_str()) == INVALID_FILE_ATTRIBUTES) return Save();
 
-    const std::wstring content((std::istreambuf_iterator<wchar_t>(input)), std::istreambuf_iterator<wchar_t>());
-    const std::wregex hotkeysBlock(LR"("hotkeys"\s*:\s*\{([\s\S]*?)\})");
-    std::wsmatch blockMatch;
-    if (!std::regex_search(content, blockMatch, hotkeysBlock)) return false;
+    json::Value root;
+    if (!json::ParseUtf8File(m_settingsPath, root) || !root.IsObject()) return false;
 
-    const std::wregex item(LR"json("([^"\\]+)"\s*:\s*"([^"\\]*)")json");
-    for (std::wsregex_iterator it(blockMatch[1].first, blockMatch[1].second, item), end; it != end; ++it) {
-        m_hotkeys[(*it)[1].str()] = (*it)[2].str();
+    const json::Value* hotkeys = root.Find(L"hotkeys");
+    const json::Value::Object* hotkeyObject = hotkeys ? hotkeys->AsObject() : nullptr;
+    if (!hotkeyObject) return false;
+    for (const auto& [commandId, shortcutValue] : *hotkeyObject) {
+        const std::wstring* shortcut = shortcutValue.AsString();
+        if (!shortcut || commandId.empty()) return false;
+        m_hotkeys[commandId] = *shortcut;
     }
-    std::wsmatch match;
-    if (std::regex_search(content, match, std::wregex(LR"json("run_at_startup"\s*:\s*(true|false))json"))) m_runAtStartup = match[1] == L"true";
-    if (std::regex_search(content, match, std::wregex(LR"json("notifications"\s*:\s*(true|false))json"))) m_notifications = match[1] == L"true";
-    if (std::regex_search(content, match, std::wregex(LR"json("theme"\s*:\s*"([^"\\]*)")json"))) m_theme = match[1].str();
-    if (std::regex_search(content, match, std::wregex(LR"json("official_plugin_catalog_url"\s*:\s*"([^"\\]*)")json"))) m_officialPluginCatalogUrl = match[1].str();
+
+    const json::Value* general = root.Find(L"general");
+    if (general && !general->IsObject()) return false;
+    const json::Value& generalObject = general ? *general : root; // Accept the early flat settings shape.
+    if (!ReadOptionalBool(generalObject, L"run_at_startup", m_runAtStartup) ||
+        !ReadOptionalBool(generalObject, L"notifications", m_notifications) ||
+        !ReadOptionalString(generalObject, L"theme", m_theme)) return false;
+
+    const json::Value* updates = root.Find(L"updates");
+    if (updates && !updates->IsObject()) return false;
+    const json::Value& updatesObject = updates ? *updates : root;
+    if (!ReadOptionalString(updatesObject, L"official_plugin_catalog_url", m_officialPluginCatalogUrl)) return false;
     return true;
 }
 
 bool SettingsManager::Save() const {
     if (!EnsureConfigDirectory() || m_settingsPath.empty()) return false;
 
-    std::wofstream output(m_settingsPath, std::ios::trunc);
-    if (!output) return false;
-
+    std::wostringstream output;
     output << L"{\n"
            << L"  \"general\": {\n"
            << L"    \"run_at_startup\": " << (m_runAtStartup ? L"true" : L"false") << L",\n"
            << L"    \"notifications\": " << (m_notifications ? L"true" : L"false") << L",\n"
-           << L"    \"theme\": \"" << JsonEscape(m_theme) << L"\"\n"
+           << L"    \"theme\": \"" << json::EscapeString(m_theme) << L"\"\n"
            << L"  },\n"
            << L"  \"capture\": {\n"
            << L"    \"default_save_directory\": \"\",\n"
@@ -108,18 +115,21 @@ bool SettingsManager::Save() const {
            << L"  \"updates\": {\n"
            << L"    \"check_automatically\": true,\n"
            << L"    \"include_prerelease\": false,\n"
-           << L"    \"official_plugin_catalog_url\": \"" << JsonEscape(m_officialPluginCatalogUrl) << L"\"\n"
+           << L"    \"official_plugin_catalog_url\": \"" << json::EscapeString(m_officialPluginCatalogUrl) << L"\"\n"
            << L"  },\n"
            << L"  \"hotkeys\": {\n";
 
     bool first = true;
     for (const auto& [commandId, shortcut] : m_hotkeys) {
         if (!first) output << L",\n";
-        output << L"    \"" << JsonEscape(commandId) << L"\": \"" << JsonEscape(shortcut) << L"\"";
+        output << L"    \"" << json::EscapeString(commandId) << L"\": \"" << json::EscapeString(shortcut) << L"\"";
         first = false;
     }
     output << L"\n  }\n}\n";
-    return static_cast<bool>(output);
+    std::string bytes;
+    if (!json::ToUtf8(output.str(), bytes)) return false;
+    std::ofstream file(m_settingsPath, std::ios::binary | std::ios::trunc);
+    return file && static_cast<bool>(file.write(bytes.data(), static_cast<std::streamsize>(bytes.size())));
 }
 
 const std::wstring& SettingsManager::GetHotkey(const std::wstring& commandId) const {

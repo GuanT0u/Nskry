@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <mutex>
 #include <windows.h>
 
 namespace nskry {
@@ -20,7 +21,7 @@ public:
     LongImageCropWindow(const LongImageCropWindow&) = delete;
     LongImageCropWindow& operator=(const LongImageCropWindow&) = delete;
 
-    void Show(HWND owner);
+    [[nodiscard]] bool Show(HWND owner);
 
 private:
     enum class DragHandle { None, Top, Bottom };
@@ -45,8 +46,10 @@ private:
     DragHandle m_drag = DragHandle::None;
     ApplyCallback m_apply;
     CloseCallback m_closed;
+    bool m_destroying = false;
 
     static constexpr wchar_t kClassName[] = L"NskryLongImageCropWindow";
+    static inline std::once_flag s_classOnce;
 };
 
 } // namespace nskry

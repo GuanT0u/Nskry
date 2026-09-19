@@ -11,7 +11,7 @@
 - **PiP 实时监控** — 框选任意窗口区域，生成画中画实时镜像
 - **比例锁定** — 拖四角锁定原始比例，拖边缘自由缩放
 - **系统托盘** — 后台运行，托盘右键菜单快捷操作
-- **插件架构** — SDK 已定义，支持后续扩展编辑/OCR/录屏等功能
+- **插件架构** — SDK 与插件管理链路已就绪，当前包含截长图插件，并为 OCR/翻译/录屏保留扩展位
 
 ## 快捷键
 
@@ -29,9 +29,18 @@ $vcvars = "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Bu
 cmd /c "`"$vcvars`" > nul 2>&1 && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build"
 ```
 
+如需构建安装器，先完成上述 CMake 构建。CMake 会同时生成
+`installer/bundled/nskry-scroll.nskryplugin`，再运行 Inno Setup：
+
+```powershell
+iscc installer/NskrySetup.iss
+```
+
+OCR、翻译和录屏仍属于后续插件规划，当前版本尚未实现。
+
 ## 技术栈
 
-C++20 · Win32 API · D3D11 · Windows.Graphics.Capture · GDI+ · ~78KB 可执行文件
+C++20 · Win32 API · D3D11 · Windows.Graphics.Capture · GDI+
 
 ## 文档
 

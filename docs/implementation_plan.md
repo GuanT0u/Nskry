@@ -98,7 +98,7 @@ struct NskryHostContext {
     HWND                sourceHwnd;       // 截图来源窗口
     // 回调
     void (*showNotification)(const wchar_t* msg, int durationMs);
-    void (*copyBitmapToClipboard)(HBITMAP hbmp);
+    int32_t (*copyBitmapToClipboard)(HBITMAP hbmp);
 };
 
 // ---- 插件必须导出的函数 ----
@@ -108,7 +108,7 @@ extern "C" {
     NSKRY_API const NskryPluginInfo* nskry_plugin_info();
 
     /// 插件初始化 (接收宿主上下文)
-    NSKRY_API bool nskry_plugin_init(const NskryHostContext* ctx);
+    NSKRY_API int32_t NSKRY_CALL nskry_plugin_init(const NskryHostContext* ctx);
 
     /// 执行插件动作 (用户点击工具栏按钮时触发)
     NSKRY_API void nskry_plugin_execute(const NskryHostContext* ctx);
@@ -132,7 +132,7 @@ extern "C" {
 
 ## 4. 功能分期路线图
 
-### Phase 1：核心重构 — 工具栏 + 插件骨架
+### Phase 1：核心重构 — 工具栏 + 插件骨架（已完成）
 
 > **目标**：让截图框选完成后弹出一个工具栏，用户可以选择不同的"动作"
 
@@ -143,7 +143,7 @@ extern "C" {
 | PluginManager | 扫描 `plugins/` 目录，加载 DLL，将插件按钮动态注入工具栏 |
 | 内置动作分离 | 将 PiP、保存、复制 等动作统一为"内置动作"，与插件共享相同的接口 |
 
-### Phase 2：基础截图功能完善
+### Phase 2：基础截图功能完善（已完成）
 
 | 功能 | 说明 | 实现形式 |
 |------|------|----------|
@@ -151,7 +151,7 @@ extern "C" {
 | **固定截图** | 框选完成后 → 创建 WS_EX_TOPMOST 窗口显示静态位图，可拖拽、缩放、关闭 | 内置动作 |
 | **PiP 监控** | 已完成 ✅ | 内置动作 |
 
-### Phase 3：截图编辑器
+### Phase 3：截图编辑器（已完成）
 
 | 功能 | 说明 | 实现形式 |
 |------|------|----------|
@@ -161,15 +161,15 @@ extern "C" {
 | **撤销/重做** | Ctrl+Z / Ctrl+Y | 同上 |
 | **应用到固定截图** | 对已固定在桌面的截图进行二次编辑 | 同上 |
 
-### Phase 4：高级功能
+### Phase 4：高级功能（截长图已完成；OCR/翻译保留为后续规划）
 
 | 功能 | 说明 | 实现形式 |
 |------|------|----------|
-| **截长图** | 自动检测可滚动区域 → 模拟滚动 → 多帧拼接 | `nskry-scroll.dll` |
+| **截长图** | 框选区域 → 手动/自动滚动 → 连续帧位移匹配与拼接 → 预览/裁剪/标注入口 | `nskry-scroll.dll`（已完成） |
 | **OCR 文字识别** | Windows.Media.Ocr (内置 API) 或 Tesseract | `nskry-ocr.dll` |
 | **翻译** | OCR 结果 → 调用翻译 API → 叠加显示 | `nskry-translate.dll` |
 
-### Phase 5：录屏
+### Phase 5：录屏（未开始）
 
 | 功能 | 说明 | 实现形式 |
 |------|------|----------|
@@ -203,8 +203,8 @@ d:\codes\Nskry\
 │   └── ui/
 │       ├── selection_window.h/cpp # ✅ 已完成
 │       ├── pip_window.h/cpp       # ✅ 已完成
-│       ├── toolbar.h/cpp          # 截图后的动作工具栏 (待开发)
-│       └── pin_window.h/cpp       # 固定截图窗口 (待开发)
+│       ├── toolbar.h/cpp          # 截图后的动作工具栏
+│       └── pin_window.h/cpp       # 固定截图窗口
 ├── plugins/                       # 可选插件目录
 │   ├── nskry-edit/
 │   │   ├── CMakeLists.txt
@@ -238,12 +238,11 @@ d:\codes\Nskry\
 ## 7. 开发优先级建议
 
 ```
-当前已完成 → Phase 1 (工具栏 + 插件骨架)
-          → Phase 2 (正常截图 + 固定截图)  ← 建议下一步
-          → Phase 3 (编辑器)
-          → Phase 4 (截长图 + OCR)
-          → Phase 5 (录屏)
+Stage A-G / Phase 1-3 已完成
+          → Phase 4 截长图（已完成）
+          → OCR / 翻译（后续插件规划）
+          → Phase 5 录屏（后续插件规划）
 ```
 
 > [!TIP]
-> Phase 1 + Phase 2 是接下来的最高优先级。完成这两步后，Nskry 就具备了一个"能用"的截图工具的基础体验，并且通过插件架构为后续扩展铺好了路。
+> 发布构建顺序固定为：先用 CMake/Ninja 构建核心与官方插件包，再用 Inno Setup 构建安装器。后续 OCR、翻译和录屏继续以独立插件接入，不改变核心截图与插件 ABI 的职责边界。

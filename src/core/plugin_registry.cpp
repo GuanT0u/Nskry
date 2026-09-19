@@ -1,8 +1,9 @@
 #include "pch.h"
+#include "core/json.h"
 #include "core/plugin_registry.h"
 
 #include <fstream>
-#include <regex>
+#include <sstream>
 
 namespace nskry {
 namespace {
@@ -14,41 +15,6 @@ std::wstring GetLocalAppDataPath() {
     ::GetEnvironmentVariableW(L"LOCALAPPDATA", path.data(), required);
     path.resize(required - 1);
     return path;
-}
-
-bool ReadUtf8File(const std::wstring& path, std::wstring& content) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input) return false;
-    const std::string bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-    if (bytes.empty()) { content.clear(); return true; }
-    const int required = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), static_cast<int>(bytes.size()), nullptr, 0);
-    if (required <= 0) return false;
-    content.resize(required);
-    return ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), static_cast<int>(bytes.size()), content.data(), required) > 0;
-}
-
-std::string ToUtf8(const std::wstring& value) {
-    if (value.empty()) return {};
-    const int required = ::WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
-    std::string result(required, '\0');
-    ::WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), result.data(), required, nullptr, nullptr);
-    return result;
-}
-
-bool FindString(const std::wstring& json, const wchar_t* key, std::wstring& value) {
-    const std::wregex pattern(std::wstring(LR"json(")json") + key + LR"json("\s*:\s*"([^"\\]*)")json");
-    std::wsmatch match;
-    if (!std::regex_search(json, match, pattern)) return false;
-    value = match[1].str();
-    return true;
-}
-
-bool FindBool(const std::wstring& json, const wchar_t* key, bool& value) {
-    const std::wregex pattern(std::wstring(LR"json(")json") + key + LR"json("\s*:\s*(true|false))json");
-    std::wsmatch match;
-    if (!std::regex_search(json, match, pattern)) return false;
-    value = match[1].str() == L"true";
-    return true;
 }
 
 std::wstring RelativeInstallPath(const std::wstring& pluginRoot, const std::wstring& fullPath) {
@@ -97,15 +63,24 @@ bool PluginRegistry::Load() {
 }
 
 bool PluginRegistry::LoadRegistryFile() {
-    std::wstring json;
-    if (!ReadUtf8File(m_registryPath, json)) return false;
+    json::Value root;
+    if (!json::ParseUtf8File(m_registryPath, root) || !root.IsObject()) return false;
+    const json::Value* plugins = root.Find(L"plugins");
+    const json::Value::Array* pluginArray = plugins ? plugins->AsArray() : nullptr;
+    if (!pluginArray) return false;
 
     bool complete = true;
-    const std::wregex item(LR"json(\{\s*"id"\s*:\s*"([^"\\]+)"\s*,\s*"version"\s*:\s*"([^"\\]+)"\s*,\s*"enabled"\s*:\s*(true|false)\s*,\s*"source_type"\s*:\s*"([^"\\]+)"\s*,\s*"install_path"\s*:\s*"([^"\\]+)"\s*\})json");
-    for (std::wsregex_iterator it(json.begin(), json.end(), item), end; it != end; ++it) {
-        const std::wstring id = (*it)[1].str();
+    for (const json::Value& item : *pluginArray) {
+        std::wstring id, version, source, persistedPath;
+        bool enabled = true;
+        if (!item.IsObject() || !item.GetString(L"id", id) || !item.GetString(L"version", version) ||
+            !item.GetBool(L"enabled", enabled) || !item.GetString(L"source_type", source) ||
+            !item.GetString(L"install_path", persistedPath)) {
+            complete = false;
+            continue;
+        }
         if (!PluginManifest::IsSafePluginId(id)) { complete = false; continue; }
-        const std::wstring installPath = ResolveInstallPath(m_appRoot, (*it)[5].str());
+        const std::wstring installPath = ResolveInstallPath(m_appRoot, persistedPath);
         PluginManifest manifest;
         if (!PluginManifest::LoadFromFile(installPath + L"\\manifest.json", manifest) || manifest.id != id) {
             complete = false;
@@ -114,9 +89,9 @@ bool PluginRegistry::LoadRegistryFile() {
         PluginRecord record;
         record.manifest = std::move(manifest);
         record.installPath = installPath;
-        record.enabled = (*it)[3].str() == L"true";
-        record.source = SourceFromString((*it)[4].str());
-        m_plugins.emplace(id, std::move(record));
+        record.enabled = enabled;
+        record.source = SourceFromString(source);
+        if (!m_plugins.emplace(id, std::move(record)).second) complete = false;
     }
     return complete;
 }
@@ -148,22 +123,23 @@ bool PluginRegistry::DiscoverPluginDirectories() {
 
 bool PluginRegistry::Save() const {
     if (!EnsureDirectories()) return false;
-    std::ofstream output(m_registryPath, std::ios::binary | std::ios::trunc);
-    if (!output) return false;
-
-    output << "{\n  \"schema\": 1,\n  \"plugins\": [";
+    std::wostringstream output;
+    output << L"{\n  \"schema\": 1,\n  \"plugins\": [";
     bool first = true;
     for (const auto& [id, record] : m_plugins) {
-        if (!first) output << ',';
-        output << "\n    {\"id\": \"" << ToUtf8(id)
-               << "\", \"version\": \"" << ToUtf8(record.manifest.version)
-               << "\", \"enabled\": " << (record.enabled ? "true" : "false")
-               << ", \"source_type\": \"" << ToUtf8(SourceToString(record.source))
-               << "\", \"install_path\": \"" << ToUtf8(RelativeInstallPath(m_pluginRoot, record.installPath)) << "\"}";
+        if (!first) output << L',';
+        output << L"\n    {\"id\": \"" << json::EscapeString(id)
+               << L"\", \"version\": \"" << json::EscapeString(record.manifest.version)
+               << L"\", \"enabled\": " << (record.enabled ? L"true" : L"false")
+               << L", \"source_type\": \"" << json::EscapeString(SourceToString(record.source))
+               << L"\", \"install_path\": \"" << json::EscapeString(RelativeInstallPath(m_pluginRoot, record.installPath)) << L"\"}";
         first = false;
     }
-    output << "\n  ]\n}\n";
-    return static_cast<bool>(output);
+    output << L"\n  ]\n}\n";
+    std::string bytes;
+    if (!json::ToUtf8(output.str(), bytes)) return false;
+    std::ofstream file(m_registryPath, std::ios::binary | std::ios::trunc);
+    return file && static_cast<bool>(file.write(bytes.data(), static_cast<std::streamsize>(bytes.size())));
 }
 
 const PluginRecord* PluginRegistry::Find(const std::wstring& pluginId) const {

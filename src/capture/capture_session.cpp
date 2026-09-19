@@ -59,18 +59,32 @@ CaptureSession::~CaptureSession() {
 // ---------------------------------------------------------------------------
 
 void CaptureSession::Start() {
+    if (m_stopped.load()) return;
     if (m_capturing.exchange(true))
         return;  // already running
     m_session.StartCapture();
 }
 
 void CaptureSession::Stop() {
-    if (!m_capturing.exchange(false))
-        return;  // already stopped
+    if (m_stopped.exchange(true)) return;
+    m_capturing.store(false);
 
     // Unsubscribe before closing (prevents callbacks during teardown)
     if (m_pool)    m_pool.FrameArrived(m_frameToken);
     if (m_item)    m_item.Closed(m_closedToken);
+
+    // A free-threaded frame callback may already have entered before event
+    // revocation completed.  Wait for it (including the consumer callback) so
+    // CleanupPip cannot release PipWindow while RenderFrame is still running.
+    {
+        std::unique_lock lock(m_frameDrainMutex);
+        m_frameDrainCv.wait(lock, [this] { return m_activeFrameCallbacks.load() == 0; });
+    }
+
+    {
+        std::lock_guard lock(m_callbackMutex);
+        m_callback = {};
+    }
 
     if (m_session) { m_session.Close(); m_session = nullptr; }
     if (m_pool)    { m_pool.Close();    m_pool    = nullptr; }
@@ -99,14 +113,27 @@ void CaptureSession::OnFrameArrived(
     winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool const& sender,
     winrt::Windows::Foundation::IInspectable const&)
 {
-    if (!m_capturing.load())
-        return;
+    m_activeFrameCallbacks.fetch_add(1);
+    struct DrainGuard {
+        CaptureSession* owner;
+        ~DrainGuard() {
+            if (owner->m_activeFrameCallbacks.fetch_sub(1) == 1)
+                owner->m_frameDrainCv.notify_all();
+        }
+    } drain{ this };
 
-    auto frame = sender.TryGetNextFrame();
-    if (!frame) return;
+    if (!m_capturing.load()) return;
 
-    ProcessFrame(frame);
-    frame.Close();          // return the buffer to the pool
+    try {
+        auto frame = sender.TryGetNextFrame();
+        if (!frame) return;
+        ProcessFrame(frame);
+        frame.Close();      // return the buffer to the pool
+    } catch (...) {
+        // Capture failures must not escape a WinRT thread-pool callback.
+        // Keep the session alive; a later frame may still be valid, and Stop()
+        // remains the single owner of teardown/revocation.
+    }
 }
 
 void CaptureSession::OnItemClosed(
