@@ -349,6 +349,25 @@ void SelectionWindow::OnMouseMove(int x, int y) {
         r.bottom = (std::min)(m_vH, static_cast<int>(r.bottom));
 
         m_finalRect = r;
+        if (precision && m_activeZone != HitZone::Inside) {
+            // Match the physical cursor to the damped edge/corner. The next
+            // mouse delta then starts from this reduced-speed position too.
+            POINT snapped{ x, y };
+            switch (m_activeZone) {
+            case HitZone::Left:        snapped.x = r.left; break;
+            case HitZone::Right:       snapped.x = r.right; break;
+            case HitZone::Top:         snapped.y = r.top; break;
+            case HitZone::Bottom:      snapped.y = r.bottom; break;
+            case HitZone::TopLeft:     snapped = { r.left, r.top }; break;
+            case HitZone::TopRight:    snapped = { r.right, r.top }; break;
+            case HitZone::BottomLeft:  snapped = { r.left, r.bottom }; break;
+            case HitZone::BottomRight: snapped = { r.right, r.bottom }; break;
+            default: break;
+            }
+            POINT screenPoint{ snapped.x + m_vX, snapped.y + m_vY };
+            ::SetCursorPos(screenPoint.x, screenPoint.y);
+            m_adjustLastPt = snapped;
+        }
         BuildToolbar(m_finalRect);
         ::InvalidateRect(m_hwnd, nullptr, FALSE);
     }

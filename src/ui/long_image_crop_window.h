@@ -31,6 +31,8 @@ private:
     void Paint(HWND);
     void LayoutControls();
     RECT ImageRect() const;
+    void CenterViewOn(int sourceY);
+    void ScrollView(int wheelDelta);
     int SourceYFromClientY(int y) const;
     HBITMAP CreateCroppedBitmap() const;
     void ApplyCrop();
@@ -50,6 +52,7 @@ private:
     double m_dragRemainderY{};
     double m_zoom = 1.0;
     int m_zoomFocusY{};
+    double m_viewTopY{};       // Source-space y at the top of the zoomed viewport.
     ApplyCallback m_apply;
     CloseCallback m_closed;
     bool m_destroying = false;

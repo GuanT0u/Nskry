@@ -139,9 +139,11 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
     }
     case WM_MOUSEMOVE:
         if (m_drag != DragHandle::None) {
+            const int pointerX = GET_X_LPARAM(lp);
             const int pointerY = GET_Y_LPARAM(lp);
+            const bool precision = (::GetKeyState(VK_MENU) & 0x8000) != 0;
             int sourceY = SourceYFromClientY(pointerY);
-            if ((::GetKeyState(VK_MENU) & 0x8000) != 0) {
+            if (precision) {
                 const RECT image = ImageRect();
                 const double sourcePerPixel = image.bottom > image.top
                     ? static_cast<double>(m_height) / (image.bottom - image.top) : 0.0;
@@ -152,10 +154,23 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
             } else {
                 m_dragRemainderY = 0.0;
             }
-            m_dragLastPoint = { GET_X_LPARAM(lp), pointerY };
             if (m_drag == DragHandle::Top) m_cropTop = (std::clamp)(sourceY, 0, m_cropBottom - kMinimumCropHeight);
             else m_cropBottom = (std::clamp)(sourceY, m_cropTop + kMinimumCropHeight, m_height);
             m_zoomFocusY = m_drag == DragHandle::Top ? m_cropTop : m_cropBottom;
+            m_dragLastPoint = { pointerX, pointerY };
+            if (precision) {
+                // The actual pointer follows the damped edge. This keeps the
+                // loupe's centre cross, the cursor, and the edited boundary
+                // visually aligned instead of showing the unscaled raw input.
+                const RECT image = ImageRect();
+                const int edgeY = image.top + static_cast<int>(
+                    (static_cast<double>(m_drag == DragHandle::Top ? m_cropTop : m_cropBottom) / m_height) *
+                    (image.bottom - image.top));
+                POINT screenPoint{ pointerX, edgeY };
+                ::ClientToScreen(hwnd, &screenPoint);
+                ::SetCursorPos(screenPoint.x, screenPoint.y);
+                m_dragLastPoint.y = edgeY;
+            }
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }
         return 0;
@@ -165,6 +180,9 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
     case WM_CAPTURECHANGED:
     case WM_CANCELMODE:
         m_drag = DragHandle::None;
+        return 0;
+    case WM_MOUSEWHEEL:
+        ScrollView(GET_WHEEL_DELTA_WPARAM(wp));
         return 0;
     case WM_SETCURSOR: {
         if (LOWORD(lp) != HTCLIENT) break;
@@ -187,8 +205,8 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
     case WM_COMMAND:
         if (LOWORD(wp) == kApplyId) { ApplyCrop(); return 0; }
         if (LOWORD(wp) == kCancelId) { ::DestroyWindow(hwnd); return 0; }
-        if (LOWORD(wp) == kZoomInId) { m_zoom = (std::min)(16.0, m_zoom * 1.4); m_zoomFocusY = (m_cropTop + m_cropBottom) / 2; ::InvalidateRect(hwnd, nullptr, FALSE); return 0; }
-        if (LOWORD(wp) == kZoomOutId) { m_zoom = (std::max)(1.0, m_zoom / 1.4); m_zoomFocusY = (m_cropTop + m_cropBottom) / 2; ::InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+        if (LOWORD(wp) == kZoomInId) { m_zoom = (std::min)(16.0, m_zoom * 1.4); m_zoomFocusY = (m_cropTop + m_cropBottom) / 2; CenterViewOn(m_zoomFocusY); ::InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+        if (LOWORD(wp) == kZoomOutId) { m_zoom = (std::max)(1.0, m_zoom / 1.4); m_zoomFocusY = (m_cropTop + m_cropBottom) / 2; CenterViewOn(m_zoomFocusY); ::InvalidateRect(hwnd, nullptr, FALSE); return 0; }
         break;
     case WM_CLOSE:
         ::DestroyWindow(hwnd);
@@ -224,10 +242,42 @@ RECT LongImageCropWindow::ImageRect() const {
     const int left = (client.right - width) / 2;
     int top = kCanvasMargin + (availableHeight - height) / 2;
     if (height > availableHeight) {
-        const int wanted = kCanvasMargin + availableHeight / 2 - static_cast<int>(m_zoomFocusY * scale);
-        top = (std::clamp)(wanted, kCanvasMargin + availableHeight - height, kCanvasMargin);
+        const double visibleSourceHeight = static_cast<double>(availableHeight) / scale;
+        const double maximumTop = (std::max)(0.0, static_cast<double>(m_height) - visibleSourceHeight);
+        const double viewTop = (std::clamp)(m_viewTopY, 0.0, maximumTop);
+        top = kCanvasMargin - static_cast<int>(viewTop * scale);
     }
     return { left, top, left + width, top + height };
+}
+
+void LongImageCropWindow::CenterViewOn(int sourceY) {
+    if (!m_hwnd || m_width <= 0 || m_height <= 0) return;
+    RECT client{};
+    if (!::GetClientRect(m_hwnd, &client)) return;
+    const int availableWidth = (std::max)(1, static_cast<int>(client.right) - 2 * kCanvasMargin);
+    const int availableHeight = (std::max)(1, static_cast<int>(client.bottom) - kControlsHeight - 2 * kCanvasMargin);
+    const double scale = (std::min)(static_cast<double>(availableWidth) / m_width,
+                                    static_cast<double>(availableHeight) / m_height) * m_zoom;
+    if (scale <= 0.0 || m_height * scale <= availableHeight) { m_viewTopY = 0.0; return; }
+    const double visibleSourceHeight = static_cast<double>(availableHeight) / scale;
+    const double maximumTop = (std::max)(0.0, static_cast<double>(m_height) - visibleSourceHeight);
+    m_viewTopY = (std::clamp)(static_cast<double>(sourceY) - visibleSourceHeight / 2.0, 0.0, maximumTop);
+}
+
+void LongImageCropWindow::ScrollView(int wheelDelta) {
+    if (m_zoom <= 1.0 || wheelDelta == 0 || !m_hwnd) return;
+    RECT client{};
+    if (!::GetClientRect(m_hwnd, &client)) return;
+    const int availableWidth = (std::max)(1, static_cast<int>(client.right) - 2 * kCanvasMargin);
+    const int availableHeight = (std::max)(1, static_cast<int>(client.bottom) - kControlsHeight - 2 * kCanvasMargin);
+    const double scale = (std::min)(static_cast<double>(availableWidth) / m_width,
+                                    static_cast<double>(availableHeight) / m_height) * m_zoom;
+    if (scale <= 0.0 || m_height * scale <= availableHeight) return;
+    const double visibleSourceHeight = static_cast<double>(availableHeight) / scale;
+    const double maximumTop = (std::max)(0.0, static_cast<double>(m_height) - visibleSourceHeight);
+    m_viewTopY = (std::clamp)(m_viewTopY - (static_cast<double>(wheelDelta) / WHEEL_DELTA) * visibleSourceHeight * 0.20,
+                              0.0, maximumTop);
+    ::InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 int LongImageCropWindow::SourceYFromClientY(int y) const {
@@ -286,7 +336,7 @@ void LongImageCropWindow::Paint(HWND hwnd) {
         if (pen) ::DeleteObject(pen);
 
         if (m_drag != DragHandle::None && memory && old && old != HGDI_ERROR) {
-            const int sourceY = (std::clamp)(SourceYFromClientY(m_dragLastPoint.y), 0, m_height - 1);
+            const int sourceY = m_drag == DragHandle::Top ? m_cropTop : m_cropBottom;
             wchar_t coordinate[80]{};
             swprintf_s(coordinate, L"Image: %d, %d%s", m_width / 2, sourceY,
                        (::GetKeyState(VK_MENU) & 0x8000) ? L"  (Alt precision)" : L"");
