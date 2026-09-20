@@ -336,11 +336,16 @@ void LongImageCropWindow::Paint(HWND hwnd) {
         if (pen) ::DeleteObject(pen);
 
         if (m_drag != DragHandle::None && memory && old && old != HGDI_ERROR) {
-            const int sourceY = m_drag == DragHandle::Top ? m_cropTop : m_cropBottom;
+            // Inspect the pixel physically under the cursor, not the centre
+            // of the long image. This matches the selection-overlay loupe.
+            const int sourceX = (std::clamp)(static_cast<int>(
+                static_cast<double>(m_dragLastPoint.x - image.left) * m_width / (image.right - image.left)),
+                0, m_width - 1);
+            const int sourceY = (std::clamp)(SourceYFromClientY(m_dragLastPoint.y), 0, m_height - 1);
             wchar_t coordinate[80]{};
-            swprintf_s(coordinate, L"Image: %d, %d%s", m_width / 2, sourceY,
+            swprintf_s(coordinate, L"Image: %d, %d%s", sourceX, sourceY,
                        (::GetKeyState(VK_MENU) & 0x8000) ? L"  (Alt precision)" : L"");
-            DrawPrecisionLoupe(dc, memory, RECT{ 0, 0, m_width, m_height }, POINT{ m_width / 2, sourceY },
+            DrawPrecisionLoupe(dc, memory, RECT{ 0, 0, m_width, m_height }, POINT{ sourceX, sourceY },
                                m_dragLastPoint, client, coordinate);
         }
         if (memory && old && old != HGDI_ERROR) ::SelectObject(memory, old);
