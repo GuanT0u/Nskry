@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ui/selection_window.h"
+#include "ui/precision_loupe.h"
 #include <windowsx.h>
 #pragma comment(lib, "msimg32.lib")
 
@@ -72,6 +73,10 @@ void SelectionWindow::TakeSnapshot() {
     ::FillRect(m_hdcBlack, &r, blackBrush);
     ::DeleteObject(blackBrush);
 
+    m_hdcBack = ::CreateCompatibleDC(hdcScreen);
+    m_bmpBack = ::CreateCompatibleBitmap(hdcScreen, m_vW, m_vH);
+    if (m_hdcBack && m_bmpBack) ::SelectObject(m_hdcBack, m_bmpBack);
+
     ::ReleaseDC(nullptr, hdcScreen);
 }
 
@@ -80,6 +85,8 @@ void SelectionWindow::CleanupGdi() {
     if (m_bmpSnapshot) { ::DeleteObject(m_bmpSnapshot); m_bmpSnapshot = nullptr; }
     if (m_hdcBlack)    { ::DeleteDC(m_hdcBlack); m_hdcBlack = nullptr; }
     if (m_bmpBlack)    { ::DeleteObject(m_bmpBlack); m_bmpBlack = nullptr; }
+    if (m_hdcBack)     { ::DeleteDC(m_hdcBack); m_hdcBack = nullptr; }
+    if (m_bmpBack)     { ::DeleteObject(m_bmpBack); m_bmpBack = nullptr; }
 }
 
 void SelectionWindow::Show() {
@@ -309,9 +316,16 @@ void SelectionWindow::OnMouseMove(int x, int y) {
             ::InvalidateRect(m_hwnd, nullptr, FALSE);
     }
     else if (m_state == State::Adjusting) {
-        int dx = x - m_adjustStartPt.x;
-        int dy = y - m_adjustStartPt.y;
-        RECT r = m_adjustStartRect;
+        const bool precision = (::GetKeyState(VK_MENU) & 0x8000) != 0;
+        const double scale = precision ? 0.125 : 1.0;
+        const double scaledX = m_adjustRemainderX + (x - m_adjustLastPt.x) * scale;
+        const double scaledY = m_adjustRemainderY + (y - m_adjustLastPt.y) * scale;
+        const int dx = static_cast<int>(std::trunc(scaledX));
+        const int dy = static_cast<int>(std::trunc(scaledY));
+        m_adjustRemainderX = scaledX - dx;
+        m_adjustRemainderY = scaledY - dy;
+        m_adjustLastPt = { x, y };
+        RECT r = m_finalRect;
 
         switch (m_activeZone) {
         case HitZone::Inside:      ::OffsetRect(&r, dx, dy); break;
@@ -439,6 +453,9 @@ void SelectionWindow::OnLButtonDown(int x, int y) {
             m_activeZone = zone;
             m_adjustStartPt = { x, y };
             m_adjustStartRect = m_finalRect;
+            m_adjustLastPt = { x, y };
+            m_adjustRemainderX = 0.0;
+            m_adjustRemainderY = 0.0;
             ::SetCapture(m_hwnd);
         } else {
             // Clicked outside — reset selection to hovering
@@ -852,9 +869,11 @@ void SelectionWindow::OnPaint(HWND hwnd) {
     HDC hdcPaint = ::BeginPaint(hwnd, &ps);
 
     // Double buffering
-    HDC hdcBack     = ::CreateCompatibleDC(hdcPaint);
-    HBITMAP hbmBack = ::CreateCompatibleBitmap(hdcPaint, m_vW, m_vH);
-    HGDIOBJ oldBack = ::SelectObject(hdcBack, hbmBack);
+    HDC hdcBack = m_hdcBack;
+    if (!hdcPaint || !hdcBack || !m_hdcSnapshot || !m_hdcBlack) {
+        if (hdcPaint) ::EndPaint(hwnd, &ps);
+        return;
+    }
 
     // 1. Draw original snapshot
     ::BitBlt(hdcBack, 0, 0, m_vW, m_vH, m_hdcSnapshot, 0, 0, SRCCOPY);
@@ -900,6 +919,14 @@ void SelectionWindow::OnPaint(HWND hwnd) {
 
         // Size info
         DrawInfoBox(hdcBack, activeRect);
+
+        if (m_state == State::Adjusting) {
+            wchar_t coordinate[80]{};
+            swprintf_s(coordinate, L"Screen: %d, %d%s", m_adjustLastPt.x + m_vX, m_adjustLastPt.y + m_vY,
+                       (::GetKeyState(VK_MENU) & 0x8000) ? L"  (Alt precision)" : L"");
+            DrawPrecisionLoupe(hdcBack, m_hdcSnapshot, RECT{ 0, 0, m_vW, m_vH }, m_adjustLastPt,
+                               m_adjustLastPt, RECT{ 0, 0, m_vW, m_vH }, coordinate);
+        }
     }
 
     // 5. Draw toolbar if in Selected, Adjusting, or Annotating state
@@ -909,10 +936,6 @@ void SelectionWindow::OnPaint(HWND hwnd) {
 
     // 6. Blit to screen
     ::BitBlt(hdcPaint, 0, 0, m_vW, m_vH, hdcBack, 0, 0, SRCCOPY);
-
-    ::SelectObject(hdcBack, oldBack);
-    ::DeleteObject(hbmBack);
-    ::DeleteDC(hdcBack);
 
     ::EndPaint(hwnd, &ps);
 }

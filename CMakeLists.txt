@@ -27,6 +27,7 @@ add_executable(Nskry WIN32
     src/ui/pip_window.cpp
     src/ui/pin_window.cpp
     src/ui/long_image_crop_window.cpp
+    src/ui/precision_loupe.cpp
     src/ui/selection_window.cpp
     src/ui/settings/settings_window.cpp
     src/update/package_verifier.cpp

@@ -137,6 +137,8 @@ private:
     HBITMAP m_bmpSnapshot{};
     HDC     m_hdcBlack{};
     HBITMAP m_bmpBlack{};
+    HDC     m_hdcBack{};          // Persistent full-screen paint buffer; avoids allocating per mouse move.
+    HBITMAP m_bmpBack{};
     HFONT   m_font{};
     HFONT   m_fontIcon{};
 
@@ -162,6 +164,9 @@ private:
     HitZone m_activeZone = HitZone::None;
     POINT   m_adjustStartPt{};
     RECT    m_adjustStartRect{};
+    POINT   m_adjustLastPt{};
+    double  m_adjustRemainderX{};
+    double  m_adjustRemainderY{};
 
     // Selected state
     RECT                     m_finalRect{};       // confirmed selection, local coords

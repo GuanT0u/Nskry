@@ -38,12 +38,18 @@ private:
     HWND m_hwnd{};
     HWND m_applyButton{};
     HWND m_cancelButton{};
+    HWND m_zoomInButton{};
+    HWND m_zoomOutButton{};
     HBITMAP m_bitmap{};
     int m_width{};
     int m_height{};
     int m_cropTop{};
     int m_cropBottom{};
     DragHandle m_drag = DragHandle::None;
+    POINT m_dragLastPoint{};
+    double m_dragRemainderY{};
+    double m_zoom = 1.0;
+    int m_zoomFocusY{};
     ApplyCallback m_apply;
     CloseCallback m_closed;
     bool m_destroying = false;

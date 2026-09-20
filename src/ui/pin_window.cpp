@@ -46,7 +46,7 @@ PinWindow::PinWindow(HBITMAP bitmap, int width, int height, CloseCallback closed
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
 
-    const DWORD style   = WS_POPUP | WS_THICKFRAME | WS_CAPTION | WS_SYSMENU;
+    const DWORD style   = WS_POPUP | WS_THICKFRAME | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
     const DWORD exStyle = WS_EX_TOPMOST | WS_EX_TOOLWINDOW;
 
     if (!m_bitmap || m_width <= 0 || m_height <= 0) return;
@@ -867,13 +867,22 @@ void PinWindow::OnLButtonUp(int x, int y) {
 
 void PinWindow::OnPaint(HWND hwnd) {
     PAINTSTRUCT ps{};
-    HDC hdc = ::BeginPaint(hwnd, &ps);
-    if (!hdc) return;
+    HDC paintDc = ::BeginPaint(hwnd, &ps);
+    if (!paintDc) return;
 
     RECT rc{};
     ::GetClientRect(hwnd, &rc);
     int clientW = rc.right;
     int clientH = rc.bottom;
+    HDC hdc = ::CreateCompatibleDC(paintDc);
+    HBITMAP back = hdc ? ::CreateCompatibleBitmap(paintDc, clientW, clientH) : nullptr;
+    HGDIOBJ oldBack = back ? ::SelectObject(hdc, back) : nullptr;
+    if (!hdc || !back || !oldBack || oldBack == HGDI_ERROR) {
+        if (back) ::DeleteObject(back);
+        if (hdc) ::DeleteDC(hdc);
+        ::EndPaint(hwnd, &ps);
+        return;
+    }
 
     ::FillRect(hdc, &rc, static_cast<HBRUSH>(::GetStockObject(BLACK_BRUSH)));
     const RECT image = ImageRect();
@@ -908,6 +917,10 @@ void PinWindow::OnPaint(HWND hwnd) {
     if (sourceReady) ::SelectObject(hdcMem, old);
     if (hdcMem) ::DeleteDC(hdcMem);
 
+    ::BitBlt(paintDc, 0, 0, clientW, clientH, hdc, 0, 0, SRCCOPY);
+    ::SelectObject(hdc, oldBack);
+    ::DeleteObject(back);
+    ::DeleteDC(hdc);
     ::EndPaint(hwnd, &ps);
 }
 
