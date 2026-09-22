@@ -1,7 +1,7 @@
 # Nskry — 项目交接文档
 
 > **最后更新**：2026-09-17
-> **项目状态**：Stage A-G 已完成；Phase 4 截长图已实现为独立插件并可构建运行，OCR/翻译/录屏尚未开发
+> **项目状态**：Stage A-G 已完成；Phase 4 截长图已实现为独立插件并可构建运行；OCR 已进入首个可交付实现，翻译/录屏尚未开发。
 > **项目路径**：`d:\codes\Nskry`
 
 ---
@@ -203,11 +203,10 @@ iscc installer/NskrySetup.iss
 插件源码、manifest 与 CMake 打包配置位于 `plugins/nskry-scroll/`；发布时先构建插件包，再构建 Inno Setup 安装器。
 
 ### Phase 5: OCR 文字识别插件 (OCR Plugin)
-- **目标**：实现为独立扩展 `plugins/nskry_ocr.dll`。
-- **关键设计**：
-  1. 基于 SDK 接口 `sdk/nskry_plugin.h`，导出标准 4 个 C-ABI 函数。
-  2. 采用 Windows 10/11 内置的原生 `Windows.Media.Ocr.OcrEngine` API，零第三方模型依赖，无额外动态库体积负担，离线支持中英双语。
-  3. 在截图工具栏上暴露 `[T]` OCR 图标；识别完成后弹出可复制/分段的半透明文本框覆盖层。
+- **状态**：首个实现位于 `plugins/nskry-ocr/`，并打包为 `installer/bundled/nskry-ocr.nskryplugin`。
+- **运行时边界**：插件采用 `on_demand`；只有用户触发文字识别时才加载 DLL、复制当前位图并启动一个 OCR 工作线程。使用 Windows 10/11 内置的 `Windows.Media.Ocr.OcrEngine`，不携带 Tesseract 或语言模型；输入会缩放到系统 OCR 上限（同时限制到 3200 px）以控制峰值内存。
+- **当前入口**：框选截图工具栏、固定截图右键菜单、监控窗口右键菜单（识别当前一帧）、长截图裁剪窗口（先拖出 OCR 矩形，再识别该区域）。核心通过 manifest 的 `post_capture` 能力提供这些入口，未将 OCR 专用逻辑耦合到截图 UI。
+- **结果窗**：默认文本视图保留 OCR 行结构并支持常规文本选择/复制；Highlights 视图显示缩放后的原图和词级半透明框，可点击单词或拖选多个单词复制。
 
 ### Phase 6: 屏幕录制插件 (Screen Recording Plugin)
 - **目标**：实现为独立扩展 `plugins/nskry_recorder.dll`。

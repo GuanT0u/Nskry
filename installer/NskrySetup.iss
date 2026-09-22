@@ -38,6 +38,9 @@ Name: "core"; Description: "Nskry Core"; Types: full compact custom; Flags: fixe
 #ifexist "bundled\nskry-scroll.nskryplugin"
 Name: "plugin_scroll"; Description: "Official plugin: Long Screenshot"; Types: full
 #endif
+#ifexist "bundled\nskry-ocr.nskryplugin"
+Name: "plugin_ocr"; Description: "Official plugin: Text recognition"; Types: full
+#endif
 
 [Tasks]
 Name: "startup"; Description: "Start Nskry when I sign in"; GroupDescription: "Options:"; Flags: checkedonce
@@ -49,6 +52,9 @@ Source: "..\build\Nskry.exe"; DestDir: "{app}"; Flags: ignoreversion
 #ifexist "bundled\nskry-scroll.nskryplugin"
 Source: "bundled\nskry-scroll.nskryplugin"; DestDir: "{app}\bundled"; Components: plugin_scroll; Flags: ignoreversion skipifsourcedoesntexist
 #endif
+#ifexist "bundled\nskry-ocr.nskryplugin"
+Source: "bundled\nskry-ocr.nskryplugin"; DestDir: "{app}\bundled"; Components: plugin_ocr; Flags: ignoreversion skipifsourcedoesntexist
+#endif
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Nskry"; ValueData: """{app}\{#AppExeName}"""; Tasks: startup; Flags: uninsdeletevalue
@@ -56,6 +62,9 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 [Run]
 #ifexist "bundled\nskry-scroll.nskryplugin"
 Filename: "{app}\{#AppExeName}"; Parameters: "--install-plugin ""{app}\bundled\nskry-scroll.nskryplugin"" --silent --source official"; Components: plugin_scroll; Check: BundledPackageExists('nskry-scroll.nskryplugin'); Flags: runhidden waituntilterminated
+#endif
+#ifexist "bundled\nskry-ocr.nskryplugin"
+Filename: "{app}\{#AppExeName}"; Parameters: "--install-plugin ""{app}\bundled\nskry-ocr.nskryplugin"" --silent --source official"; Components: plugin_ocr; Check: BundledPackageExists('nskry-ocr.nskryplugin'); Flags: runhidden waituntilterminated
 #endif
 Filename: "{app}\{#AppExeName}"; Description: "Launch Nskry"; Tasks: launch; Flags: nowait postinstall skipifsilent
 

@@ -97,6 +97,7 @@ bool PluginManifest::LoadFromFile(const std::wstring& path, PluginManifest& mani
                 return false;
             }
             if (*name == L"toolbar_action") result.toolbarAction = true;
+            if (*name == L"post_capture") result.postCapture = true;
         }
     }
 

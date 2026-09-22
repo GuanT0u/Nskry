@@ -31,12 +31,14 @@ PipWindow::PipWindow(
     std::shared_ptr<D3DDevice> device,
     UINT contentWidth, UINT contentHeight,
     std::function<void()> onCloseRequest,
-    AnnotationEngine initialEngine)
+    AnnotationEngine initialEngine,
+    ImageActions imageActions)
     : m_device(std::move(device))
     , m_contentW(contentWidth)
     , m_contentH(contentHeight)
     , m_onClose(std::move(onCloseRequest))
     , m_annotationEngine(std::move(initialEngine))
+    , m_imageActions(std::move(imageActions))
 {
     // --- Register main window class (once) ---------------------------------
     std::call_once(s_classOnce, [&] {
@@ -654,7 +656,13 @@ void PipWindow::ShowContextMenu(int screenX, int screenY) {
     HMENU hMenu = ::CreatePopupMenu();
     ::InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, 301, L"\x270E \x6807\x6CE8\x7F16\x8F91 (Edit)");     // ✎ 标注编辑
     ::InsertMenuW(hMenu, 1, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
-    ::InsertMenuW(hMenu, 2, MF_BYPOSITION | MF_STRING, 302, L"\x2715 \x5173\x95ED (Close)");            // ✕ 关闭
+    int position = 2;
+    for (size_t index = 0; index < m_imageActions.size() && index < 100; ++index) {
+        const std::wstring item = L"T  " + m_imageActions[index].label;
+        ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING, 320 + static_cast<UINT>(index), item.c_str());
+    }
+    if (!m_imageActions.empty()) ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
+    ::InsertMenuW(hMenu, position, MF_BYPOSITION | MF_STRING, 302, L"\x2715 \x5173\x95ED (Close)");            // ✕ 关闭
 
     ::SetForegroundWindow(m_hwnd);
     int cmd = ::TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, screenX, screenY, 0, m_hwnd, nullptr);
@@ -663,6 +671,16 @@ void PipWindow::ShowContextMenu(int screenX, int screenY) {
     switch (cmd) {
     case 301: EnterEditMode(); break;
     case 302: if (m_onClose) m_onClose(); break;
+    default:
+        if (cmd >= 320 && cmd < 320 + static_cast<int>(m_imageActions.size())) {
+            FrameHdcGuard frame = GetLastFrameHdc();
+            if (!frame.hbmp) break;
+            RECT region{};
+            ::GetWindowRect(m_hwnd, &region);
+            const ImageAction& action = m_imageActions[cmd - 320];
+            if (action.invoke) action.invoke(frame.hbmp, static_cast<int>(m_contentW), static_cast<int>(m_contentH), region, m_hwnd);
+        }
+        break;
     }
 }
 

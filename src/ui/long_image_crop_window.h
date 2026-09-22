@@ -3,6 +3,7 @@
 #include <functional>
 #include <mutex>
 #include <windows.h>
+#include "ui/image_action.h"
 
 namespace nskry {
 
@@ -15,7 +16,8 @@ public:
 
     // Takes ownership of bitmap.  apply receives ownership of its bitmap.
     LongImageCropWindow(HBITMAP bitmap, int width, int height,
-                        ApplyCallback apply, CloseCallback closed);
+                        ApplyCallback apply, CloseCallback closed,
+                        ImageActions imageActions = {});
     ~LongImageCropWindow();
 
     LongImageCropWindow(const LongImageCropWindow&) = delete;
@@ -24,7 +26,7 @@ public:
     [[nodiscard]] bool Show(HWND owner);
 
 private:
-    enum class DragHandle { None, Top, Bottom };
+    enum class DragHandle { None, Top, Bottom, OcrArea };
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleMessage(HWND, UINT, WPARAM, LPARAM);
@@ -34,19 +36,26 @@ private:
     void CenterViewOn(int sourceY);
     void ScrollView(int wheelDelta);
     int SourceYFromClientY(int y) const;
+    POINT SourcePointFromClient(POINT point) const;
     HBITMAP CreateCroppedBitmap() const;
+    HBITMAP CreateRegionBitmap(RECT source) const;
     void ApplyCrop();
+    void RunImageAction(size_t actionIndex);
 
     HWND m_hwnd{};
     HWND m_applyButton{};
     HWND m_cancelButton{};
     HWND m_zoomInButton{};
     HWND m_zoomOutButton{};
+    HWND m_imageActionButton{};
     HBITMAP m_bitmap{};
     int m_width{};
     int m_height{};
     int m_cropTop{};
     int m_cropBottom{};
+    RECT m_ocrSelection{};
+    POINT m_ocrDragStart{};
+    bool m_selectingOcr{};
     DragHandle m_drag = DragHandle::None;
     POINT m_dragLastPoint{};
     double m_dragRemainderY{};
@@ -55,6 +64,7 @@ private:
     double m_viewTopY{};       // Source-space y at the top of the zoomed viewport.
     ApplyCallback m_apply;
     CloseCallback m_closed;
+    ImageActions m_imageActions;
     bool m_destroying = false;
 
     static constexpr wchar_t kClassName[] = L"NskryLongImageCropWindow";

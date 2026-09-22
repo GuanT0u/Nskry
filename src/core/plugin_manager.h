@@ -15,6 +15,7 @@ struct PluginEntry {
 };
 
 struct PluginToolbarAction { std::wstring id; std::wstring label; };
+struct PluginImageAction { std::wstring id; std::wstring label; };
 
 /// Runtime-only plugin service. Installation metadata and enablement belong to
 /// PluginRegistry; packages and updates will belong to later services.
@@ -30,6 +31,7 @@ public:
     bool ExecutePlugin(const std::wstring& pluginId, const NskryHostContext& hostContext);
     bool IsLoaded(const std::wstring& pluginId) const;
     std::vector<PluginToolbarAction> GetEnabledToolbarActions() const;
+    std::vector<PluginImageAction> GetEnabledImageActions() const;
 
 private:
     PluginManager() = default;

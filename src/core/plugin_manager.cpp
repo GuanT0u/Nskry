@@ -125,4 +125,14 @@ std::vector<PluginToolbarAction> PluginManager::GetEnabledToolbarActions() const
     return actions;
 }
 
+std::vector<PluginImageAction> PluginManager::GetEnabledImageActions() const {
+    std::vector<PluginImageAction> actions;
+    if (!m_registry) return actions;
+    for (const PluginRecord* record : m_registry->GetAll()) {
+        if (record->enabled && record->manifest.postCapture && record->manifest.IsCompatibleWithHost())
+            actions.push_back({ record->manifest.id, record->manifest.name });
+    }
+    return actions;
+}
+
 } // namespace nskry

@@ -47,7 +47,7 @@ bool TestManifestCompatibilityIsSeparateFromParsing() {
         "name":"Legacy plugin",
         "id":"legacy-plugin",
         "manifest_version":1,
-        "capabilities":["toolbar_action"],
+        "capabilities":["toolbar_action","post_capture"],
         "unknown_future_field":{"kept_compatible":true}
     })";
     {
@@ -60,8 +60,8 @@ bool TestManifestCompatibilityIsSeparateFromParsing() {
     const bool loaded = nskry::PluginManifest::LoadFromFile(temporaryFile, parsed, &error);
     ::DeleteFileW(temporaryFile);
     bool ok = Expect(loaded, "an older structurally valid manifest should remain discoverable");
-    ok &= Expect(parsed.id == L"legacy-plugin" && parsed.toolbarAction,
-                 "manifest fields should be independent of object order");
+    ok &= Expect(parsed.id == L"legacy-plugin" && parsed.toolbarAction && parsed.postCapture,
+                 "manifest capabilities should be independent of object order");
     ok &= Expect(!parsed.IsCompatibleWithHost(&error),
                  "an older API plugin should be reported as incompatible at execution/install time");
     return ok;

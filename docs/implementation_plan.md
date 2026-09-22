@@ -166,7 +166,7 @@ extern "C" {
 | 功能 | 说明 | 实现形式 |
 |------|------|----------|
 | **截长图** | 框选区域 → 手动/自动滚动 → 连续帧位移匹配与拼接 → 预览/裁剪/标注入口 | `nskry-scroll.dll`（已完成） |
-| **OCR 文字识别** | Windows.Media.Ocr (内置 API) 或 Tesseract | `nskry-ocr.dll` |
+| **OCR 文字识别** | Windows.Media.Ocr（内置 API、按需加载、无外置模型） | `nskry-ocr.dll`（首个实现已交付） |
 | **翻译** | OCR 结果 → 调用翻译 API → 叠加显示 | `nskry-translate.dll` |
 
 ### Phase 5：录屏（未开始）

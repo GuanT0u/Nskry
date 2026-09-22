@@ -70,6 +70,7 @@ target_precompile_headers(Nskry PRIVATE src/pch.h)
 
 # Official plugins use the same packaged form that Settings and Setup consume.
 add_subdirectory(plugins/nskry-scroll)
+add_subdirectory(plugins/nskry-ocr)
 
 if (BUILD_TESTING)
     add_executable(NskryCoreTests
@@ -90,4 +91,17 @@ if (BUILD_TESTING)
         target_compile_options(NskryCoreTests PRIVATE /utf-8)
     endif()
     add_test(NAME NskryCoreTests COMMAND NskryCoreTests)
+
+    add_executable(NskryOcrSmokeTests tests/ocr_plugin_smoke.cpp)
+    target_include_directories(NskryOcrSmokeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/sdk)
+    target_compile_definitions(NskryOcrSmokeTests PRIVATE
+        WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+    if (MSVC)
+        target_compile_options(NskryOcrSmokeTests PRIVATE /utf-8)
+    endif()
+    target_link_libraries(NskryOcrSmokeTests PRIVATE gdi32 user32)
+    add_dependencies(NskryOcrSmokeTests nskry_ocr)
+    add_test(NAME NskryOcrSmokeTests
+        COMMAND NskryOcrSmokeTests $<TARGET_FILE:nskry_ocr>)
+    set_tests_properties(NskryOcrSmokeTests PROPERTIES TIMEOUT 25)
 endif()

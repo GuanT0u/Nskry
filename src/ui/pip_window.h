@@ -2,6 +2,7 @@
 
 #include "capture/d3d_device.h"
 #include "ui/annotation/annotation_engine.h"
+#include "ui/image_action.h"
 #include <functional>
 #include <mutex>
 #include <vector>
@@ -21,7 +22,8 @@ public:
     PipWindow(std::shared_ptr<D3DDevice> device,
               UINT contentWidth, UINT contentHeight,
               std::function<void()> onCloseRequest,
-              AnnotationEngine initialEngine = {});
+              AnnotationEngine initialEngine = {},
+              ImageActions imageActions = {});
     ~PipWindow();
 
     PipWindow(const PipWindow&)            = delete;
@@ -104,6 +106,7 @@ private:
     UINT                            m_contentW{};
     UINT                            m_contentH{};
     std::function<void()>           m_onClose;
+    ImageActions                    m_imageActions;
 
     // GPU annotation overlay resources
     winrt::com_ptr<ID3D11Texture2D>          m_overlayTex;

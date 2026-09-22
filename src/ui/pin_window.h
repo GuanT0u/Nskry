@@ -5,6 +5,7 @@
 #include <mutex>
 #include <vector>
 #include "ui/annotation/annotation_engine.h"
+#include "ui/image_action.h"
 
 namespace nskry {
 
@@ -16,7 +17,8 @@ public:
     using CloseCallback = std::function<void(PinWindow*)>;
 
     /// Takes ownership of the HBITMAP.
-    PinWindow(HBITMAP bitmap, int width, int height, CloseCallback closed = {});
+    PinWindow(HBITMAP bitmap, int width, int height, CloseCallback closed = {},
+              ImageActions imageActions = {});
     ~PinWindow();
 
     PinWindow(const PinWindow&)            = delete;
@@ -80,6 +82,7 @@ private:
     HWND             m_hTextEdit{};
     POINT            m_textEditPos{};
     CloseCallback    m_closed;
+    ImageActions     m_imageActions;
     bool             m_destroying = false;
 
     static constexpr wchar_t kClassName[] = L"NskryPinWindow";

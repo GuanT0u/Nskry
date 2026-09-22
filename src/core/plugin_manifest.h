@@ -24,6 +24,7 @@ struct PluginManifest {
     std::wstring repository;
     std::wstring updateUrl;
     bool toolbarAction = false;
+    bool postCapture = false;
 
     static bool LoadFromFile(const std::wstring& path, PluginManifest& manifest, std::wstring* error = nullptr);
     static bool IsSafePluginId(const std::wstring& id);

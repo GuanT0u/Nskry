@@ -27,8 +27,10 @@ static int GetPngEncoderClsidHelper(CLSID* pClsid) {
     return -1;
 }
 
-PinWindow::PinWindow(HBITMAP bitmap, int width, int height, CloseCallback closed)
-    : m_bitmap(bitmap), m_width(width), m_height(height), m_closed(std::move(closed))
+PinWindow::PinWindow(HBITMAP bitmap, int width, int height, CloseCallback closed,
+                     ImageActions imageActions)
+    : m_bitmap(bitmap), m_width(width), m_height(height), m_closed(std::move(closed)),
+      m_imageActions(std::move(imageActions))
 {
     std::call_once(s_classOnce, [] {
         WNDCLASSEXW wc{};
@@ -350,10 +352,16 @@ void PinWindow::ShowContextMenu(int screenX, int screenY) {
     HMENU hMenu = ::CreatePopupMenu();
     ::InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, 201, L"\x270E \x6807\x6CE8\x7F16\x8F91 (Edit)");     // ✎ 标注编辑
     ::InsertMenuW(hMenu, 1, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
-    ::InsertMenuW(hMenu, 2, MF_BYPOSITION | MF_STRING, 202, L"\x2398 \x590D\x5236 (Copy)");             // ⎘ 复制
-    ::InsertMenuW(hMenu, 3, MF_BYPOSITION | MF_STRING, 203, L"\x2193 \x4FDD\x5B58 (Save PNG)");         // ↓ 保存
-    ::InsertMenuW(hMenu, 4, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
-    ::InsertMenuW(hMenu, 5, MF_BYPOSITION | MF_STRING, 204, L"\x2715 \x5173\x95ED (Close)");            // ✕ 关闭
+    int position = 2;
+    for (size_t index = 0; index < m_imageActions.size() && index < 100; ++index) {
+        const std::wstring item = L"T  " + m_imageActions[index].label;
+        ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING, 220 + static_cast<UINT>(index), item.c_str());
+    }
+    if (!m_imageActions.empty()) ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
+    ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING, 202, L"\x2398 \x590D\x5236 (Copy)");             // ⎘ 复制
+    ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING, 203, L"\x2193 \x4FDD\x5B58 (Save PNG)");         // ↓ 保存
+    ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
+    ::InsertMenuW(hMenu, position, MF_BYPOSITION | MF_STRING, 204, L"\x2715 \x5173\x95ED (Close)");            // ✕ 关闭
 
     ::SetForegroundWindow(m_hwnd);
     int cmd = ::TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, screenX, screenY, 0, m_hwnd, nullptr);
@@ -364,6 +372,14 @@ void PinWindow::ShowContextMenu(int screenX, int screenY) {
     case 202: CopyToClipboard(); break;
     case 203: SaveToFile(); break;
     case 204: ::DestroyWindow(m_hwnd); break;
+    default:
+        if (cmd >= 220 && cmd < 220 + static_cast<int>(m_imageActions.size())) {
+            const ImageAction& action = m_imageActions[cmd - 220];
+            RECT region{};
+            ::GetWindowRect(m_hwnd, &region);
+            if (action.invoke) action.invoke(m_bitmap, m_width, m_height, region, m_hwnd);
+        }
+        break;
     }
 }
 
