@@ -60,6 +60,7 @@ winrt::Windows::Media::Ocr::OcrEngine CreatePreferredOcrEngine() {
 struct WordBox {
     RECT rect{};
     std::wstring text;
+    size_t line{};
 };
 
 struct OcrJobResult {
@@ -112,9 +113,12 @@ HBITMAP ResizeForOcr(HBITMAP source, int width, int height, int& outputWidth, in
     try { engineMaximum = winrt::Windows::Media::Ocr::OcrEngine::MaxImageDimension(); }
     catch (...) { engineMaximum = kMaxPreviewDimension; }
     const int maximum = (std::max)(1, (std::min)(kMaxPreviewDimension, static_cast<int>(engineMaximum)));
-    if ((std::max)(width, height) <= maximum) return CopyBitmap(source);
+    const int largestDimension = (std::max)(width, height);
+    double scale = 1.0;
+    if (largestDimension > maximum) scale = static_cast<double>(maximum) / largestDimension;
+    else if (largestDimension < 1600) scale = (std::min)(2.0, 1600.0 / largestDimension);
+    if (std::abs(scale - 1.0) < 0.01) return CopyBitmap(source);
 
-    const double scale = static_cast<double>(maximum) / (std::max)(width, height);
     outputWidth = (std::max)(1, static_cast<int>(std::lround(width * scale)));
     outputHeight = (std::max)(1, static_cast<int>(std::lround(height * scale)));
 
@@ -226,6 +230,7 @@ std::unique_ptr<OcrJobResult> RunOcr(HBITMAP bitmap, int width, int height, RECT
         const auto recognized = engine.RecognizeAsync(ToSoftwareBitmap(bitmap)).get();
         // Use Windows OCR's line results rather than its flattened document text,
         // so the text-only view remains visually close to the selected content.
+        size_t lineIndex = 0;
         for (const auto& line : recognized.Lines()) {
             if (!result->text.empty()) result->text += L"\r\n";
             result->text += line.Text().c_str();
@@ -241,9 +246,11 @@ std::unique_ptr<OcrJobResult> RunOcr(HBITMAP bitmap, int width, int height, RECT
                 box.rect.right = (std::clamp)(box.rect.right, box.rect.left, static_cast<LONG>(width));
                 box.rect.bottom = (std::clamp)(box.rect.bottom, box.rect.top, static_cast<LONG>(height));
                 box.text = word.Text().c_str();
+                box.line = lineIndex;
                 if (!box.text.empty() && box.rect.right > box.rect.left && box.rect.bottom > box.rect.top)
                     result->words.push_back(std::move(box));
             }
+            ++lineIndex;
         }
         if (result->text.empty()) result->text = L"No text was found in this image.";
     } catch (const winrt::hresult_error& error) {
@@ -466,10 +473,11 @@ private:
         }
         if (memory) ::DeleteDC(memory);
 
-        if (m_highlights) for (size_t index = 0; index < m_result->words.size(); ++index) {
+        for (size_t index = 0; index < m_result->words.size(); ++index) {
             const RECT rect = ToClientRect(m_result->words[index].rect);
             const bool selected = std::find(m_selected.begin(), m_selected.end(), index) != m_selected.end();
-            const COLORREF color = selected ? RGB(255, 173, 51) : RGB(63, 156, 255);
+            if (!m_highlights && !selected) continue;
+            const COLORREF color = selected ? ::GetSysColor(COLOR_HIGHLIGHT) : RGB(63, 156, 255);
             HDC overlay = ::CreateCompatibleDC(dc);
             HBITMAP overlayBitmap = overlay ? ::CreateCompatibleBitmap(dc, 1, 1) : nullptr;
             HGDIOBJ oldOverlay = overlayBitmap ? ::SelectObject(overlay, overlayBitmap) : nullptr;
@@ -478,28 +486,19 @@ private:
                 RECT pixel{ 0, 0, 1, 1 };
                 ::FillRect(overlay, &pixel, fill);
                 ::DeleteObject(fill);
-                const BLENDFUNCTION blend{ AC_SRC_OVER, 0, static_cast<BYTE>(selected ? 104 : 64), 0 };
+                const BLENDFUNCTION blend{ AC_SRC_OVER, 0, static_cast<BYTE>(selected ? 118 : 64), 0 };
                 ::AlphaBlend(dc, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
                     overlay, 0, 0, 1, 1, blend);
                 ::SelectObject(overlay, oldOverlay);
             }
             if (overlayBitmap) ::DeleteObject(overlayBitmap);
             if (overlay) ::DeleteDC(overlay);
-            HPEN pen = ::CreatePen(PS_SOLID, selected ? 2 : 1, selected ? RGB(255, 228, 171) : RGB(170, 215, 255));
+            HPEN pen = ::CreatePen(PS_SOLID, 1, selected ? ::GetSysColor(COLOR_HIGHLIGHT) : RGB(170, 215, 255));
             HGDIOBJ oldPen = ::SelectObject(dc, pen);
             HGDIOBJ oldBrush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
             ::Rectangle(dc, rect.left, rect.top, rect.right, rect.bottom);
             ::SelectObject(dc, oldPen); ::SelectObject(dc, oldBrush);
             ::DeleteObject(pen);
-        }
-        if (m_dragSelecting) {
-            RECT drag{ (std::min)(m_dragStart.x, m_dragCurrent.x), (std::min)(m_dragStart.y, m_dragCurrent.y),
-                       (std::max)(m_dragStart.x, m_dragCurrent.x), (std::max)(m_dragStart.y, m_dragCurrent.y) };
-            HPEN pen = ::CreatePen(PS_DASH, 1, RGB(255, 255, 255));
-            HGDIOBJ old = ::SelectObject(dc, pen);
-            HGDIOBJ brush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
-            ::Rectangle(dc, drag.left, drag.top, drag.right, drag.bottom);
-            ::SelectObject(dc, old); ::SelectObject(dc, brush); ::DeleteObject(pen);
         }
         ::SetBkMode(dc, TRANSPARENT); ::SetTextColor(dc, RGB(190, 190, 190));
         const wchar_t* hint = L"Wheel: zoom · Shift+wheel: horizontal pan · Alt+wheel: vertical pan";
@@ -507,21 +506,28 @@ private:
     }
 
     void UpdateSelection(POINT first, POINT last) {
-        RECT selection{ (std::min)(first.x, last.x), (std::min)(first.y, last.y),
-                        (std::max)(first.x, last.x), (std::max)(first.y, last.y) };
+        const auto wordAt = [&](POINT point) -> size_t {
+            for (size_t index = 0; index < m_result->words.size(); ++index) {
+                RECT word = ToClientRect(m_result->words[index].rect);
+                ::InflateRect(&word, 3, 3);
+                if (::PtInRect(&word, point)) return index;
+            }
+            return static_cast<size_t>(-1);
+        };
+        const size_t firstWord = wordAt(first), lastWord = wordAt(last);
         m_selected.clear();
-        for (size_t index = 0; index < m_result->words.size(); ++index) {
-            const RECT word = ToClientRect(m_result->words[index].rect);
-            const POINT center{ (word.left + word.right) / 2, (word.top + word.bottom) / 2 };
-            if (::PtInRect(&selection, center)) m_selected.push_back(index);
-        }
+        if (firstWord == static_cast<size_t>(-1) || lastWord == static_cast<size_t>(-1)) return;
+        const size_t begin = (std::min)(firstWord, lastWord), end = (std::max)(firstWord, lastWord);
+        for (size_t index = begin; index <= end; ++index) m_selected.push_back(index);
     }
 
     void CopySelected() {
         std::wstring text;
+        size_t previousLine = static_cast<size_t>(-1);
         for (const size_t index : m_selected) {
-            if (!text.empty()) text += L" ";
+            if (!text.empty()) text += m_result->words[index].line == previousLine ? L" " : L"\r\n";
             text += m_result->words[index].text;
+            previousLine = m_result->words[index].line;
         }
         if (!text.empty()) CopyTextToClipboard(m_hwnd, text);
     }
@@ -610,6 +616,9 @@ private:
         }
         case WM_LBUTTONDOWN:
             if (!m_result->error.empty()) break;
+            { const RECT image = PreviewRect(); const POINT point{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+              if (!::PtInRect(&image, point)) break; }
+            ::SetFocus(m_hwnd);
             m_dragSelecting = true;
             m_dragStart = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
             m_dragCurrent = m_dragStart;
@@ -636,7 +645,6 @@ private:
                         if (::PtInRect(&word, m_dragCurrent)) { m_selected.push_back(index); break; }
                     }
                 }
-                CopySelected();
                 ::InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
             }
@@ -644,6 +652,15 @@ private:
         case WM_CAPTURECHANGED:
             m_dragSelecting = false;
             return 0;
+        case WM_KEYDOWN:
+            if ((wp == 'C' || wp == VK_INSERT) && (::GetKeyState(VK_CONTROL) & 0x8000)) { CopySelected(); return 0; }
+            break;
+        case WM_SETCURSOR: {
+            POINT point{}; ::GetCursorPos(&point); ::ScreenToClient(m_hwnd, &point);
+            const RECT image = PreviewRect();
+            if (::PtInRect(&image, point)) { ::SetCursor(::LoadCursorW(nullptr, IDC_IBEAM)); return TRUE; }
+            break;
+        }
         case WM_CLOSE:
             ::DestroyWindow(m_hwnd);
             return 0;

@@ -26,7 +26,7 @@ public:
     [[nodiscard]] bool Show(HWND owner);
 
 private:
-    enum class DragHandle { None, Top, Bottom, OcrArea };
+    enum class DragHandle { None, Top, Bottom, Left, Right, Pan, OcrArea };
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleMessage(HWND, UINT, WPARAM, LPARAM);
@@ -35,6 +35,8 @@ private:
     RECT ImageRect() const;
     void CenterViewOn(int sourceY);
     void ScrollView(int wheelDelta);
+    void ZoomAt(POINT clientPoint, int wheelDelta);
+    void SetOcrSelectionMode(bool enabled);
     int SourceYFromClientY(int y) const;
     POINT SourcePointFromClient(POINT point) const;
     HBITMAP CreateCroppedBitmap() const;
@@ -53,6 +55,8 @@ private:
     int m_height{};
     int m_cropTop{};
     int m_cropBottom{};
+    int m_cropLeft{};
+    int m_cropRight{};
     RECT m_ocrSelection{};
     POINT m_ocrDragStart{};
     bool m_selectingOcr{};
@@ -62,6 +66,7 @@ private:
     double m_zoom = 1.0;
     int m_zoomFocusY{};
     double m_viewTopY{};       // Source-space y at the top of the zoomed viewport.
+    double m_viewLeftX{};
     ApplyCallback m_apply;
     CloseCallback m_closed;
     ImageActions m_imageActions;

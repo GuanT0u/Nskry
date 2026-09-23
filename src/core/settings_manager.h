@@ -8,6 +8,7 @@ namespace nskry {
 struct UserSettings {
     bool runAtStartup = false;
     bool notifications = true;
+    bool showStartupHint = true;
     std::wstring theme = L"system";
     std::wstring captureShortcut = L"Ctrl+Alt+A";
     std::wstring exitShortcut = L"Ctrl+Alt+Q";
@@ -40,6 +41,7 @@ private:
     std::unordered_map<std::wstring, std::wstring> m_hotkeys;
     bool m_runAtStartup = false;
     bool m_notifications = true;
+    bool m_showStartupHint = true;
     std::wstring m_theme = L"system";
     // Empty by default: distributors may configure a signed HTTPS catalog without
     // baking a mutable endpoint into the executable.

@@ -74,6 +74,68 @@ static int  GetPngEncoderClsid(CLSID* pClsid);
 static bool RunPluginPackageCli(int& exitCode);
 static bool SetRunAtStartup(bool enabled);
 
+struct StartupHintState {
+    std::wstring text;
+    HWND checkbox{};
+    bool disableFutureHints{};
+};
+
+static LRESULT CALLBACK StartupHintWndProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
+    if (message == WM_NCCREATE) {
+        const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lp);
+        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+    }
+    auto* state = reinterpret_cast<StartupHintState*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (message) {
+    case WM_CREATE: {
+        HFONT font = static_cast<HFONT>(::GetStockObject(DEFAULT_GUI_FONT));
+        HWND text = ::CreateWindowExW(0, L"STATIC", state ? state->text.c_str() : L"", WS_CHILD | WS_VISIBLE,
+            20, 18, 390, 92, hwnd, nullptr, nullptr, nullptr);
+        if (text) ::SendMessageW(text, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        state->checkbox = ::CreateWindowExW(0, L"BUTTON", L"Do not show this message again", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+            20, 118, 260, 24, hwnd, reinterpret_cast<HMENU>(1), nullptr, nullptr);
+        HWND ok = ::CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+            330, 152, 78, 28, hwnd, reinterpret_cast<HMENU>(IDOK), nullptr, nullptr);
+        if (state->checkbox) ::SendMessageW(state->checkbox, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        if (ok) ::SendMessageW(ok, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        return 0;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wp) == IDOK) {
+            if (state && state->checkbox) state->disableFutureHints = ::SendMessageW(state->checkbox, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            ::DestroyWindow(hwnd);
+            return 0;
+        }
+        break;
+    case WM_CLOSE: ::DestroyWindow(hwnd); return 0;
+    case WM_NCDESTROY: ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0); break;
+    }
+    return ::DefWindowProcW(hwnd, message, wp, lp);
+}
+
+static bool ShowStartupHint(const std::wstring& text) {
+    static std::once_flag registered;
+    std::call_once(registered, [] {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc); wc.lpfnWndProc = StartupHintWndProc;
+        wc.hInstance = ::GetModuleHandleW(nullptr); wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+        wc.hbrBackground = static_cast<HBRUSH>(::GetStockObject(WHITE_BRUSH));
+        wc.lpszClassName = L"NskryStartupHint";
+        ::RegisterClassExW(&wc);
+    });
+    StartupHintState state{ text };
+    HWND dialog = ::CreateWindowExW(WS_EX_DLGMODALFRAME, L"NskryStartupHint", L"Nskry is ready",
+        WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 430, 225,
+        nullptr, nullptr, ::GetModuleHandleW(nullptr), &state);
+    if (!dialog) return false;
+    ::SetForegroundWindow(dialog);
+    MSG message{};
+    while (::IsWindow(dialog) && ::GetMessageW(&message, nullptr, 0, 0) > 0) {
+        if (!::IsDialogMessageW(dialog, &message)) { ::TranslateMessage(&message); ::DispatchMessageW(&message); }
+    }
+    return state.disableFutureHints;
+}
+
 // ============================================================================
 // WinMain
 // ============================================================================
@@ -232,10 +294,17 @@ int WINAPI wWinMain(
     ::Shell_NotifyIconW(NIM_ADD, &nid);
 
     // Notify user
-    const std::wstring startupMessage = std::wstring(L"Nskry is running in the background.\n\n") +
-        L"  " + settings.GetHotkey(L"core.capture") + L" \u2014 capture a window\n" +
-        L"  " + settings.GetHotkey(L"core.exit") + L" \u2014 quit";
-    ::MessageBoxW(nullptr, startupMessage.c_str(), L"Nskry", MB_ICONINFORMATION);
+    auto startupSettings = settings.GetUserSettings();
+    if (startupSettings.showStartupHint) {
+        const std::wstring startupMessage = std::wstring(L"Nskry is running in the background.\n\n") +
+            L"  " + settings.GetHotkey(L"core.capture") + L" \u2014 capture a window\n" +
+            L"  " + settings.GetHotkey(L"core.exit") + L" \u2014 quit";
+        if (ShowStartupHint(startupMessage)) {
+            startupSettings.showStartupHint = false;
+            settings.SetUserSettings(startupSettings);
+            settings.Save();
+        }
+    }
 
     // Message loop
     MSG msg{};

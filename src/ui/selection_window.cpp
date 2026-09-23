@@ -125,6 +125,14 @@ LRESULT SelectionWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
     case WM_MOUSEMOVE:   OnMouseMove(GET_X_LPARAM(lp), GET_Y_LPARAM(lp)); return 0;
     case WM_LBUTTONDOWN: OnLButtonDown(GET_X_LPARAM(lp), GET_Y_LPARAM(lp)); return 0;
     case WM_LBUTTONUP:   OnLButtonUp(GET_X_LPARAM(lp), GET_Y_LPARAM(lp)); return 0;
+    case WM_CAPTURECHANGED:
+    case WM_CANCELMODE:
+        if (m_state == State::Adjusting) {
+            m_state = State::Selected;
+            BuildToolbar(m_finalRect);
+            ::InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return 0;
 
     case WM_RBUTTONUP:
         if (m_annotationEngine.GetTool() != ToolType::None) {

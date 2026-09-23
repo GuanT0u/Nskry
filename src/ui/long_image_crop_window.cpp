@@ -34,6 +34,7 @@ LongImageCropWindow::LongImageCropWindow(HBITMAP bitmap, int width, int height,
     m_height = (std::min)(m_height, bitmapHeight);
     if (m_width <= 0 || m_height < kMinimumCropHeight) return;
     m_cropBottom = m_height;
+    m_cropRight = m_width;
     m_zoomFocusY = m_height / 2;
 
     std::call_once(s_classOnce, [] {
@@ -150,8 +151,13 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
         }
         const int topY = image.top + static_cast<int>((static_cast<double>(m_cropTop) / m_height) * (image.bottom - image.top));
         const int bottomY = image.top + static_cast<int>((static_cast<double>(m_cropBottom) / m_height) * (image.bottom - image.top));
+        const int leftX = image.left + static_cast<int>((static_cast<double>(m_cropLeft) / m_width) * (image.right - image.left));
+        const int rightX = image.left + static_cast<int>((static_cast<double>(m_cropRight) / m_width) * (image.right - image.left));
         if (GET_X_LPARAM(lp) >= image.left - 12 && GET_X_LPARAM(lp) <= image.right + 12 && abs(y - topY) <= 12) m_drag = DragHandle::Top;
         else if (GET_X_LPARAM(lp) >= image.left - 12 && GET_X_LPARAM(lp) <= image.right + 12 && abs(y - bottomY) <= 12) m_drag = DragHandle::Bottom;
+        else if (y >= image.top - 12 && y <= image.bottom + 12 && abs(GET_X_LPARAM(lp) - leftX) <= 12) m_drag = DragHandle::Left;
+        else if (y >= image.top - 12 && y <= image.bottom + 12 && abs(GET_X_LPARAM(lp) - rightX) <= 12) m_drag = DragHandle::Right;
+        else if (::PtInRect(&image, POINT{ GET_X_LPARAM(lp), y })) m_drag = DragHandle::Pan;
         if (m_drag != DragHandle::None) {
             m_dragLastPoint = { GET_X_LPARAM(lp), y };
             m_dragRemainderY = 0.0;
@@ -170,6 +176,25 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
                 m_ocrSelection.top = (std::min)(m_ocrDragStart.y, current.y);
                 m_ocrSelection.right = (std::min)(m_width, static_cast<int>((std::max)(m_ocrDragStart.x, current.x)) + 1);
                 m_ocrSelection.bottom = (std::min)(m_height, static_cast<int>((std::max)(m_ocrDragStart.y, current.y)) + 1);
+                m_dragLastPoint = { pointerX, pointerY };
+                ::InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            if (m_drag == DragHandle::Pan) {
+                const RECT image = ImageRect();
+                const double scale = image.right > image.left ? static_cast<double>(image.right - image.left) / m_width : 1.0;
+                if (scale > 0.0) {
+                    m_viewLeftX -= (pointerX - m_dragLastPoint.x) / scale;
+                    m_viewTopY -= (pointerY - m_dragLastPoint.y) / scale;
+                    m_dragLastPoint = { pointerX, pointerY };
+                    ::InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+            if (m_drag == DragHandle::Left || m_drag == DragHandle::Right) {
+                const int sourceX = SourcePointFromClient({ pointerX, pointerY }).x;
+                if (m_drag == DragHandle::Left) m_cropLeft = (std::clamp)(sourceX, 0, m_cropRight - kMinimumCropHeight);
+                else m_cropRight = (std::clamp)(sourceX, m_cropLeft + kMinimumCropHeight, m_width);
                 m_dragLastPoint = { pointerX, pointerY };
                 ::InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
@@ -208,15 +233,19 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
         }
         return 0;
     case WM_LBUTTONUP:
-        if (m_drag != DragHandle::None) { m_drag = DragHandle::None; m_dragRemainderY = 0.0; ::ReleaseCapture(); }
+        if (m_drag != DragHandle::None) { m_drag = DragHandle::None; m_dragRemainderY = 0.0; ::ReleaseCapture(); ::InvalidateRect(hwnd, nullptr, FALSE); }
         return 0;
     case WM_CAPTURECHANGED:
     case WM_CANCELMODE:
         m_drag = DragHandle::None;
+        ::InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
-    case WM_MOUSEWHEEL:
-        ScrollView(GET_WHEEL_DELTA_WPARAM(wp));
+    case WM_MOUSEWHEEL: {
+        POINT point{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) }; ::ScreenToClient(hwnd, &point);
+        if ((::GetKeyState(VK_MENU) & 0x8000) != 0) ScrollView(GET_WHEEL_DELTA_WPARAM(wp));
+        else ZoomAt(point, GET_WHEEL_DELTA_WPARAM(wp));
         return 0;
+    }
     case WM_SETCURSOR: {
         if (LOWORD(lp) != HTCLIENT) break;
         POINT point{};
@@ -236,16 +265,14 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
         return TRUE;
     }
     case WM_COMMAND:
-        if (LOWORD(wp) == kApplyId) { ApplyCrop(); return 0; }
-        if (LOWORD(wp) == kCancelId) { ::DestroyWindow(hwnd); return 0; }
+        if (LOWORD(wp) == kApplyId) { if (m_selectingOcr) RunImageAction(0); else ApplyCrop(); return 0; }
+        if (LOWORD(wp) == kCancelId) { if (m_selectingOcr) SetOcrSelectionMode(false); else ::DestroyWindow(hwnd); return 0; }
         if (LOWORD(wp) == kZoomInId) { m_zoom = (std::min)(16.0, m_zoom * 1.4); m_zoomFocusY = (m_cropTop + m_cropBottom) / 2; CenterViewOn(m_zoomFocusY); ::InvalidateRect(hwnd, nullptr, FALSE); return 0; }
         if (LOWORD(wp) == kZoomOutId) { m_zoom = (std::max)(1.0, m_zoom / 1.4); m_zoomFocusY = (m_cropTop + m_cropBottom) / 2; CenterViewOn(m_zoomFocusY); ::InvalidateRect(hwnd, nullptr, FALSE); return 0; }
         if (LOWORD(wp) == kImageActionId) {
             if (!m_selectingOcr) {
-                m_selectingOcr = true;
-                m_ocrSelection = { 0, m_cropTop, m_width, m_cropBottom };
-                ::SetWindowTextW(m_imageActionButton,
-                    m_imageActions.size() == 1 ? m_imageActions.front().label.c_str() : L"Run image action");
+                SetOcrSelectionMode(true);
+                m_ocrSelection = { m_cropLeft, m_cropTop, m_cropRight, m_cropBottom };
                 ::InvalidateRect(hwnd, nullptr, FALSE);
             } else {
                 if (m_imageActions.size() == 1) {
@@ -290,6 +317,17 @@ void LongImageCropWindow::LayoutControls() {
     if (m_imageActionButton) ::SetWindowPos(m_imageActionButton, nullptr, imageActionX, y, 118, 30, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
+void LongImageCropWindow::SetOcrSelectionMode(bool enabled) {
+    m_selectingOcr = enabled;
+    m_drag = DragHandle::None;
+    if (!enabled) m_ocrSelection = {};
+    if (m_applyButton) ::SetWindowTextW(m_applyButton, enabled ? L"Recognize selection" : L"Open annotation editor");
+    if (m_cancelButton) ::SetWindowTextW(m_cancelButton, enabled ? L"Cancel selection" : L"Cancel");
+    if (m_imageActionButton) ::ShowWindow(m_imageActionButton, enabled ? SW_HIDE : SW_SHOW);
+    LayoutControls();
+    if (m_hwnd) ::InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
 RECT LongImageCropWindow::ImageRect() const {
     if (!m_hwnd || m_width <= 0 || m_height <= 0) return {};
     RECT client{}; ::GetClientRect(m_hwnd, &client);
@@ -299,7 +337,7 @@ RECT LongImageCropWindow::ImageRect() const {
     const double scale = fitScale * m_zoom;
     const int width = (std::max)(1, static_cast<int>(m_width * scale));
     const int height = (std::max)(1, static_cast<int>(m_height * scale));
-    const int left = (client.right - width) / 2;
+    int left = (client.right - width) / 2;
     int top = kCanvasMargin + (availableHeight - height) / 2;
     if (height > availableHeight) {
         const double visibleSourceHeight = static_cast<double>(availableHeight) / scale;
@@ -307,7 +345,33 @@ RECT LongImageCropWindow::ImageRect() const {
         const double viewTop = (std::clamp)(m_viewTopY, 0.0, maximumTop);
         top = kCanvasMargin - static_cast<int>(viewTop * scale);
     }
+    if (width > availableWidth) {
+        const double visibleSourceWidth = static_cast<double>(availableWidth) / scale;
+        const double maximumLeft = (std::max)(0.0, static_cast<double>(m_width) - visibleSourceWidth);
+        const double viewLeft = (std::clamp)(m_viewLeftX, 0.0, maximumLeft);
+        left = kCanvasMargin - static_cast<int>(viewLeft * scale);
+    }
     return { left, top, left + width, top + height };
+}
+
+void LongImageCropWindow::ZoomAt(POINT clientPoint, int wheelDelta) {
+    if (!m_hwnd || wheelDelta == 0 || m_width <= 0 || m_height <= 0) return;
+    const RECT before = ImageRect();
+    if (!::PtInRect(&before, clientPoint)) return;
+    const double oldScale = static_cast<double>(before.right - before.left) / m_width;
+    const double sourceX = (clientPoint.x - before.left) / oldScale;
+    const double sourceY = (clientPoint.y - before.top) / oldScale;
+    m_zoom = (std::clamp)(m_zoom * (wheelDelta > 0 ? 1.18 : 1.0 / 1.18), 1.0, 16.0);
+    const RECT after = ImageRect();
+    const double newScale = static_cast<double>(after.right - after.left) / m_width;
+    RECT client{}; ::GetClientRect(m_hwnd, &client);
+    const int availableWidth = (std::max)(1, static_cast<int>(client.right) - 2 * kCanvasMargin);
+    const int availableHeight = (std::max)(1, static_cast<int>(client.bottom) - kControlsHeight - 2 * kCanvasMargin);
+    if (m_width * newScale > availableWidth) m_viewLeftX = sourceX - (clientPoint.x - kCanvasMargin) / newScale;
+    else m_viewLeftX = 0.0;
+    if (m_height * newScale > availableHeight) m_viewTopY = sourceY - (clientPoint.y - kCanvasMargin) / newScale;
+    else m_viewTopY = 0.0;
+    ::InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void LongImageCropWindow::CenterViewOn(int sourceY) {
@@ -387,12 +451,18 @@ void LongImageCropWindow::Paint(HWND hwnd) {
 
         const int topY = image.top + static_cast<int>((static_cast<double>(m_cropTop) / m_height) * (image.bottom - image.top));
         const int bottomY = image.top + static_cast<int>((static_cast<double>(m_cropBottom) / m_height) * (image.bottom - image.top));
+        const int leftX = image.left + static_cast<int>((static_cast<double>(m_cropLeft) / m_width) * (image.right - image.left));
+        const int rightX = image.left + static_cast<int>((static_cast<double>(m_cropRight) / m_width) * (image.right - image.left));
         HBRUSH shade = ::CreateSolidBrush(RGB(18, 18, 22));
         RECT topShade{ image.left, image.top, image.right, topY };
         RECT bottomShade{ image.left, bottomY, image.right, image.bottom };
+        RECT leftShade{ image.left, topY, leftX, bottomY };
+        RECT rightShade{ rightX, topY, image.right, bottomY };
         if (shade) {
             ::FillRect(dc, &topShade, shade);
             ::FillRect(dc, &bottomShade, shade);
+            ::FillRect(dc, &leftShade, shade);
+            ::FillRect(dc, &rightShade, shade);
             ::DeleteObject(shade);
         }
         HPEN pen = ::CreatePen(PS_SOLID, 2, RGB(0, 174, 255));
@@ -400,6 +470,8 @@ void LongImageCropWindow::Paint(HWND hwnd) {
         if (oldPen && oldPen != HGDI_ERROR) {
             ::MoveToEx(dc, image.left - 8, topY, nullptr); ::LineTo(dc, image.right + 8, topY);
             ::MoveToEx(dc, image.left - 8, bottomY, nullptr); ::LineTo(dc, image.right + 8, bottomY);
+            ::MoveToEx(dc, leftX, topY, nullptr); ::LineTo(dc, leftX, bottomY);
+            ::MoveToEx(dc, rightX, topY, nullptr); ::LineTo(dc, rightX, bottomY);
             ::SelectObject(dc, oldPen);
         }
         if (pen) ::DeleteObject(pen);
@@ -418,7 +490,7 @@ void LongImageCropWindow::Paint(HWND hwnd) {
             if (selectionPen) ::DeleteObject(selectionPen);
         }
 
-        if (m_drag != DragHandle::None && memory && old && old != HGDI_ERROR) {
+        if ((m_drag == DragHandle::Top || m_drag == DragHandle::Bottom || m_drag == DragHandle::OcrArea) && memory && old && old != HGDI_ERROR) {
             // Inspect the pixel physically under the cursor, not the centre
             // of the long image. This matches the selection-overlay loupe.
             const int sourceX = (std::clamp)(static_cast<int>(
@@ -447,7 +519,7 @@ void LongImageCropWindow::Paint(HWND hwnd) {
 }
 
 HBITMAP LongImageCropWindow::CreateCroppedBitmap() const {
-    return CreateRegionBitmap({ 0, m_cropTop, m_width, m_cropBottom });
+    return CreateRegionBitmap({ m_cropLeft, m_cropTop, m_cropRight, m_cropBottom });
 }
 
 HBITMAP LongImageCropWindow::CreateRegionBitmap(RECT sourceRegion) const {
@@ -487,7 +559,7 @@ void LongImageCropWindow::ApplyCrop() {
     }
     if (m_apply) {
         try {
-            m_apply(cropped, m_width, m_cropBottom - m_cropTop);
+            m_apply(cropped, m_cropRight - m_cropLeft, m_cropBottom - m_cropTop);
         } catch (...) {
             // Ownership transfers when the callback is invoked; it remains the
             // callback's responsibility even when it reports failure by throwing.
@@ -518,6 +590,7 @@ void LongImageCropWindow::RunImageAction(size_t actionIndex) {
         throw;
     }
     ::DeleteObject(cropped);
+    if (m_hwnd) ::DestroyWindow(m_hwnd);
 }
 
 } // namespace nskry

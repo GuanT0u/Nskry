@@ -51,6 +51,7 @@ void SettingsManager::SetDefaults() {
     m_hotkeys.emplace(L"core.exit", L"Ctrl+Alt+Q");
     m_runAtStartup = false;
     m_notifications = true;
+    m_showStartupHint = true;
     m_theme = L"system";
     m_officialPluginCatalogUrl.clear();
 }
@@ -89,6 +90,7 @@ bool SettingsManager::Load() {
     const json::Value& generalObject = general ? *general : root; // Accept the early flat settings shape.
     if (!ReadOptionalBool(generalObject, L"run_at_startup", m_runAtStartup) ||
         !ReadOptionalBool(generalObject, L"notifications", m_notifications) ||
+        !ReadOptionalBool(generalObject, L"show_startup_hint", m_showStartupHint) ||
         !ReadOptionalString(generalObject, L"theme", m_theme)) return false;
 
     const json::Value* updates = root.Find(L"updates");
@@ -106,6 +108,7 @@ bool SettingsManager::Save() const {
            << L"  \"general\": {\n"
            << L"    \"run_at_startup\": " << (m_runAtStartup ? L"true" : L"false") << L",\n"
            << L"    \"notifications\": " << (m_notifications ? L"true" : L"false") << L",\n"
+           << L"    \"show_startup_hint\": " << (m_showStartupHint ? L"true" : L"false") << L",\n"
            << L"    \"theme\": \"" << json::EscapeString(m_theme) << L"\"\n"
            << L"  },\n"
            << L"  \"capture\": {\n"
@@ -146,6 +149,7 @@ UserSettings SettingsManager::GetUserSettings() const {
     UserSettings result;
     result.runAtStartup = m_runAtStartup;
     result.notifications = m_notifications;
+    result.showStartupHint = m_showStartupHint;
     result.theme = m_theme;
     result.captureShortcut = GetHotkey(L"core.capture");
     result.exitShortcut = GetHotkey(L"core.exit");
@@ -155,6 +159,7 @@ UserSettings SettingsManager::GetUserSettings() const {
 void SettingsManager::SetUserSettings(const UserSettings& settings) {
     m_runAtStartup = settings.runAtStartup;
     m_notifications = settings.notifications;
+    m_showStartupHint = settings.showStartupHint;
     m_theme = settings.theme;
     SetHotkey(L"core.capture", settings.captureShortcut);
     SetHotkey(L"core.exit", settings.exitShortcut);
