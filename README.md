@@ -50,4 +50,6 @@ C++20 · Win32 API · D3D11 · Windows.Graphics.Capture · GDI+
 
 ## License
 
-MIT
+Nskry is licensed under the GNU General Public License, version 3 or later
+(GPL-3.0-or-later). See [LICENSE](LICENSE) for the license notice and the
+official license text.
