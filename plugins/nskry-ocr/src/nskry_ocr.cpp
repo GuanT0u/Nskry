@@ -116,7 +116,10 @@ HBITMAP ResizeForOcr(HBITMAP source, int width, int height, int& outputWidth, in
     const int largestDimension = (std::max)(width, height);
     double scale = 1.0;
     if (largestDimension > maximum) scale = static_cast<double>(maximum) / largestDimension;
-    else scale = (std::min)(2.0, static_cast<double>(maximum) / largestDimension);
+    // Small UI text benefits considerably from a larger raster. Keep the
+    // temporary recognition image bounded, and never expose it to the result
+    // window (which continues to own and display the original-size bitmap).
+    else scale = (std::min)(4.0, static_cast<double>(maximum) / largestDimension);
     if (std::abs(scale - 1.0) < 0.01) return CopyBitmap(source);
 
     outputWidth = (std::max)(1, static_cast<int>(std::lround(width * scale)));
@@ -326,8 +329,9 @@ public:
         const int height = (std::max)(360, static_cast<int>(std::lround(width * 9.0 / 16.0)));
         const int x = work.left + (monitorWidth - width) / 2;
         const int y = work.top + (monitorHeight - height) / 2;
-        m_hwnd = ::CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, kClassName, L"Nskry — Text recognition",
-            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
+        m_hwnd = ::CreateWindowExW(WS_EX_TOPMOST | WS_EX_APPWINDOW, kClassName, L"Nskry — Text recognition",
+            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME |
+                WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_CLIPCHILDREN,
             x, y, width, height, nullptr, nullptr, ::GetModuleHandleW(nullptr), this);
         if (!m_hwnd) return false;
         m_windowOwnsLifetime = true;
@@ -408,12 +412,14 @@ private:
 
     RECT CanvasRect() const {
         RECT client{}; ::GetClientRect(m_hwnd, &client);
-        const int leftWidth = static_cast<int>(client.right * 0.765);
+        const int textWidth = (std::clamp)(m_textPaneWidth, 180, (std::max)(180, static_cast<int>(client.right) - 320));
+        const int leftWidth = (std::max)(320, static_cast<int>(client.right) - textWidth);
         return { 0, 0, leftWidth, (std::max)(0, static_cast<int>(client.bottom) - 40) };
     }
 
     void LayoutControls() {
         RECT client{}; ::GetClientRect(m_hwnd, &client);
+        if (m_textPaneWidth == 0) m_textPaneWidth = (std::max)(180, static_cast<int>(client.right * 0.235));
         const RECT canvas = CanvasRect();
         if (m_scale == 0.0 && m_result->width > 0 && m_result->height > 0) {
             m_scale = (std::min)(1.0, (std::min)(static_cast<double>(canvas.right - canvas.left) / m_result->width,
@@ -607,6 +613,14 @@ private:
             LayoutControls();
             ::InvalidateRect(m_hwnd, nullptr, FALSE);
             return 0;
+        case WM_GETMINMAXINFO: {
+            auto* limits = reinterpret_cast<MINMAXINFO*>(lp);
+            if (limits) {
+                limits->ptMinTrackSize.x = (std::max)(limits->ptMinTrackSize.x, 640L);
+                limits->ptMinTrackSize.y = (std::max)(limits->ptMinTrackSize.y, 360L);
+            }
+            return 0;
+        }
         case WM_PAINT: {
             PAINTSTRUCT paint{}; HDC target = ::BeginPaint(m_hwnd, &paint);
             RECT client{}; ::GetClientRect(m_hwnd, &client);
@@ -714,6 +728,7 @@ private:
     double m_scale{};
     double m_panX{};
     double m_panY{};
+    int m_textPaneWidth{};
 };
 
 void ShowResult(std::unique_ptr<OcrJobResult> result) {

@@ -59,8 +59,9 @@ LongImageCropWindow::LongImageCropWindow(HBITMAP bitmap, int width, int height,
     const int windowW = (std::min)(660, workW);
     const int windowH = (std::min)(760, workH);
 
-    m_hwnd = ::CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, kClassName,
-        L"Long Screenshot - Adjust height", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
+    m_hwnd = ::CreateWindowExW(WS_EX_TOPMOST | WS_EX_APPWINDOW, kClassName,
+        L"Long Screenshot - Adjust height", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
+            WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_CLIPCHILDREN,
         work.left + (workW - windowW) / 2, work.top + (workH - windowH) / 2,
         windowW, windowH, nullptr, nullptr,
         ::GetModuleHandleW(nullptr), this);
@@ -130,6 +131,14 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
         LayoutControls();
         ::InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
+    case WM_GETMINMAXINFO: {
+        auto* limits = reinterpret_cast<MINMAXINFO*>(lp);
+        if (limits) {
+            limits->ptMinTrackSize.x = (std::max)(limits->ptMinTrackSize.x, 560L);
+            limits->ptMinTrackSize.y = (std::max)(limits->ptMinTrackSize.y, 420L);
+        }
+        return 0;
+    }
     case WM_PAINT:
         Paint(hwnd);
         return 0;

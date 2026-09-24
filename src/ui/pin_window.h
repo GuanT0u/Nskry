@@ -45,6 +45,10 @@ private:
     void EnterEditMode();
     void FinishEdit(bool apply);
     void CommitTextEdit();
+    void CreateQuickActions(HWND parent);
+    void LayoutQuickActions();
+    void ShowQuickActions(bool show);
+    void RunTextRecognition();
 
     // Pin Toolbar
     struct PinToolItem {
@@ -80,6 +84,8 @@ private:
 
     // In-place text input
     HWND             m_hTextEdit{};
+    HWND             m_quickButtons[4]{};
+    bool             m_quickActionsVisible{};
     POINT            m_textEditPos{};
     CloseCallback    m_closed;
     ImageActions     m_imageActions;

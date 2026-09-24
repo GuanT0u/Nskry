@@ -6,6 +6,14 @@
 
 namespace nskry {
 
+namespace {
+constexpr UINT_PTR kQuickHideTimer = 0x51A;
+constexpr int kQuickEditId = 7101;
+constexpr int kQuickOcrId = 7102;
+constexpr int kQuickMinimizeId = 7103;
+constexpr int kQuickCloseId = 7104;
+}
+
 // PNG encoder helper for saving
 static int GetPngEncoderClsidHelper(CLSID* pClsid) {
     UINT num = 0, size = 0;
@@ -48,8 +56,8 @@ PinWindow::PinWindow(HBITMAP bitmap, int width, int height, CloseCallback closed
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
 
-    const DWORD style   = WS_POPUP | WS_THICKFRAME | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
-    const DWORD exStyle = WS_EX_TOPMOST | WS_EX_TOOLWINDOW;
+    const DWORD style   = WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+    const DWORD exStyle = WS_EX_TOPMOST | WS_EX_APPWINDOW;
 
     if (!m_bitmap || m_width <= 0 || m_height <= 0) return;
 
@@ -121,7 +129,9 @@ bool PinWindow::ShowInEditMode() {
 LRESULT CALLBACK PinWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_NCCREATE) {
         auto cs = reinterpret_cast<CREATESTRUCTW*>(lp);
-        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+        auto* created = static_cast<PinWindow*>(cs->lpCreateParams);
+        created->m_hwnd = hwnd;
+        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(created));
     }
     auto self = reinterpret_cast<PinWindow*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (msg == WM_NCDESTROY && self) {
@@ -140,6 +150,10 @@ LRESULT CALLBACK PinWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+    case WM_CREATE:
+        CreateQuickActions(hwnd);
+        return 0;
+
     case WM_NCHITTEST: {
         LRESULT hit = ::DefWindowProcW(hwnd, msg, wp, lp);
         if (hit == HTCLIENT) {
@@ -270,6 +284,11 @@ LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             OnMouseMove(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
             return 0;
         }
+        ShowQuickActions(true);
+        break;
+
+    case WM_NCMOUSEMOVE:
+        if (!m_isEditing) ShowQuickActions(true);
         break;
 
     case WM_LBUTTONUP:
@@ -303,6 +322,13 @@ LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         break;
 
     case WM_COMMAND:
+        switch (LOWORD(wp)) {
+        case kQuickEditId: EnterEditMode(); return 0;
+        case kQuickOcrId: RunTextRecognition(); return 0;
+        case kQuickMinimizeId: ShowQuickActions(false); ::ShowWindow(hwnd, SW_MINIMIZE); return 0;
+        case kQuickCloseId: ::DestroyWindow(hwnd); return 0;
+        default: break;
+        }
         if (HIWORD(wp) == EN_KILLFOCUS && reinterpret_cast<HWND>(lp) == m_hTextEdit) {
             CommitTextEdit();
             return 0;
@@ -331,9 +357,21 @@ LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_SIZE: {
         RECT rc{}; ::GetClientRect(hwnd, &rc);
         if (m_isEditing) BuildPinToolbar(rc.right, rc.bottom);
+        LayoutQuickActions();
         ::InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
     }
+
+    case WM_TIMER:
+        if (wp == kQuickHideTimer && m_quickActionsVisible && !m_isEditing) {
+            POINT cursor{};
+            RECT window{};
+            ::GetCursorPos(&cursor);
+            ::GetWindowRect(hwnd, &window);
+            if (!::PtInRect(&window, cursor)) ShowQuickActions(false);
+            return 0;
+        }
+        break;
 
     case WM_ERASEBKGND:
         return 1;
@@ -342,6 +380,52 @@ LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     return ::DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void PinWindow::CreateQuickActions(HWND parent) {
+    const wchar_t* labels[] = { L"\x270E", L"T", L"\x2212", L"\x00D7" };
+    const int ids[] = { kQuickEditId, kQuickOcrId, kQuickMinimizeId, kQuickCloseId };
+    for (size_t index = 0; index < 4; ++index) {
+        m_quickButtons[index] = ::CreateWindowExW(WS_EX_LAYERED, L"BUTTON", labels[index],
+            WS_CHILD | BS_PUSHBUTTON, 0, 0, 32, 28, parent,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ids[index])), ::GetModuleHandleW(nullptr), nullptr);
+        if (m_quickButtons[index]) {
+            ::SetLayeredWindowAttributes(m_quickButtons[index], 0, 205, LWA_ALPHA);
+            if (m_font) ::SendMessageW(m_quickButtons[index], WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
+        }
+    }
+    LayoutQuickActions();
+}
+
+void PinWindow::LayoutQuickActions() {
+    if (!m_hwnd) return;
+    RECT client{};
+    ::GetClientRect(m_hwnd, &client);
+    constexpr int width = 32, height = 28, gap = 4, margin = 8;
+    int x = (std::max)(margin, static_cast<int>(client.right) - margin - 4 * width - 3 * gap);
+    for (HWND button : m_quickButtons) {
+        if (button) ::SetWindowPos(button, HWND_TOP, x, margin, width, height, SWP_NOACTIVATE);
+        x += width + gap;
+    }
+}
+
+void PinWindow::ShowQuickActions(bool show) {
+    if (m_isEditing) show = false;
+    if (m_quickActionsVisible == show) return;
+    m_quickActionsVisible = show;
+    for (HWND button : m_quickButtons) if (button) ::ShowWindow(button, show ? SW_SHOWNOACTIVATE : SW_HIDE);
+    if (show) ::SetTimer(m_hwnd, kQuickHideTimer, 120, nullptr);
+    else if (m_hwnd) ::KillTimer(m_hwnd, kQuickHideTimer);
+}
+
+void PinWindow::RunTextRecognition() {
+    const auto action = std::find_if(m_imageActions.begin(), m_imageActions.end(), [](const ImageAction& value) {
+        return value.id == L"nskry-ocr" || value.label == L"Text recognition";
+    });
+    if (action == m_imageActions.end() || !action->invoke) return;
+    RECT region{};
+    ::GetWindowRect(m_hwnd, &region);
+    action->invoke(m_bitmap, m_width, m_height, region, m_hwnd);
 }
 
 // ============================================================================
@@ -454,6 +538,7 @@ void PinWindow::SaveToFile() {
 // ============================================================================
 
 void PinWindow::EnterEditMode() {
+    ShowQuickActions(false);
     m_isEditing = true;
     m_annotationEngine.Clear();
     m_annotationEngine.SetTool(ToolType::Pen);
@@ -730,14 +815,10 @@ RECT PinWindow::ImageRect() const {
     const int clientH = client.bottom - client.top;
     if (clientW <= 0 || clientH <= 0) return {};
 
-    const double scale = (std::min)(
-        static_cast<double>(clientW) / m_width,
-        static_cast<double>(clientH) / m_height);
-    const int imageW = (std::max)(1, static_cast<int>(m_width * scale));
-    const int imageH = (std::max)(1, static_cast<int>(m_height * scale));
-    const int left = (clientW - imageW) / 2;
-    const int top = (clientH - imageH) / 2;
-    return { left, top, left + imageW, top + imageH };
+    // Match the monitor window: corner resizing preserves the source aspect
+    // ratio through WM_SIZING, while dragging a single edge deliberately
+    // stretches that axis to fill the client area.
+    return { 0, 0, clientW, clientH };
 }
 
 bool PinWindow::ClientPointToBitmap(int x, int y, POINT& bitmapPoint, bool clampToImage) const {

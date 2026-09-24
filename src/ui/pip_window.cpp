@@ -1,9 +1,18 @@
 #include "pch.h"
 #include "ui/pip_window.h"
+#include <algorithm>
 #include <d3dcompiler.h>
 #include <windowsx.h>
 
 namespace nskry {
+
+namespace {
+constexpr UINT_PTR kPipQuickHideTimer = 0x51B;
+constexpr int kPipQuickEditId = 7201;
+constexpr int kPipQuickOcrId = 7202;
+constexpr int kPipQuickMinimizeId = 7203;
+constexpr int kPipQuickCloseId = 7204;
+}
 
 static const char kPipShaderSource[] = R"(
 struct VS_OUT {
@@ -80,8 +89,8 @@ PipWindow::PipWindow(
         winW = static_cast<int>(winH * aspect);
     }
 
-    const DWORD style   = WS_POPUP | WS_THICKFRAME | WS_CAPTION | WS_SYSMENU;
-    const DWORD exStyle = WS_EX_TOPMOST | WS_EX_TOOLWINDOW;
+    const DWORD style   = WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+    const DWORD exStyle = WS_EX_TOPMOST | WS_EX_APPWINDOW;
 
     RECT rc = { 0, 0, winW, winH };
     ::AdjustWindowRectEx(&rc, style, FALSE, exStyle);
@@ -410,7 +419,9 @@ void PipWindow::CreateSwapChain(UINT w, UINT h) {
 LRESULT CALLBACK PipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_NCCREATE) {
         auto cs = reinterpret_cast<CREATESTRUCTW*>(lp);
-        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+        auto* created = static_cast<PipWindow*>(cs->lpCreateParams);
+        created->m_hwnd = hwnd;
+        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(created));
     }
     auto self = reinterpret_cast<PipWindow*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (self) return self->HandleMessage(hwnd, msg, wp, lp);
@@ -419,6 +430,10 @@ LRESULT CALLBACK PipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+    case WM_CREATE:
+        CreateQuickActions(hwnd);
+        return 0;
+
     case WM_NCHITTEST: {
         LRESULT hit = ::DefWindowProcW(hwnd, msg, wp, lp);
         if (hit == HTCLIENT) {
@@ -537,6 +552,11 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             OnMouseMove(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
             return 0;
         }
+        ShowQuickActions(true);
+        break;
+
+    case WM_NCMOUSEMOVE:
+        if (!m_isEditing) ShowQuickActions(true);
         break;
 
     case WM_LBUTTONUP:
@@ -621,6 +641,13 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         break;
 
     case WM_COMMAND:
+        switch (LOWORD(wp)) {
+        case kPipQuickEditId: EnterEditMode(); return 0;
+        case kPipQuickOcrId: RunTextRecognition(); return 0;
+        case kPipQuickMinimizeId: ShowQuickActions(false); ::ShowWindow(hwnd, SW_MINIMIZE); return 0;
+        case kPipQuickCloseId: if (m_onClose) m_onClose(); return 0;
+        default: break;
+        }
         if (HIWORD(wp) == EN_KILLFOCUS && reinterpret_cast<HWND>(lp) == m_hTextEdit) {
             CommitTextEdit();
             return 0;
@@ -632,8 +659,20 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (m_isEditing) {
             BuildToolbar(rc.right, rc.bottom);
         }
+        LayoutQuickActions();
         return 0;
     }
+
+    case WM_TIMER:
+        if (wp == kPipQuickHideTimer && m_quickActionsVisible && !m_isEditing) {
+            POINT cursor{};
+            RECT window{};
+            ::GetCursorPos(&cursor);
+            ::GetWindowRect(hwnd, &window);
+            if (!::PtInRect(&window, cursor)) ShowQuickActions(false);
+            return 0;
+        }
+        break;
 
     case WM_CLOSE:
         FinishEdit(false);
@@ -689,6 +728,7 @@ void PipWindow::ShowContextMenu(int screenX, int screenY) {
 // ---------------------------------------------------------------------------
 
 void PipWindow::EnterEditMode() {
+    ShowQuickActions(false);
     m_isEditing = true;
     m_backupEngine = m_annotationEngine.Clone();
     m_annotationEngine.SetTool(ToolType::Pen);
@@ -698,6 +738,54 @@ void PipWindow::EnterEditMode() {
     ::ShowWindow(m_hwndToolbar, SW_SHOWNOACTIVATE);
     ::InvalidateRect(m_hwndToolbar, nullptr, FALSE);
     ::UpdateWindow(m_hwndToolbar);
+}
+
+void PipWindow::CreateQuickActions(HWND parent) {
+    const wchar_t* labels[] = { L"\x270E", L"T", L"\x2212", L"\x00D7" };
+    const int ids[] = { kPipQuickEditId, kPipQuickOcrId, kPipQuickMinimizeId, kPipQuickCloseId };
+    for (size_t index = 0; index < 4; ++index) {
+        m_quickButtons[index] = ::CreateWindowExW(WS_EX_LAYERED, L"BUTTON", labels[index],
+            WS_CHILD | BS_PUSHBUTTON, 0, 0, 32, 28, parent,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ids[index])), ::GetModuleHandleW(nullptr), nullptr);
+        if (m_quickButtons[index]) {
+            ::SetLayeredWindowAttributes(m_quickButtons[index], 0, 205, LWA_ALPHA);
+            if (m_font) ::SendMessageW(m_quickButtons[index], WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
+        }
+    }
+    LayoutQuickActions();
+}
+
+void PipWindow::LayoutQuickActions() {
+    if (!m_hwnd) return;
+    RECT client{};
+    ::GetClientRect(m_hwnd, &client);
+    constexpr int width = 32, height = 28, gap = 4, margin = 8;
+    int x = (std::max)(margin, static_cast<int>(client.right) - margin - 4 * width - 3 * gap);
+    for (HWND button : m_quickButtons) {
+        if (button) ::SetWindowPos(button, HWND_TOP, x, margin, width, height, SWP_NOACTIVATE);
+        x += width + gap;
+    }
+}
+
+void PipWindow::ShowQuickActions(bool show) {
+    if (m_isEditing) show = false;
+    if (m_quickActionsVisible == show) return;
+    m_quickActionsVisible = show;
+    for (HWND button : m_quickButtons) if (button) ::ShowWindow(button, show ? SW_SHOWNOACTIVATE : SW_HIDE);
+    if (show) ::SetTimer(m_hwnd, kPipQuickHideTimer, 120, nullptr);
+    else if (m_hwnd) ::KillTimer(m_hwnd, kPipQuickHideTimer);
+}
+
+void PipWindow::RunTextRecognition() {
+    const auto action = std::find_if(m_imageActions.begin(), m_imageActions.end(), [](const ImageAction& value) {
+        return value.id == L"nskry-ocr" || value.label == L"Text recognition";
+    });
+    if (action == m_imageActions.end() || !action->invoke) return;
+    FrameHdcGuard frame = GetLastFrameHdc();
+    if (!frame.hbmp) return;
+    RECT region{};
+    ::GetWindowRect(m_hwnd, &region);
+    action->invoke(frame.hbmp, static_cast<int>(m_contentW), static_cast<int>(m_contentH), region, m_hwnd);
 }
 
 void PipWindow::FinishEdit(bool apply) {

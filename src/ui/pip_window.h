@@ -90,6 +90,10 @@ private:
     void EnterEditMode();
     void FinishEdit(bool apply);
     void CommitTextEdit();
+    void CreateQuickActions(HWND parent);
+    void LayoutQuickActions();
+    void ShowQuickActions(bool show);
+    void RunTextRecognition();
 
     void CreateToolbarWindow();
     void BuildToolbar(int clientW, int clientH);
@@ -124,6 +128,8 @@ private:
     AnnotationEngine m_backupEngine;
     bool             m_isDrawing = false;
     HWND             m_hwndToolbar{};
+    HWND             m_quickButtons[4]{};
+    bool             m_quickActionsVisible{};
     HWND             m_hTextEdit{};
     POINT            m_textEditPos{};
     HFONT            m_font{};
