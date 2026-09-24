@@ -35,6 +35,7 @@ private:
     RECT ImageRect() const;
     void CenterViewOn(int sourceY);
     void ScrollView(int wheelDelta);
+    void ScrollHorizontal(int wheelDelta);
     void ZoomAt(POINT clientPoint, int wheelDelta);
     void SetOcrSelectionMode(bool enabled);
     int SourceYFromClientY(int y) const;
@@ -63,6 +64,7 @@ private:
     DragHandle m_drag = DragHandle::None;
     POINT m_dragLastPoint{};
     double m_dragRemainderY{};
+    double m_dragRemainderX{};
     double m_zoom = 1.0;
     int m_zoomFocusY{};
     double m_viewTopY{};       // Source-space y at the top of the zoomed viewport.

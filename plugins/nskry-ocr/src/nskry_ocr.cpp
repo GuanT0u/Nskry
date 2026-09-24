@@ -116,7 +116,7 @@ HBITMAP ResizeForOcr(HBITMAP source, int width, int height, int& outputWidth, in
     const int largestDimension = (std::max)(width, height);
     double scale = 1.0;
     if (largestDimension > maximum) scale = static_cast<double>(maximum) / largestDimension;
-    else if (largestDimension < 1600) scale = (std::min)(2.0, 1600.0 / largestDimension);
+    else scale = (std::min)(2.0, static_cast<double>(maximum) / largestDimension);
     if (std::abs(scale - 1.0) < 0.01) return CopyBitmap(source);
 
     outputWidth = (std::max)(1, static_cast<int>(std::lround(width * scale)));
@@ -210,13 +210,15 @@ winrt::Windows::Graphics::Imaging::SoftwareBitmap ToSoftwareBitmap(HBITMAP bitma
     return converted;
 }
 
-std::unique_ptr<OcrJobResult> RunOcr(HBITMAP bitmap, int width, int height, RECT anchor,
+std::unique_ptr<OcrJobResult> RunOcr(HBITMAP ocrBitmap, int ocrWidth, int ocrHeight,
+                                     HBITMAP displayBitmap, int displayWidth, int displayHeight, RECT anchor,
                                      int32_t (*copyBitmap)(HBITMAP) = nullptr,
                                      void (*openEditor)(HBITMAP, int, int) = nullptr) {
+    struct OcrBitmapGuard { HBITMAP value{}; ~OcrBitmapGuard() { if (value) ::DeleteObject(value); } } guard{ ocrBitmap };
     auto result = std::make_unique<OcrJobResult>();
-    result->bitmap = bitmap;
-    result->width = width;
-    result->height = height;
+    result->bitmap = displayBitmap;
+    result->width = displayWidth;
+    result->height = displayHeight;
     result->anchor = anchor;
     result->copyBitmapToClipboard = copyBitmap;
     result->openBitmapEditor = openEditor;
@@ -227,7 +229,9 @@ std::unique_ptr<OcrJobResult> RunOcr(HBITMAP bitmap, int width, int height, RECT
             result->error = L"Windows OCR has no language pack for your profile. Install an OCR language in Windows Settings, then try again.";
             return result;
         }
-        const auto recognized = engine.RecognizeAsync(ToSoftwareBitmap(bitmap)).get();
+        const auto recognized = engine.RecognizeAsync(ToSoftwareBitmap(ocrBitmap)).get();
+        const double coordinateScaleX = static_cast<double>(displayWidth) / ocrWidth;
+        const double coordinateScaleY = static_cast<double>(displayHeight) / ocrHeight;
         // Use Windows OCR's line results rather than its flattened document text,
         // so the text-only view remains visually close to the selected content.
         size_t lineIndex = 0;
@@ -237,14 +241,14 @@ std::unique_ptr<OcrJobResult> RunOcr(HBITMAP bitmap, int width, int height, RECT
             for (const auto& word : line.Words()) {
                 const auto bounds = word.BoundingRect();
                 WordBox box;
-                box.rect.left = static_cast<LONG>(std::floor(bounds.X));
-                box.rect.top = static_cast<LONG>(std::floor(bounds.Y));
-                box.rect.right = static_cast<LONG>(std::ceil(bounds.X + bounds.Width));
-                box.rect.bottom = static_cast<LONG>(std::ceil(bounds.Y + bounds.Height));
-                box.rect.left = (std::clamp)(box.rect.left, 0L, static_cast<LONG>(width));
-                box.rect.top = (std::clamp)(box.rect.top, 0L, static_cast<LONG>(height));
-                box.rect.right = (std::clamp)(box.rect.right, box.rect.left, static_cast<LONG>(width));
-                box.rect.bottom = (std::clamp)(box.rect.bottom, box.rect.top, static_cast<LONG>(height));
+                box.rect.left = static_cast<LONG>(std::floor(bounds.X * coordinateScaleX));
+                box.rect.top = static_cast<LONG>(std::floor(bounds.Y * coordinateScaleY));
+                box.rect.right = static_cast<LONG>(std::ceil((bounds.X + bounds.Width) * coordinateScaleX));
+                box.rect.bottom = static_cast<LONG>(std::ceil((bounds.Y + bounds.Height) * coordinateScaleY));
+                box.rect.left = (std::clamp)(box.rect.left, 0L, static_cast<LONG>(displayWidth));
+                box.rect.top = (std::clamp)(box.rect.top, 0L, static_cast<LONG>(displayHeight));
+                box.rect.right = (std::clamp)(box.rect.right, box.rect.left, static_cast<LONG>(displayWidth));
+                box.rect.bottom = (std::clamp)(box.rect.bottom, box.rect.top, static_cast<LONG>(displayHeight));
                 box.text = word.Text().c_str();
                 box.line = lineIndex;
                 if (!box.text.empty() && box.rect.right > box.rect.left && box.rect.bottom > box.rect.top)
@@ -343,7 +347,7 @@ private:
             wc.lpfnWndProc = WndProc;
             wc.hInstance = ::GetModuleHandleW(nullptr);
             wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-            wc.hbrBackground = static_cast<HBRUSH>(::GetStockObject(WHITE_BRUSH));
+            wc.hbrBackground = nullptr;
             wc.lpszClassName = kClassName;
             ::RegisterClassExW(&wc);
         });
@@ -579,14 +583,18 @@ private:
             if (LOWORD(wp) == kRotateId) {
                 HBITMAP rotated = RotateClockwise(m_result->bitmap, m_result->width, m_result->height);
                 if (!rotated || s_running.exchange(true)) { if (rotated) ::DeleteObject(rotated); return 0; }
+                int ocrWidth{}, ocrHeight{};
+                HBITMAP ocrBitmap = ResizeForOcr(rotated, m_result->height, m_result->width, ocrWidth, ocrHeight);
+                if (!ocrBitmap) { ::DeleteObject(rotated); s_running = false; return 0; }
                 const RECT anchor = m_result->anchor;
                 const auto copyCallback = m_result->copyBitmapToClipboard;
                 const auto editCallback = m_result->openBitmapEditor;
                 const HWND dispatch = s_dispatchWindow;
                 const int rotatedWidth = m_result->height, rotatedHeight = m_result->width;
                 { std::lock_guard lock(s_workerMutex); if (s_worker.joinable()) s_worker.join();
-                  s_worker = std::thread([rotated, rotatedWidth, rotatedHeight, anchor, copyCallback, editCallback, dispatch] {
-                    auto result = RunOcr(rotated, rotatedWidth, rotatedHeight, anchor, copyCallback, editCallback);
+                  s_worker = std::thread([rotated, rotatedWidth, rotatedHeight, ocrBitmap, ocrWidth, ocrHeight, anchor, copyCallback, editCallback, dispatch] {
+                    auto result = RunOcr(ocrBitmap, ocrWidth, ocrHeight, rotated, rotatedWidth, rotatedHeight,
+                                         anchor, copyCallback, editCallback);
                     { std::lock_guard pending(s_pendingMutex); s_pendingResults.push_back(std::move(result));
                       if (!::PostMessageW(dispatch, kResultMessage, 0, 0)) s_pendingResults.pop_back(); }
                     s_running = false;
@@ -600,10 +608,26 @@ private:
             ::InvalidateRect(m_hwnd, nullptr, FALSE);
             return 0;
         case WM_PAINT: {
-            PAINTSTRUCT paint{}; HDC dc = ::BeginPaint(m_hwnd, &paint);
-            DrawVisual(dc);
+            PAINTSTRUCT paint{}; HDC target = ::BeginPaint(m_hwnd, &paint);
+            RECT client{}; ::GetClientRect(m_hwnd, &client);
+            HDC buffer = ::CreateCompatibleDC(target);
+            HBITMAP bitmap = buffer ? ::CreateCompatibleBitmap(target, client.right, client.bottom) : nullptr;
+            HGDIOBJ previous = bitmap ? ::SelectObject(buffer, bitmap) : nullptr;
+            if (previous && previous != HGDI_ERROR) {
+                HBRUSH background = ::CreateSolidBrush(RGB(24, 24, 27));
+                ::FillRect(buffer, &client, background);
+                ::DeleteObject(background);
+                DrawVisual(buffer);
+                ::BitBlt(target, 0, 0, client.right, client.bottom, buffer, 0, 0, SRCCOPY);
+                ::SelectObject(buffer, previous);
+            } else {
+                DrawVisual(target);
+            }
+            if (bitmap) ::DeleteObject(bitmap);
+            if (buffer) ::DeleteDC(buffer);
             ::EndPaint(m_hwnd, &paint); return 0;
         }
+        case WM_ERASEBKGND: return 1;
         case WM_MOUSEWHEEL: {
             POINT point{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) }; ::ScreenToClient(m_hwnd, &point);
             const RECT image = PreviewRect();
@@ -747,8 +771,11 @@ extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext
         return;
     }
     int scaledWidth{}, scaledHeight{};
-    HBITMAP copy = ResizeForOcr(context->capturedBitmap, width, height, scaledWidth, scaledHeight);
-    if (!copy) {
+    HBITMAP displayCopy = CopyBitmap(context->capturedBitmap);
+    HBITMAP ocrCopy = ResizeForOcr(context->capturedBitmap, width, height, scaledWidth, scaledHeight);
+    if (!displayCopy || !ocrCopy) {
+        if (displayCopy) ::DeleteObject(displayCopy);
+        if (ocrCopy) ::DeleteObject(ocrCopy);
         s_running = false;
         if (context->showNotification) context->showNotification(L"Could not prepare this image for text recognition.", 2500);
         return;
@@ -761,8 +788,9 @@ extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext
     try {
         const auto copyCallback = context->copyBitmapToClipboard;
         const auto editCallback = context->openBitmapEditor;
-        s_worker = std::thread([copy, scaledWidth, scaledHeight, anchor, dispatch, copyCallback, editCallback] {
-            std::unique_ptr<OcrJobResult> result = RunOcr(copy, scaledWidth, scaledHeight, anchor, copyCallback, editCallback);
+        s_worker = std::thread([displayCopy, width, height, ocrCopy, scaledWidth, scaledHeight, anchor, dispatch, copyCallback, editCallback] {
+            std::unique_ptr<OcrJobResult> result = RunOcr(ocrCopy, scaledWidth, scaledHeight,
+                displayCopy, width, height, anchor, copyCallback, editCallback);
             {
                 std::lock_guard lock(s_pendingMutex);
                 s_pendingResults.push_back(std::move(result));
@@ -775,7 +803,8 @@ extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext
             s_running = false;
         });
     } catch (...) {
-        ::DeleteObject(copy);
+        ::DeleteObject(displayCopy);
+        ::DeleteObject(ocrCopy);
         s_running = false;
         if (context->showNotification) context->showNotification(L"Could not start the text recognition worker.", 2500);
     }
