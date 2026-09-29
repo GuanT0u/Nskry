@@ -78,6 +78,35 @@ struct RecognizedLine {
     std::vector<WordBox> words;
 };
 
+bool IsHan(wchar_t ch) {
+    return ch >= 0x3400 && ch <= 0x9fff;
+}
+
+void AddRecognizedWord(RecognizedLine& line, WordBox box) {
+    if (box.text.empty() || box.rect.right <= box.rect.left || box.rect.bottom <= box.rect.top) return;
+    const bool splitHan = box.text.size() > 1 &&
+        std::all_of(box.text.begin(), box.text.end(), [](wchar_t ch) { return IsHan(ch); }) &&
+        box.rect.right - box.rect.left >= static_cast<LONG>(box.text.size());
+    const size_t count = splitHan ? box.text.size() : 1;
+    const LONG left = box.rect.left, right = box.rect.right;
+    for (size_t index = 0; index < count; ++index) {
+        WordBox piece = box;
+        if (splitHan) {
+            piece.text.assign(1, box.text[index]);
+            piece.rect.left = left + static_cast<LONG>((right - left) * index / count);
+            piece.rect.right = left + static_cast<LONG>((right - left) * (index + 1) / count);
+        }
+        if (line.words.empty()) line.rect = piece.rect;
+        else {
+            line.rect.left = (std::min)(line.rect.left, piece.rect.left);
+            line.rect.top = (std::min)(line.rect.top, piece.rect.top);
+            line.rect.right = (std::max)(line.rect.right, piece.rect.right);
+            line.rect.bottom = (std::max)(line.rect.bottom, piece.rect.bottom);
+        }
+        line.words.push_back(std::move(piece));
+    }
+}
+
 std::vector<RecognizedLine> ReadLines(const winrt::Windows::Media::Ocr::OcrResult& recognized,
                                       int imageWidth, int imageHeight, int displayWidth, int displayHeight) {
     std::vector<RecognizedLine> lines;
@@ -94,15 +123,7 @@ std::vector<RecognizedLine> ReadLines(const winrt::Windows::Media::Ocr::OcrResul
             box.rect.right = (std::clamp)(static_cast<LONG>(std::ceil((bounds.X + bounds.Width) * scaleX)), box.rect.left, static_cast<LONG>(displayWidth));
             box.rect.bottom = (std::clamp)(static_cast<LONG>(std::ceil((bounds.Y + bounds.Height) * scaleY)), box.rect.top, static_cast<LONG>(displayHeight));
             box.text = word.Text().c_str();
-            if (box.text.empty() || box.rect.right <= box.rect.left || box.rect.bottom <= box.rect.top) continue;
-            if (output.words.empty()) output.rect = box.rect;
-            else {
-                output.rect.left = (std::min)(output.rect.left, box.rect.left);
-                output.rect.top = (std::min)(output.rect.top, box.rect.top);
-                output.rect.right = (std::max)(output.rect.right, box.rect.right);
-                output.rect.bottom = (std::max)(output.rect.bottom, box.rect.bottom);
-            }
-            output.words.push_back(std::move(box));
+            AddRecognizedWord(output, std::move(box));
         }
         if (!output.words.empty()) lines.push_back(std::move(output));
     }
@@ -113,7 +134,50 @@ bool SameTextLine(const RECT& a, const RECT& b) {
     const int overlapY = (std::min)(a.bottom, b.bottom) - (std::max)(a.top, b.top);
     const int minHeight = (std::min)(a.bottom - a.top, b.bottom - b.top);
     const int overlapX = (std::min)(a.right, b.right) - (std::max)(a.left, b.left);
-    return overlapY > 0 && overlapY * 2 >= minHeight && overlapX > 0;
+    const int horizontalGap = (std::max)(0, -overlapX);
+    return overlapY > 0 && overlapY * 2 >= minHeight &&
+        horizontalGap <= 2 * (std::max)(a.bottom - a.top, b.bottom - b.top);
+}
+
+void RebuildLineText(RecognizedLine& line) {
+    std::stable_sort(line.words.begin(), line.words.end(), [](const WordBox& a, const WordBox& b) {
+        return a.rect.left < b.rect.left;
+    });
+    line.text.clear();
+    for (size_t i = 0; i < line.words.size(); ++i) {
+        const auto& word = line.words[i];
+        if (i) {
+            const auto& previous = line.words[i - 1];
+            const int gap = word.rect.left - previous.rect.right;
+            const bool adjacentHan = !previous.text.empty() && !word.text.empty() &&
+                IsHan(previous.text.back()) && IsHan(word.text.front());
+            if (!adjacentHan && gap > (std::max)(2L, (line.rect.bottom - line.rect.top) / 5))
+                line.text.push_back(L' ');
+        }
+        line.text += word.text;
+    }
+}
+
+bool HasUncoveredHanGap(const std::vector<RecognizedLine>& lines) {
+    for (const auto& line : lines) {
+        std::vector<const WordBox*> han;
+        for (const auto& word : line.words)
+            if (word.text.size() == 1 && IsHan(word.text.front())) han.push_back(&word);
+        if (han.size() < 4) continue;
+        std::sort(han.begin(), han.end(), [](const WordBox* a, const WordBox* b) {
+            return a->rect.left < b->rect.left;
+        });
+        std::vector<int> widths;
+        for (const WordBox* word : han) widths.push_back(word->rect.right - word->rect.left);
+        auto middle = widths.begin() + widths.size() / 2;
+        std::nth_element(widths.begin(), middle, widths.end());
+        const int typicalWidth = (std::max)(1, *middle);
+        for (size_t i = 1; i < han.size(); ++i) {
+            const int gap = han[i]->rect.left - han[i - 1]->rect.right;
+            if (gap > typicalWidth * 3 / 4 && gap < typicalWidth * 3) return true;
+        }
+    }
+    return false;
 }
 
 double LineQuality(const RecognizedLine& line) {
@@ -145,6 +209,7 @@ int MedianLineHeight(const std::vector<RecognizedLine>& lines) {
 
 bool NeedsEnhancedPass(const std::vector<RecognizedLine>& lines) {
     if (lines.empty()) return true;
+    if (HasUncoveredHanGap(lines)) return true;
     if (MedianLineHeight(lines) < 19) return true; // small UI type needs another raster treatment
     double quality = 0.0;
     for (const auto& line : lines) quality += LineQuality(line);
@@ -164,13 +229,36 @@ void MergeLines(std::vector<RecognizedLine>& lines, std::vector<RecognizedLine> 
             return SameTextLine(existing.rect, candidate.rect);
         });
         if (match == lines.end()) lines.push_back(std::move(candidate));
-        else if (LineQuality(candidate) > LineQuality(*match) + 7.0)
-            *match = std::move(candidate);
+        else {
+            bool added = false;
+            for (auto& word : candidate.words) {
+                const int candidateArea = (word.rect.right - word.rect.left) *
+                    (word.rect.bottom - word.rect.top);
+                if (candidateArea <= 0) continue;
+                int coveredArea = 0;
+                for (const WordBox& existing : match->words) {
+                    const int overlapX = (std::max)(0L, (std::min)(word.rect.right, existing.rect.right) -
+                        (std::max)(word.rect.left, existing.rect.left));
+                    const int overlapY = (std::max)(0L, (std::min)(word.rect.bottom, existing.rect.bottom) -
+                        (std::max)(word.rect.top, existing.rect.top));
+                    coveredArea += overlapX * overlapY;
+                }
+                if (coveredArea * 5 >= candidateArea * 2) continue;
+                match->rect.left = (std::min)(match->rect.left, word.rect.left);
+                match->rect.top = (std::min)(match->rect.top, word.rect.top);
+                match->rect.right = (std::max)(match->rect.right, word.rect.right);
+                match->rect.bottom = (std::max)(match->rect.bottom, word.rect.bottom);
+                match->words.push_back(std::move(word));
+                added = true;
+            }
+            if (added) RebuildLineText(*match);
+        }
     }
 }
 
 struct OcrJobResult {
     HBITMAP bitmap{};
+    uint64_t generation{};
     int width{};
     int height{};
     RECT anchor{};
@@ -185,15 +273,30 @@ struct OcrJobResult {
     }
 };
 
+struct OcrRequest {
+    HBITMAP bitmap{};
+    int width{};
+    int height{};
+    RECT anchor{};
+    bool rotate{};
+    uint64_t generation{};
+    int32_t (*copyBitmapToClipboard)(HBITMAP){};
+    void (*openBitmapEditor)(HBITMAP, int, int){};
+
+    ~OcrRequest() { if (bitmap) ::DeleteObject(bitmap); }
+};
+
 NskryPluginInfo kInfo{ sizeof(NskryPluginInfo), NSKRY_PLUGIN_API_VERSION,
-    L"Text recognition", L"nskry-ocr", L"0.5.2", L"Nskry Team",
+    L"Text recognition", L"nskry-ocr", L"0.5.3", L"Nskry Team",
     L"Offline text recognition using Windows OCR", nullptr,
     NSKRY_CAP_TOOLBAR_ACTION | NSKRY_CAP_POST_CAPTURE, {} };
 
 HWND s_dispatchWindow{};
 std::atomic_bool s_running{};
+std::atomic_uint64_t s_generation{};
 std::mutex s_workerMutex;
 std::thread s_worker;
+std::unique_ptr<OcrRequest> s_queuedRequest;
 std::mutex s_pendingMutex;
 std::vector<std::unique_ptr<OcrJobResult>> s_pendingResults;
 
@@ -395,13 +498,14 @@ winrt::Windows::Graphics::Imaging::SoftwareBitmap ToSoftwareBitmap(HBITMAP bitma
     return converted;
 }
 
-std::unique_ptr<OcrJobResult> RunOcr(HBITMAP ocrBitmap, int ocrWidth, int ocrHeight,
-                                     HBITMAP displayBitmap, int displayWidth, int displayHeight, RECT anchor,
+std::unique_ptr<OcrJobResult> RunOcr(HBITMAP displayBitmap, int displayWidth, int displayHeight, RECT anchor,
+                                     uint64_t generation,
                                      int32_t (*copyBitmap)(HBITMAP) = nullptr,
                                      void (*openEditor)(HBITMAP, int, int) = nullptr) {
-    struct OcrBitmapGuard { HBITMAP value{}; ~OcrBitmapGuard() { if (value) ::DeleteObject(value); } } guard{ ocrBitmap };
+    struct OcrBitmapGuard { HBITMAP value{}; ~OcrBitmapGuard() { if (value) ::DeleteObject(value); } } guard;
     auto result = std::make_unique<OcrJobResult>();
     result->bitmap = displayBitmap;
+    result->generation = generation;
     result->width = displayWidth;
     result->height = displayHeight;
     result->anchor = anchor;
@@ -414,21 +518,30 @@ std::unique_ptr<OcrJobResult> RunOcr(HBITMAP ocrBitmap, int ocrWidth, int ocrHei
             result->error = L"Windows OCR has no language pack for your profile. Install an OCR language in Windows Settings, then try again.";
             return result;
         }
+        if (generation != s_generation.load()) return nullptr;
+        int ocrWidth{}, ocrHeight{};
+        guard.value = ResizeForOcr(displayBitmap, displayWidth, displayHeight, ocrWidth, ocrHeight);
+        if (!guard.value) {
+            result->error = L"Could not prepare the image for text recognition.";
+            return result;
+        }
         std::vector<RecognizedLine> lines;
         {
-            const auto recognized = engine.RecognizeAsync(ToSoftwareBitmap(ocrBitmap)).get();
+            const auto recognized = engine.RecognizeAsync(ToSoftwareBitmap(guard.value)).get();
             lines = ReadLines(recognized, ocrWidth, ocrHeight, displayWidth, displayHeight);
         }
         // The first OCR input and WinRT result are no longer needed. In
         // particular, do not keep the large scaled bitmap during later passes.
         ::DeleteObject(guard.value);
         guard.value = nullptr;
+        if (generation != s_generation.load()) return nullptr;
 
         if (NeedsEnhancedPass(lines)) {
             const int textHeight = MedianLineHeight(lines);
             const double scale = textHeight == 0 || textHeight < 12 ? 4.0 :
                 textHeight < 18 ? 3.0 : textHeight < 28 ? 2.0 : 1.0;
             auto runTreatment = [&](OcrTreatment treatment) {
+                if (generation != s_generation.load()) return;
                 struct BitmapGuard { HBITMAP value{}; ~BitmapGuard() { if (value) ::DeleteObject(value); } } scaled, prepared;
                 int width{}, height{};
                 scaled.value = ResizeForOcr(displayBitmap, displayWidth, displayHeight, width, height, scale);
@@ -438,15 +551,18 @@ std::unique_ptr<OcrJobResult> RunOcr(HBITMAP ocrBitmap, int ocrWidth, int ocrHei
                 scaled.value = nullptr;
                 if (!prepared.value) return;
                 const auto recognized = engine.RecognizeAsync(ToSoftwareBitmap(prepared.value)).get();
+                if (generation != s_generation.load()) return;
                 MergeLines(lines, ReadLines(recognized, width, height, displayWidth, displayHeight));
             };
             try { runTreatment(OcrTreatment::Enhanced); }
             catch (...) { /* Preserve the successful fast pass. */ }
-            if (AverageQuality(lines) < 62.0) {
+            if (generation != s_generation.load()) return nullptr;
+            if (AverageQuality(lines) < 62.0 || HasUncoveredHanGap(lines)) {
                 try { runTreatment(OcrTreatment::Binary); }
                 catch (...) { /* Preserve prior passes. */ }
             }
         }
+        if (generation != s_generation.load()) return nullptr;
         std::stable_sort(lines.begin(), lines.end(), [](const RecognizedLine& a, const RecognizedLine& b) {
             return a.rect.top < b.rect.top || (a.rect.top == b.rect.top && a.rect.left < b.rect.left);
         });
@@ -474,6 +590,56 @@ std::unique_ptr<OcrJobResult> RunOcr(HBITMAP ocrBitmap, int ocrWidth, int ocrHei
         result->error = L"Windows OCR could not recognize this image.";
     }
     return result;
+}
+
+void ProcessRequests(std::unique_ptr<OcrRequest> request) {
+    while (request) {
+        HBITMAP bitmap = request->bitmap;
+        request->bitmap = nullptr;
+        int width = request->width, height = request->height;
+        if (request->rotate) {
+            if (HBITMAP rotated = RotateClockwise(bitmap, width, height)) {
+                ::DeleteObject(bitmap);
+                bitmap = rotated;
+                std::swap(width, height);
+            }
+        }
+        std::unique_ptr<OcrJobResult> result;
+        try {
+            result = RunOcr(bitmap, width, height, request->anchor, request->generation,
+                            request->copyBitmapToClipboard, request->openBitmapEditor);
+        } catch (...) { ::DeleteObject(bitmap); }
+        request.reset();
+        {
+            std::lock_guard lock(s_workerMutex);
+            if (s_queuedRequest) request = std::move(s_queuedRequest);
+            else s_running = false;
+        }
+        if (result && result->generation == s_generation.load()) {
+            std::lock_guard pending(s_pendingMutex);
+            s_pendingResults.push_back(std::move(result));
+            if (!::PostMessageW(s_dispatchWindow, kResultMessage, 0, 0)) s_pendingResults.pop_back();
+        }
+    }
+}
+
+bool QueueOcr(std::unique_ptr<OcrRequest> request) {
+    if (!request || !request->bitmap) return false;
+    std::lock_guard lock(s_workerMutex);
+    request->generation = ++s_generation;
+    if (s_running) {
+        s_queuedRequest = std::move(request); // replaces and releases an older waiting image
+        return true;
+    }
+    if (s_worker.joinable()) s_worker.join();
+    s_running = true;
+    try {
+        s_worker = std::thread(ProcessRequests, std::move(request));
+    } catch (...) {
+        s_running = false;
+        return false;
+    }
+    return true;
 }
 
 bool CopyTextToClipboard(HWND owner, const std::wstring& text) {
@@ -786,25 +952,15 @@ private:
             }
             if (LOWORD(wp) == kSaveId) { SaveBitmapAsPng(m_hwnd, m_result->bitmap); return 0; }
             if (LOWORD(wp) == kRotateId) {
-                HBITMAP rotated = RotateClockwise(m_result->bitmap, m_result->width, m_result->height);
-                if (!rotated || s_running.exchange(true)) { if (rotated) ::DeleteObject(rotated); return 0; }
-                int ocrWidth{}, ocrHeight{};
-                HBITMAP ocrBitmap = ResizeForOcr(rotated, m_result->height, m_result->width, ocrWidth, ocrHeight);
-                if (!ocrBitmap) { ::DeleteObject(rotated); s_running = false; return 0; }
-                const RECT anchor = m_result->anchor;
-                const auto copyCallback = m_result->copyBitmapToClipboard;
-                const auto editCallback = m_result->openBitmapEditor;
-                const HWND dispatch = s_dispatchWindow;
-                const int rotatedWidth = m_result->height, rotatedHeight = m_result->width;
-                { std::lock_guard lock(s_workerMutex); if (s_worker.joinable()) s_worker.join();
-                  s_worker = std::thread([rotated, rotatedWidth, rotatedHeight, ocrBitmap, ocrWidth, ocrHeight, anchor, copyCallback, editCallback, dispatch] {
-                    auto result = RunOcr(ocrBitmap, ocrWidth, ocrHeight, rotated, rotatedWidth, rotatedHeight,
-                                         anchor, copyCallback, editCallback);
-                    { std::lock_guard pending(s_pendingMutex); s_pendingResults.push_back(std::move(result));
-                      if (!::PostMessageW(dispatch, kResultMessage, 0, 0)) s_pendingResults.pop_back(); }
-                    s_running = false;
-                  }); }
-                ::DestroyWindow(m_hwnd);
+                auto request = std::make_unique<OcrRequest>();
+                request->bitmap = CopyBitmap(m_result->bitmap);
+                request->width = m_result->width;
+                request->height = m_result->height;
+                request->anchor = m_result->anchor;
+                request->rotate = true;
+                request->copyBitmapToClipboard = m_result->copyBitmapToClipboard;
+                request->openBitmapEditor = m_result->openBitmapEditor;
+                if (QueueOcr(std::move(request))) ::DestroyWindow(m_hwnd);
                 return 0;
             }
             break;
@@ -945,14 +1101,11 @@ LRESULT CALLBACK DispatchProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             result = std::move(s_pendingResults.back());
             s_pendingResults.pop_back();
         }
-        // The worker has already posted its completed result. Joining here
-        // releases the thread handle rather than retaining it until the next
-        // request or plugin shutdown.
         {
             std::lock_guard lock(s_workerMutex);
-            if (s_worker.joinable()) s_worker.join();
+            if (!s_running && s_worker.joinable()) s_worker.join();
         }
-        ShowResult(std::move(result));
+        if (result && result->generation == s_generation.load()) ShowResult(std::move(result));
         return 0;
     }
     return ::DefWindowProcW(hwnd, message, wp, lp);
@@ -981,59 +1134,38 @@ extern "C" NSKRY_API int32_t NSKRY_CALL nskry_plugin_init(const NskryHostContext
 
 extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext* context) {
     if (!context || context->structSize < sizeof(NskryHostContext) || !context->capturedBitmap || !s_dispatchWindow) return;
-    if (s_running.exchange(true)) {
-        if (context->showNotification) context->showNotification(L"Text recognition is already running.", 2200);
-        return;
-    }
     int width{}, height{};
     if (!GetBitmapSize(context->capturedBitmap, width, height)) {
-        s_running = false;
         if (context->showNotification) context->showNotification(L"The selected image is not available for text recognition.", 2500);
         return;
     }
-    int scaledWidth{}, scaledHeight{};
-    HBITMAP displayCopy = CopyBitmap(context->capturedBitmap);
-    HBITMAP ocrCopy = ResizeForOcr(context->capturedBitmap, width, height, scaledWidth, scaledHeight);
-    if (!displayCopy || !ocrCopy) {
-        if (displayCopy) ::DeleteObject(displayCopy);
-        if (ocrCopy) ::DeleteObject(ocrCopy);
-        s_running = false;
+    auto request = std::make_unique<OcrRequest>();
+    request->bitmap = CopyBitmap(context->capturedBitmap);
+    request->width = width;
+    request->height = height;
+    request->anchor = context->capturedRegion;
+    request->copyBitmapToClipboard = context->copyBitmapToClipboard;
+    request->openBitmapEditor = context->openBitmapEditor;
+    if (!request->bitmap) {
         if (context->showNotification) context->showNotification(L"Could not prepare this image for text recognition.", 2500);
         return;
     }
-    if (context->showNotification) context->showNotification(L"Recognizing text…", 2200);
-    const RECT anchor = context->capturedRegion;
-    const HWND dispatch = s_dispatchWindow;
-    std::lock_guard lock(s_workerMutex);
-    if (s_worker.joinable()) s_worker.join();
-    try {
-        const auto copyCallback = context->copyBitmapToClipboard;
-        const auto editCallback = context->openBitmapEditor;
-        s_worker = std::thread([displayCopy, width, height, ocrCopy, scaledWidth, scaledHeight, anchor, dispatch, copyCallback, editCallback] {
-            std::unique_ptr<OcrJobResult> result = RunOcr(ocrCopy, scaledWidth, scaledHeight,
-                displayCopy, width, height, anchor, copyCallback, editCallback);
-            {
-                std::lock_guard lock(s_pendingMutex);
-                s_pendingResults.push_back(std::move(result));
-                if (!::PostMessageW(dispatch, kResultMessage, 0, 0)) {
-                    // The dispatch window is only destroyed during shutdown;
-                    // release the completed bitmap instead of retaining it.
-                    s_pendingResults.pop_back();
-                }
-            }
-            s_running = false;
-        });
-    } catch (...) {
-        ::DeleteObject(displayCopy);
-        ::DeleteObject(ocrCopy);
-        s_running = false;
+    if (!QueueOcr(std::move(request))) {
         if (context->showNotification) context->showNotification(L"Could not start the text recognition worker.", 2500);
+        return;
     }
+    if (context->showNotification) context->showNotification(L"Recognizing text…", 2200);
 }
 
 extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_shutdown() {
-    std::lock_guard lock(s_workerMutex);
-    if (s_worker.joinable()) s_worker.join();
+    std::thread worker;
+    {
+        std::lock_guard lock(s_workerMutex);
+        ++s_generation;
+        s_queuedRequest.reset();
+        worker = std::move(s_worker);
+    }
+    if (worker.joinable()) worker.join();
     s_running = false;
     {
         std::lock_guard pendingLock(s_pendingMutex);

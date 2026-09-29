@@ -64,8 +64,13 @@ int wmain(int argc, wchar_t** argv) {
     context.openBitmapEditor = OpenEditor;
     if (!init(&context)) return 5;
     execute(&context);
+    // A newer request should supersede an in-flight OCR job without blocking
+    // the UI thread or leaving the worker unable to publish the latest result.
+    execute(&context);
 
     bool resultShown = false;
+    bool recognizedText = false;
+    std::wstring observedText;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
     while (std::chrono::steady_clock::now() < deadline) {
         MSG message{};
@@ -74,6 +79,13 @@ int wmain(int argc, wchar_t** argv) {
             ::DispatchMessageW(&message);
         }
         if (HWND result = ::FindWindowW(L"NskryOcrResult", nullptr)) {
+            if (HWND edit = ::FindWindowExW(result, nullptr, L"EDIT", nullptr)) {
+                const int length = ::GetWindowTextLengthW(edit);
+                observedText.resize(length + 1);
+                ::GetWindowTextW(edit, observedText.data(), length + 1);
+                observedText.resize(length);
+                recognizedText = observedText.find(L"Nskry") != std::wstring::npos;
+            }
             ::SendMessageW(result, WM_CLOSE, 0, 0);
             resultShown = true;
             break;
@@ -87,6 +99,10 @@ int wmain(int argc, wchar_t** argv) {
     if (!resultShown) {
         std::wcerr << L"OCR result window did not appear within the timeout\n";
         return 6;
+    }
+    if (!recognizedText) {
+        std::wcerr << L"OCR result did not contain the test label: " << observedText << L"\n";
+        return 7;
     }
     return 0;
 }
