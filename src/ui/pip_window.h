@@ -134,6 +134,7 @@ private:
     HWND             m_hTextEdit{};
     POINT            m_textEditPos{};
     HFONT            m_font{};
+    HFONT            m_quickFont{};
 
     struct PipToolItem {
         RECT            rect{};

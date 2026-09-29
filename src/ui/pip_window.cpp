@@ -147,6 +147,7 @@ PipWindow::~PipWindow() {
         ::DestroyWindow(m_hwnd);
         m_hwnd = nullptr;
     }
+    if (m_quickFont) { ::DeleteObject(m_quickFont); m_quickFont = nullptr; }
 }
 
 // ---------------------------------------------------------------------------
@@ -779,21 +780,24 @@ void PipWindow::EnterEditMode() {
 }
 
 void PipWindow::CreateQuickActions(HWND parent) {
+    m_quickFont = ::CreateFontW(-9, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
     const wchar_t* labels[] = { L"\x270E", L"T", L"\x2212", L"\x00D7" };
     const int ids[] = { kPipQuickEditId, kPipQuickOcrId, kPipQuickMinimizeId, kPipQuickCloseId };
     for (size_t index = 0; index < 4; ++index) {
         m_quickButtons[index] = ::CreateWindowExW(WS_EX_LAYERED, L"BUTTON", labels[index],
-            WS_CHILD | BS_PUSHBUTTON, 0, 0, 32, 28, parent,
+            WS_CHILD | BS_PUSHBUTTON, 0, 0, 16, 14, parent,
             reinterpret_cast<HMENU>(static_cast<INT_PTR>(ids[index])), ::GetModuleHandleW(nullptr), nullptr);
         if (!m_quickButtons[index])
             m_quickButtons[index] = ::CreateWindowExW(0, L"BUTTON", labels[index],
-                WS_CHILD | BS_PUSHBUTTON, 0, 0, 32, 28, parent,
+                WS_CHILD | BS_PUSHBUTTON, 0, 0, 16, 14, parent,
                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(ids[index])), ::GetModuleHandleW(nullptr), nullptr);
         if (m_quickButtons[index]) {
             if ((::GetWindowLongPtrW(m_quickButtons[index], GWL_EXSTYLE) & WS_EX_LAYERED) != 0 &&
-                !::SetLayeredWindowAttributes(m_quickButtons[index], 0, 145, LWA_ALPHA))
+                !::SetLayeredWindowAttributes(m_quickButtons[index], 0, 109, LWA_ALPHA))
                 ::SetWindowLongPtrW(m_quickButtons[index], GWL_EXSTYLE, 0);
-            if (m_font) ::SendMessageW(m_quickButtons[index], WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
+            if (m_quickFont) ::SendMessageW(m_quickButtons[index], WM_SETFONT, reinterpret_cast<WPARAM>(m_quickFont), TRUE);
         }
     }
     LayoutQuickActions();
@@ -803,7 +807,7 @@ void PipWindow::LayoutQuickActions() {
     if (!m_hwnd) return;
     RECT client{};
     ::GetClientRect(m_hwnd, &client);
-    constexpr int width = 32, height = 28, gap = 4, margin = 12;
+    constexpr int width = 16, height = 14, gap = 3, margin = 8;
     int x = (std::max)(margin, static_cast<int>(client.right) - margin - 4 * width - 3 * gap);
     for (HWND button : m_quickButtons) {
         if (button) ::SetWindowPos(button, HWND_TOP, x, margin, width, height, SWP_NOACTIVATE);

@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "nskry-ocr",
   "name": "Text recognition",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "author": "Nskry Team",
   "description": "Offline text recognition using the Windows OCR language packs.",
   "runtime": {

@@ -84,6 +84,7 @@ private:
     RECT             m_toolbarBounds{};
     bool             m_isDrawing = false;
     HFONT            m_font{};
+    HFONT            m_quickFont{};
 
     // In-place text input
     HWND             m_hTextEdit{};
