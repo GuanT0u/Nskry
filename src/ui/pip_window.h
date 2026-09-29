@@ -23,7 +23,7 @@ public:
               UINT contentWidth, UINT contentHeight,
               std::function<void()> onCloseRequest,
               AnnotationEngine initialEngine = {},
-              ImageActions imageActions = {});
+              ImageActions imageActions = {}, RECT initialScreenRect = {});
     ~PipWindow();
 
     PipWindow(const PipWindow&)            = delete;
@@ -94,6 +94,7 @@ private:
     void LayoutQuickActions();
     void ShowQuickActions(bool show);
     void RunTextRecognition();
+    bool IsQuickActionPoint(POINT clientPoint) const;
 
     void CreateToolbarWindow();
     void BuildToolbar(int clientW, int clientH);

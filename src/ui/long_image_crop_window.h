@@ -13,11 +13,13 @@ class LongImageCropWindow {
 public:
     using ApplyCallback = std::function<void(HBITMAP, int, int)>;
     using CloseCallback = std::function<void()>;
+    using ExportCallback = std::function<bool(HWND, HBITMAP, int, int)>;
 
     // Takes ownership of bitmap.  apply receives ownership of its bitmap.
     LongImageCropWindow(HBITMAP bitmap, int width, int height,
                         ApplyCallback apply, CloseCallback closed,
-                        ImageActions imageActions = {});
+                        ImageActions imageActions = {},
+                        ExportCallback copy = {}, ExportCallback save = {});
     ~LongImageCropWindow();
 
     LongImageCropWindow(const LongImageCropWindow&) = delete;
@@ -43,6 +45,7 @@ private:
     HBITMAP CreateCroppedBitmap() const;
     HBITMAP CreateRegionBitmap(RECT source) const;
     void ApplyCrop();
+    void ExportCrop(bool save);
     void RunImageAction(size_t actionIndex);
 
     HWND m_hwnd{};
@@ -51,6 +54,8 @@ private:
     HWND m_zoomInButton{};
     HWND m_zoomOutButton{};
     HWND m_imageActionButton{};
+    HWND m_copyButton{};
+    HWND m_saveButton{};
     HBITMAP m_bitmap{};
     int m_width{};
     int m_height{};
@@ -72,6 +77,8 @@ private:
     ApplyCallback m_apply;
     CloseCallback m_closed;
     ImageActions m_imageActions;
+    ExportCallback m_copy;
+    ExportCallback m_save;
     bool m_destroying = false;
 
     static constexpr wchar_t kClassName[] = L"NskryLongImageCropWindow";

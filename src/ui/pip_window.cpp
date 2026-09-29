@@ -41,7 +41,8 @@ PipWindow::PipWindow(
     UINT contentWidth, UINT contentHeight,
     std::function<void()> onCloseRequest,
     AnnotationEngine initialEngine,
-    ImageActions imageActions)
+    ImageActions imageActions,
+    RECT initialScreenRect)
     : m_device(std::move(device))
     , m_contentW(contentWidth)
     , m_contentH(contentHeight)
@@ -81,10 +82,12 @@ PipWindow::PipWindow(
 
     // --- Calculate initial window size (≈ 400px wide, aspect-preserving) ----
     constexpr int kDefaultWidth = 400;
-    const float aspect = static_cast<float>(contentWidth) / static_cast<float>(contentHeight);
-    int winW = kDefaultWidth;
-    int winH = static_cast<int>(winW / aspect);
-    if (winH < 100) {
+    const bool useScreenRect = initialScreenRect.right > initialScreenRect.left &&
+                               initialScreenRect.bottom > initialScreenRect.top;
+    const float aspect = contentHeight ? static_cast<float>(contentWidth) / static_cast<float>(contentHeight) : 1.0f;
+    int winW = useScreenRect ? initialScreenRect.right - initialScreenRect.left : kDefaultWidth;
+    int winH = useScreenRect ? initialScreenRect.bottom - initialScreenRect.top : static_cast<int>(winW / aspect);
+    if (!useScreenRect && winH < 100) {
         winH = 100;
         winW = static_cast<int>(winH * aspect);
     }
@@ -92,15 +95,13 @@ PipWindow::PipWindow(
     const DWORD style   = WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
     const DWORD exStyle = WS_EX_TOPMOST | WS_EX_APPWINDOW;
 
-    RECT rc = { 0, 0, winW, winH };
-    ::AdjustWindowRectEx(&rc, style, FALSE, exStyle);
-
     // --- Create the main window --------------------------------------------
     m_hwnd = ::CreateWindowExW(
         exStyle, kClassName, L"Nskry PiP",
         style,
-        CW_USEDEFAULT, CW_USEDEFAULT,
-        rc.right - rc.left, rc.bottom - rc.top,
+        useScreenRect ? initialScreenRect.left : CW_USEDEFAULT,
+        useScreenRect ? initialScreenRect.top : CW_USEDEFAULT,
+        winW, winH,
         nullptr, nullptr,
         ::GetModuleHandleW(nullptr),
         this);
@@ -155,6 +156,10 @@ PipWindow::~PipWindow() {
 void PipWindow::Show() {
     ::ShowWindow(m_hwnd, SW_SHOWNA);
     ::UpdateWindow(m_hwnd);
+    POINT cursor{};
+    RECT bounds{};
+    if (::GetCursorPos(&cursor) && ::GetWindowRect(m_hwnd, &bounds) && ::PtInRect(&bounds, cursor))
+        ShowQuickActions(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -431,17 +436,44 @@ LRESULT CALLBACK PipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CREATE:
+        {
+            const COLORREF noBorder = DWMWA_COLOR_NONE;
+            ::DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &noBorder, sizeof(noBorder));
+        }
         CreateQuickActions(hwnd);
         return 0;
 
     case WM_NCHITTEST: {
-        LRESULT hit = ::DefWindowProcW(hwnd, msg, wp, lp);
-        if (hit == HTCLIENT) {
-            if (m_isEditing) return HTCLIENT;
-            return HTCAPTION; // Draggable client area
-        }
-        return hit;
+        POINT point{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+        RECT window{}; ::GetWindowRect(hwnd, &window);
+        if (!m_isEditing && !m_quickActionsVisible && !::IsIconic(hwnd) && ::PtInRect(&window, point))
+            ShowQuickActions(true);
+        const int border = (std::max)(6, ::GetSystemMetricsForDpi(SM_CXSIZEFRAME, ::GetDpiForWindow(hwnd)));
+        const bool left = point.x < window.left + border;
+        const bool right = point.x >= window.right - border;
+        const bool top = point.y < window.top + border;
+        const bool bottom = point.y >= window.bottom - border;
+        if (top && left) return HTTOPLEFT;
+        if (top && right) return HTTOPRIGHT;
+        if (bottom && left) return HTBOTTOMLEFT;
+        if (bottom && right) return HTBOTTOMRIGHT;
+        if (left) return HTLEFT;
+        if (right) return HTRIGHT;
+        if (top) return HTTOP;
+        if (bottom) return HTBOTTOM;
+        POINT clientPoint = point; ::ScreenToClient(hwnd, &clientPoint);
+        if (IsQuickActionPoint(clientPoint) || m_isEditing) return HTCLIENT;
+        return HTCAPTION;
     }
+
+    case WM_NCCALCSIZE:
+        return 0; // Remove the system frame while retaining custom resize hit targets.
+
+    case WM_NCACTIVATE:
+        return TRUE;
+
+    case WM_NCPAINT:
+        return 0;
 
     case WM_SIZING: {
         if (m_contentH == 0) break;
@@ -452,13 +484,8 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         // Corner drag — lock aspect ratio
         RECT* r = reinterpret_cast<RECT*>(lp);
-        const DWORD style = static_cast<DWORD>(::GetWindowLongPtrW(hwnd, GWL_STYLE));
-        const DWORD exStyle = static_cast<DWORD>(::GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
-
-        RECT adj = {0, 0, 0, 0};
-        ::AdjustWindowRectEx(&adj, style, FALSE, exStyle);
-        int bw = adj.right - adj.left;
-        int bh = adj.bottom - adj.top;
+        const int bw = 0;
+        const int bh = 0;
 
         float aspect = static_cast<float>(m_contentW) / static_cast<float>(m_contentH);
 
@@ -479,6 +506,8 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             finalCH = proposedCH;
         }
 
+        finalCW = (std::max)(1, finalCW);
+        finalCH = (std::max)(1, finalCH);
         bool anchorRight  = (wp == WMSZ_TOPLEFT  || wp == WMSZ_BOTTOMLEFT);
         bool anchorBottom = (wp == WMSZ_TOPLEFT  || wp == WMSZ_TOPRIGHT);
 
@@ -489,6 +518,15 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         else              r->bottom = r->top   + finalCH + bh;
 
         return TRUE;
+    }
+
+    case WM_GETMINMAXINFO: {
+        auto* limits = reinterpret_cast<MINMAXINFO*>(lp);
+        if (limits) {
+            limits->ptMinTrackSize.x = 1;
+            limits->ptMinTrackSize.y = 1;
+        }
+        return 0;
     }
 
     case WM_NCRBUTTONUP:
@@ -747,8 +785,14 @@ void PipWindow::CreateQuickActions(HWND parent) {
         m_quickButtons[index] = ::CreateWindowExW(WS_EX_LAYERED, L"BUTTON", labels[index],
             WS_CHILD | BS_PUSHBUTTON, 0, 0, 32, 28, parent,
             reinterpret_cast<HMENU>(static_cast<INT_PTR>(ids[index])), ::GetModuleHandleW(nullptr), nullptr);
+        if (!m_quickButtons[index])
+            m_quickButtons[index] = ::CreateWindowExW(0, L"BUTTON", labels[index],
+                WS_CHILD | BS_PUSHBUTTON, 0, 0, 32, 28, parent,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(ids[index])), ::GetModuleHandleW(nullptr), nullptr);
         if (m_quickButtons[index]) {
-            ::SetLayeredWindowAttributes(m_quickButtons[index], 0, 205, LWA_ALPHA);
+            if ((::GetWindowLongPtrW(m_quickButtons[index], GWL_EXSTYLE) & WS_EX_LAYERED) != 0 &&
+                !::SetLayeredWindowAttributes(m_quickButtons[index], 0, 145, LWA_ALPHA))
+                ::SetWindowLongPtrW(m_quickButtons[index], GWL_EXSTYLE, 0);
             if (m_font) ::SendMessageW(m_quickButtons[index], WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
         }
     }
@@ -759,7 +803,7 @@ void PipWindow::LayoutQuickActions() {
     if (!m_hwnd) return;
     RECT client{};
     ::GetClientRect(m_hwnd, &client);
-    constexpr int width = 32, height = 28, gap = 4, margin = 8;
+    constexpr int width = 32, height = 28, gap = 4, margin = 12;
     int x = (std::max)(margin, static_cast<int>(client.right) - margin - 4 * width - 3 * gap);
     for (HWND button : m_quickButtons) {
         if (button) ::SetWindowPos(button, HWND_TOP, x, margin, width, height, SWP_NOACTIVATE);
@@ -767,9 +811,22 @@ void PipWindow::LayoutQuickActions() {
     }
 }
 
+bool PipWindow::IsQuickActionPoint(POINT clientPoint) const {
+    for (HWND button : m_quickButtons) {
+        if (!button || !::IsWindowVisible(button)) continue;
+        RECT rect{}; ::GetWindowRect(button, &rect);
+        ::MapWindowPoints(HWND_DESKTOP, m_hwnd, reinterpret_cast<POINT*>(&rect), 2);
+        if (::PtInRect(&rect, clientPoint)) return true;
+    }
+    return false;
+}
+
 void PipWindow::ShowQuickActions(bool show) {
     if (m_isEditing) show = false;
-    if (m_quickActionsVisible == show) return;
+    bool visibilityMatches = m_quickActionsVisible == show;
+    for (HWND button : m_quickButtons)
+        if (button && (::IsWindowVisible(button) != FALSE) != show) visibilityMatches = false;
+    if (visibilityMatches) return;
     m_quickActionsVisible = show;
     for (HWND button : m_quickButtons) if (button) ::ShowWindow(button, show ? SW_SHOWNOACTIVATE : SW_HIDE);
     if (show) ::SetTimer(m_hwnd, kPipQuickHideTimer, 120, nullptr);
@@ -782,7 +839,17 @@ void PipWindow::RunTextRecognition() {
     });
     if (action == m_imageActions.end() || !action->invoke) return;
     FrameHdcGuard frame = GetLastFrameHdc();
-    if (!frame.hbmp) return;
+    if (!frame.hbmp) {
+        ::MessageBoxW(m_hwnd, L"The monitor has no captured frame yet. Please try again shortly.",
+                      L"Nskry — Text recognition", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    // Other callers need the selected frame DC for annotation rendering, but
+    // the OCR plug-in reads its bitmap with GetDIBits, which requires deselection.
+    if (frame.hdc && frame.oldBmp && frame.oldBmp != HGDI_ERROR) {
+        ::SelectObject(frame.hdc, frame.oldBmp);
+        frame.oldBmp = nullptr;
+    }
     RECT region{};
     ::GetWindowRect(m_hwnd, &region);
     action->invoke(frame.hbmp, static_cast<int>(m_contentW), static_cast<int>(m_contentH), region, m_hwnd);

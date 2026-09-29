@@ -60,7 +60,7 @@ static LRESULT CALLBACK MainWndProc(HWND, UINT, WPARAM, LPARAM);
 static void ShowSelectionOverlay();
 static void ShowSettings();
 static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionResult result);
-static void StartPiP(HWND targetHwnd, nskry::CropRegion crop, nskry::AnnotationEngine engine = {});
+static void StartPiP(HWND targetHwnd, nskry::CropRegion crop, RECT screenRegion, nskry::AnnotationEngine engine = {});
 static void CleanupPip();
 static int32_t CopyBitmapToClipboard(HBITMAP hbmp);
 static void OpenBitmapEditor(HBITMAP hbmp, int width, int height);
@@ -69,7 +69,7 @@ static void NotifyPinClosed(nskry::PinWindow* pin);
 static void ExecuteImagePlugin(const std::wstring& pluginId, HBITMAP bitmap, int width, int height,
                                RECT sourceRegion, HWND sourceHwnd);
 static nskry::ImageActions GetEnabledImageActions();
-static void SaveBitmapToFile(HBITMAP hbmp, int w, int h);
+static bool SaveBitmapToFile(HBITMAP hbmp, int w, int h, HWND owner = nullptr);
 static int  GetPngEncoderClsid(CLSID* pClsid);
 static bool RunPluginPackageCli(int& exitCode);
 static bool SetRunAtStartup(bool enabled);
@@ -472,11 +472,15 @@ static void OpenBitmapEditor(HBITMAP hbmp, int width, int height) {
         [](HBITMAP cropped, int croppedWidth, int croppedHeight) {
             auto pin = std::make_unique<nskry::PinWindow>(cropped, croppedWidth, croppedHeight,
                                                           NotifyPinClosed, GetEnabledImageActions());
-            if (pin->ShowInEditMode()) g_pins.push_back(std::move(pin));
+            if (pin->ShowInEditMode(true)) g_pins.push_back(std::move(pin));
             else ShowPluginNotification(L"The annotation window could not be created.", 3500);
         },
         []() { ::PostMessageW(g_mainHwnd, WM_LONG_IMAGE_EDITOR_CLOSED, 0, 0); },
-        GetEnabledImageActions());
+        GetEnabledImageActions(),
+        [](HWND, HBITMAP bitmap, int, int) { return CopyBitmapToClipboard(bitmap) != 0; },
+        [](HWND owner, HBITMAP bitmap, int width, int height) {
+            return SaveBitmapToFile(bitmap, width, height, owner);
+        });
     if (!g_longImageEditor->Show(g_mainHwnd)) {
         g_longImageEditor.reset();
         ShowPluginNotification(L"The long screenshot editor could not be created.", 3500);
@@ -529,7 +533,7 @@ static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionR
         if (result.bitmap) {
             auto pin = std::make_unique<nskry::PinWindow>(
                 result.bitmap, result.bitmapWidth, result.bitmapHeight, NotifyPinClosed,
-                GetEnabledImageActions());
+                GetEnabledImageActions(), result.screenRegion);
             if (pin->Show()) g_pins.push_back(std::move(pin));
             else ShowPluginNotification(L"The pin window could not be created.", 3500);
             // PinWindow takes ownership of bitmap
@@ -539,7 +543,7 @@ static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionR
     case nskry::SelectionAction::PiP:
         if (result.bitmap) ::DeleteObject(result.bitmap);
         if (result.targetHwnd)
-            StartPiP(result.targetHwnd, result.crop, std::move(result.annotationEngine));
+            StartPiP(result.targetHwnd, result.crop, result.screenRegion, std::move(result.annotationEngine));
         break;
 
     case nskry::SelectionAction::Plugin:
@@ -605,7 +609,7 @@ static nskry::ImageActions GetEnabledImageActions() {
 // Start PiP live capture
 // ============================================================================
 
-static void StartPiP(HWND targetHwnd, nskry::CropRegion crop, nskry::AnnotationEngine engine) {
+static void StartPiP(HWND targetHwnd, nskry::CropRegion crop, RECT screenRegion, nskry::AnnotationEngine engine) {
     CleanupPip();
 
     try {
@@ -615,7 +619,7 @@ static void StartPiP(HWND targetHwnd, nskry::CropRegion crop, nskry::AnnotationE
             static_cast<UINT>(crop.height),
             []() { ::PostMessageW(g_mainHwnd, WM_CLEANUP, 0, 0); },
             std::move(engine),
-            GetEnabledImageActions());
+            GetEnabledImageActions(), screenRegion);
 
         g_capture = std::make_unique<nskry::CaptureSession>(
             g_device, targetHwnd, crop);
@@ -738,13 +742,13 @@ static int GetPngEncoderClsid(CLSID* pClsid) {
     return -1;
 }
 
-static void SaveBitmapToFile(HBITMAP hbmp, int /*w*/, int /*h*/) {
+static bool SaveBitmapToFile(HBITMAP hbmp, int /*w*/, int /*h*/, HWND owner) {
     // Show save dialog
     wchar_t szFile[MAX_PATH] = L"screenshot.png";
 
     OPENFILENAMEW ofn{};
     ofn.lStructSize  = sizeof(ofn);
-    ofn.hwndOwner    = g_mainHwnd;
+    ofn.hwndOwner    = owner ? owner : g_mainHwnd;
     ofn.lpstrFilter  = L"PNG Files\0*.png\0All Files\0*.*\0";
     ofn.lpstrFile    = szFile;
     ofn.nMaxFile     = MAX_PATH;
@@ -753,18 +757,20 @@ static void SaveBitmapToFile(HBITMAP hbmp, int /*w*/, int /*h*/) {
     ofn.lpstrTitle   = L"Nskry \u2014 Save Screenshot";
 
     if (!::GetSaveFileNameW(&ofn))
-        return;   // User cancelled
+        return false;   // User cancelled
 
     // Save using GDI+
     CLSID clsid;
     if (GetPngEncoderClsid(&clsid) < 0) {
         ::MessageBoxW(nullptr, L"PNG encoder not found.", L"Nskry", MB_ICONERROR);
-        return;
+        return false;
     }
 
     Gdiplus::Bitmap bmp(hbmp, nullptr);
     Gdiplus::Status st = bmp.Save(szFile, &clsid);
     if (st != Gdiplus::Ok) {
         ::MessageBoxW(nullptr, L"Failed to save PNG file.", L"Nskry", MB_ICONERROR);
+        return false;
     }
+    return true;
 }

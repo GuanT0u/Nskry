@@ -3,6 +3,7 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <shellapi.h>
+#include <string_view>
 
 namespace nskry {
 namespace {
@@ -151,7 +152,9 @@ void SettingsWindow::BrowseAndInstallPlugin() {
 }
 
 void SettingsWindow::InstallThirdPartyPackage(const std::wstring& packagePath) {
-    if (packagePath.size() < 13 || _wcsicmp(packagePath.c_str() + packagePath.size() - 13, L".nskryplugin") != 0) {
+    constexpr std::wstring_view extension = L".nskryplugin";
+    if (packagePath.size() < extension.size() ||
+        _wcsicmp(packagePath.c_str() + packagePath.size() - extension.size(), extension.data()) != 0) {
         ::MessageBoxW(m_hwnd, L"Choose a .nskryplugin package.", L"Nskry Settings", MB_ICONERROR);
         return;
     }

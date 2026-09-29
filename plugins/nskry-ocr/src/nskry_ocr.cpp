@@ -46,12 +46,19 @@ bool StartsWithIgnoreCase(const std::wstring& value, const wchar_t* prefix) {
 }
 
 winrt::Windows::Media::Ocr::OcrEngine CreatePreferredOcrEngine() {
-    // Windows' Simplified/Traditional Chinese OCR engines also recognise the
-    // Latin characters commonly mixed into Chinese UI and documents. Prefer one
-    // when installed; otherwise retain Windows' profile-language selection.
-    for (const auto& language : winrt::Windows::Media::Ocr::OcrEngine::AvailableRecognizerLanguages()) {
-        const std::wstring tag = language.LanguageTag().c_str();
-        if (!StartsWithIgnoreCase(tag, L"zh")) continue;
+    const auto languages = winrt::Windows::Media::Ocr::OcrEngine::AvailableRecognizerLanguages();
+    // The available-language collection has no promised ordering. Prefer the
+    // Simplified Chinese recognizer for the Chinese UI used by this app, while
+    // keeping Traditional Chinese and profile-language fallbacks.
+    for (const wchar_t* preferred : { L"zh-Hans", L"zh-CN", L"zh-SG" }) {
+        for (const auto& language : languages) {
+            const std::wstring tag = language.LanguageTag().c_str();
+            if (!StartsWithIgnoreCase(tag, preferred)) continue;
+            if (const auto engine = winrt::Windows::Media::Ocr::OcrEngine::TryCreateFromLanguage(language)) return engine;
+        }
+    }
+    for (const auto& language : languages) {
+        if (!StartsWithIgnoreCase(language.LanguageTag().c_str(), L"zh")) continue;
         if (const auto engine = winrt::Windows::Media::Ocr::OcrEngine::TryCreateFromLanguage(language)) return engine;
     }
     return winrt::Windows::Media::Ocr::OcrEngine::TryCreateFromUserProfileLanguages();
@@ -62,6 +69,59 @@ struct WordBox {
     std::wstring text;
     size_t line{};
 };
+
+struct RecognizedLine {
+    RECT rect{};
+    std::wstring text;
+    std::vector<WordBox> words;
+};
+
+int TextScore(const std::wstring& text) {
+    int score = 0;
+    for (wchar_t ch : text) {
+        if ((ch >= 0x3400 && ch <= 0x9fff) || (ch >= L'A' && ch <= L'Z') ||
+            (ch >= L'a' && ch <= L'z') || (ch >= L'0' && ch <= L'9')) ++score;
+    }
+    return score;
+}
+
+std::vector<RecognizedLine> ReadLines(const winrt::Windows::Media::Ocr::OcrResult& recognized,
+                                      int imageWidth, int imageHeight, int displayWidth, int displayHeight) {
+    std::vector<RecognizedLine> lines;
+    const double scaleX = static_cast<double>(displayWidth) / imageWidth;
+    const double scaleY = static_cast<double>(displayHeight) / imageHeight;
+    for (const auto& line : recognized.Lines()) {
+        RecognizedLine output;
+        output.text = line.Text().c_str();
+        for (const auto& word : line.Words()) {
+            const auto bounds = word.BoundingRect();
+            WordBox box;
+            box.rect.left = (std::clamp)(static_cast<LONG>(std::floor(bounds.X * scaleX)), 0L, static_cast<LONG>(displayWidth));
+            box.rect.top = (std::clamp)(static_cast<LONG>(std::floor(bounds.Y * scaleY)), 0L, static_cast<LONG>(displayHeight));
+            box.rect.right = (std::clamp)(static_cast<LONG>(std::ceil((bounds.X + bounds.Width) * scaleX)), box.rect.left, static_cast<LONG>(displayWidth));
+            box.rect.bottom = (std::clamp)(static_cast<LONG>(std::ceil((bounds.Y + bounds.Height) * scaleY)), box.rect.top, static_cast<LONG>(displayHeight));
+            box.text = word.Text().c_str();
+            if (box.text.empty() || box.rect.right <= box.rect.left || box.rect.bottom <= box.rect.top) continue;
+            if (output.words.empty()) output.rect = box.rect;
+            else {
+                output.rect.left = (std::min)(output.rect.left, box.rect.left);
+                output.rect.top = (std::min)(output.rect.top, box.rect.top);
+                output.rect.right = (std::max)(output.rect.right, box.rect.right);
+                output.rect.bottom = (std::max)(output.rect.bottom, box.rect.bottom);
+            }
+            output.words.push_back(std::move(box));
+        }
+        if (!output.words.empty()) lines.push_back(std::move(output));
+    }
+    return lines;
+}
+
+bool SameTextLine(const RECT& a, const RECT& b) {
+    const int overlapY = (std::min)(a.bottom, b.bottom) - (std::max)(a.top, b.top);
+    const int minHeight = (std::min)(a.bottom - a.top, b.bottom - b.top);
+    const int overlapX = (std::min)(a.right, b.right) - (std::max)(a.left, b.left);
+    return overlapY > 0 && overlapY * 2 >= minHeight && overlapX > 0;
+}
 
 struct OcrJobResult {
     HBITMAP bitmap{};
@@ -80,7 +140,7 @@ struct OcrJobResult {
 };
 
 NskryPluginInfo kInfo{ sizeof(NskryPluginInfo), NSKRY_PLUGIN_API_VERSION,
-    L"Text recognition", L"nskry-ocr", L"0.5.0", L"Nskry Team",
+    L"Text recognition", L"nskry-ocr", L"0.5.1", L"Nskry Team",
     L"Offline text recognition using Windows OCR", nullptr,
     NSKRY_CAP_TOOLBAR_ACTION | NSKRY_CAP_POST_CAPTURE, {} };
 
@@ -104,7 +164,8 @@ HBITMAP CopyBitmap(HBITMAP bitmap) {
     return bitmap ? static_cast<HBITMAP>(::CopyImage(bitmap, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION)) : nullptr;
 }
 
-HBITMAP ResizeForOcr(HBITMAP source, int width, int height, int& outputWidth, int& outputHeight) {
+HBITMAP ResizeForOcr(HBITMAP source, int width, int height, int& outputWidth, int& outputHeight,
+                     double scaleLimit = 4.0) {
     outputWidth = width;
     outputHeight = height;
     if (!source || width <= 0 || height <= 0) return nullptr;
@@ -119,7 +180,7 @@ HBITMAP ResizeForOcr(HBITMAP source, int width, int height, int& outputWidth, in
     // Small UI text benefits considerably from a larger raster. Keep the
     // temporary recognition image bounded, and never expose it to the result
     // window (which continues to own and display the original-size bitmap).
-    else scale = (std::min)(4.0, static_cast<double>(maximum) / largestDimension);
+    else scale = (std::min)(scaleLimit, static_cast<double>(maximum) / largestDimension);
     if (std::abs(scale - 1.0) < 0.01) return CopyBitmap(source);
 
     outputWidth = (std::max)(1, static_cast<int>(std::lround(width * scale)));
@@ -233,31 +294,44 @@ std::unique_ptr<OcrJobResult> RunOcr(HBITMAP ocrBitmap, int ocrWidth, int ocrHei
             return result;
         }
         const auto recognized = engine.RecognizeAsync(ToSoftwareBitmap(ocrBitmap)).get();
-        const double coordinateScaleX = static_cast<double>(displayWidth) / ocrWidth;
-        const double coordinateScaleY = static_cast<double>(displayHeight) / ocrHeight;
-        // Use Windows OCR's line results rather than its flattened document text,
-        // so the text-only view remains visually close to the selected content.
-        size_t lineIndex = 0;
-        for (const auto& line : recognized.Lines()) {
-            if (!result->text.empty()) result->text += L"\r\n";
-            result->text += line.Text().c_str();
-            for (const auto& word : line.Words()) {
-                const auto bounds = word.BoundingRect();
-                WordBox box;
-                box.rect.left = static_cast<LONG>(std::floor(bounds.X * coordinateScaleX));
-                box.rect.top = static_cast<LONG>(std::floor(bounds.Y * coordinateScaleY));
-                box.rect.right = static_cast<LONG>(std::ceil((bounds.X + bounds.Width) * coordinateScaleX));
-                box.rect.bottom = static_cast<LONG>(std::ceil((bounds.Y + bounds.Height) * coordinateScaleY));
-                box.rect.left = (std::clamp)(box.rect.left, 0L, static_cast<LONG>(displayWidth));
-                box.rect.top = (std::clamp)(box.rect.top, 0L, static_cast<LONG>(displayHeight));
-                box.rect.right = (std::clamp)(box.rect.right, box.rect.left, static_cast<LONG>(displayWidth));
-                box.rect.bottom = (std::clamp)(box.rect.bottom, box.rect.top, static_cast<LONG>(displayHeight));
-                box.text = word.Text().c_str();
-                box.line = lineIndex;
-                if (!box.text.empty() && box.rect.right > box.rect.left && box.rect.bottom > box.rect.top)
-                    result->words.push_back(std::move(box));
+        auto lines = ReadLines(recognized, ocrWidth, ocrHeight, displayWidth, displayHeight);
+
+        // Small UI text is not consistently recognized at one enlargement. A
+        // bounded second pass at 2x can restore lines or words lost at 4x,
+        // without shipping a model or changing the image shown to the user.
+        if (displayWidth <= 1200 && displayHeight <= 1200 &&
+            static_cast<int64_t>(displayWidth) * displayHeight <= 1000000 &&
+            ocrWidth > displayWidth * 2) {
+            int alternateWidth{}, alternateHeight{};
+            struct BitmapGuard { HBITMAP bitmap{}; ~BitmapGuard() { if (bitmap) ::DeleteObject(bitmap); } } alternate;
+            alternate.bitmap = ResizeForOcr(displayBitmap, displayWidth, displayHeight,
+                                            alternateWidth, alternateHeight, 2.0);
+            if (alternate.bitmap) {
+                try {
+                    const auto alternateResult = engine.RecognizeAsync(ToSoftwareBitmap(alternate.bitmap)).get();
+                    auto alternateLines = ReadLines(alternateResult, alternateWidth, alternateHeight,
+                                                    displayWidth, displayHeight);
+                    for (auto& candidate : alternateLines) {
+                        auto match = std::find_if(lines.begin(), lines.end(), [&](const RecognizedLine& existing) {
+                            return SameTextLine(existing.rect, candidate.rect);
+                        });
+                        if (match == lines.end()) lines.push_back(std::move(candidate));
+                        else if (TextScore(candidate.text) >= TextScore(match->text) + 2)
+                            *match = std::move(candidate);
+                    }
+                } catch (...) { /* Preserve the successful primary pass. */ }
             }
-            ++lineIndex;
+        }
+        std::stable_sort(lines.begin(), lines.end(), [](const RecognizedLine& a, const RecognizedLine& b) {
+            return a.rect.top < b.rect.top || (a.rect.top == b.rect.top && a.rect.left < b.rect.left);
+        });
+        for (size_t index = 0; index < lines.size(); ++index) {
+            if (!result->text.empty()) result->text += L"\r\n";
+            result->text += lines[index].text;
+            for (auto& word : lines[index].words) {
+                word.line = index;
+                result->words.push_back(std::move(word));
+            }
         }
         if (result->text.empty()) result->text = L"No text was found in this image.";
     } catch (const winrt::hresult_error& error) {

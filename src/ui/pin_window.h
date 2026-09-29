@@ -18,7 +18,7 @@ public:
 
     /// Takes ownership of the HBITMAP.
     PinWindow(HBITMAP bitmap, int width, int height, CloseCallback closed = {},
-              ImageActions imageActions = {});
+              ImageActions imageActions = {}, RECT initialScreenRect = {});
     ~PinWindow();
 
     PinWindow(const PinWindow&)            = delete;
@@ -27,7 +27,7 @@ public:
     [[nodiscard]] bool Show();
     // Opens the existing annotation toolbar immediately (used after a long
     // capture has been cropped in its pre-edit view).
-    [[nodiscard]] bool ShowInEditMode();
+    [[nodiscard]] bool ShowInEditMode(bool requirePinDecision = false);
     [[nodiscard]] HWND Hwnd() const { return m_hwnd; }
 
 private:
@@ -40,8 +40,10 @@ private:
     void OnLButtonUp(int x, int y);
     void ShowContextMenu(int screenX, int screenY);
 
-    void CopyToClipboard();
-    void SaveToFile();
+    bool CopyToClipboard(HBITMAP bitmap = nullptr);
+    bool SaveToFile(HBITMAP bitmap = nullptr);
+    HBITMAP BakeEditedBitmap();
+    void ExportEditedBitmap(bool save);
     void EnterEditMode();
     void FinishEdit(bool apply);
     void CommitTextEdit();
@@ -49,6 +51,7 @@ private:
     void LayoutQuickActions();
     void ShowQuickActions(bool show);
     void RunTextRecognition();
+    bool IsQuickActionPoint(POINT clientPoint) const;
 
     // Pin Toolbar
     struct PinToolItem {
@@ -86,6 +89,8 @@ private:
     HWND             m_hTextEdit{};
     HWND             m_quickButtons[4]{};
     bool             m_quickActionsVisible{};
+    bool             m_hasInitialScreenRect{};
+    bool             m_requiresPinDecision{};
     POINT            m_textEditPos{};
     CloseCallback    m_closed;
     ImageActions     m_imageActions;

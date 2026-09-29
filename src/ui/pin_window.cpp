@@ -36,9 +36,10 @@ static int GetPngEncoderClsidHelper(CLSID* pClsid) {
 }
 
 PinWindow::PinWindow(HBITMAP bitmap, int width, int height, CloseCallback closed,
-                     ImageActions imageActions)
+                     ImageActions imageActions, RECT initialScreenRect)
     : m_bitmap(bitmap), m_width(width), m_height(height), m_closed(std::move(closed)),
-      m_imageActions(std::move(imageActions))
+      m_imageActions(std::move(imageActions)),
+      m_hasInitialScreenRect(initialScreenRect.right > initialScreenRect.left && initialScreenRect.bottom > initialScreenRect.top)
 {
     std::call_once(s_classOnce, [] {
         WNDCLASSEXW wc{};
@@ -68,10 +69,8 @@ PinWindow::PinWindow(HBITMAP bitmap, int width, int height, CloseCallback closed
     RECT workArea{ 0, 0, 1024, 768 };
     if (monitor && ::GetMonitorInfoW(monitor, &monitorInfo)) workArea = monitorInfo.rcWork;
 
-    RECT nonClient{ 0, 0, 0, 0 };
-    if (!::AdjustWindowRectEx(&nonClient, style, FALSE, exStyle)) return;
-    const int nonClientW = nonClient.right - nonClient.left;
-    const int nonClientH = nonClient.bottom - nonClient.top;
+    const int nonClientW = 0;
+    const int nonClientH = 0;
     const int workW = (std::max)(1, static_cast<int>(workArea.right - workArea.left));
     const int workH = (std::max)(1, static_cast<int>(workArea.bottom - workArea.top));
     const int maxClientW = (std::max)(1, (std::min)(800, workW - nonClientW));
@@ -86,10 +85,10 @@ PinWindow::PinWindow(HBITMAP bitmap, int width, int height, CloseCallback closed
     winW = (std::min)((std::max)(winW, (std::min)(kToolbarClientWidth, maxClientW)), maxClientW);
     winH = (std::min)(winH, maxClientH);
 
-    const int outerW = winW + nonClientW;
-    const int outerH = winH + nonClientH;
-    const int x = workArea.left + (workW - outerW) / 2;
-    const int y = workArea.top + (workH - outerH) / 2;
+    const int outerW = m_hasInitialScreenRect ? initialScreenRect.right - initialScreenRect.left : winW + nonClientW;
+    const int outerH = m_hasInitialScreenRect ? initialScreenRect.bottom - initialScreenRect.top : winH + nonClientH;
+    const int x = m_hasInitialScreenRect ? initialScreenRect.left : workArea.left + (workW - outerW) / 2;
+    const int y = m_hasInitialScreenRect ? initialScreenRect.top : workArea.top + (workH - outerH) / 2;
 
     m_hwnd = ::CreateWindowExW(
         exStyle, kClassName, L"Nskry Pin",
@@ -116,11 +115,16 @@ bool PinWindow::Show() {
     if (!m_hwnd) return false;
     ::ShowWindow(m_hwnd, SW_SHOWNA);
     ::UpdateWindow(m_hwnd);
+    POINT cursor{};
+    RECT bounds{};
+    if (::GetCursorPos(&cursor) && ::GetWindowRect(m_hwnd, &bounds) && ::PtInRect(&bounds, cursor))
+        ShowQuickActions(true);
     return true;
 }
 
-bool PinWindow::ShowInEditMode() {
+bool PinWindow::ShowInEditMode(bool requirePinDecision) {
     if (!Show()) return false;
+    m_requiresPinDecision = requirePinDecision;
     if (!m_isEditing) EnterEditMode();
     if (m_hwnd) ::SetForegroundWindow(m_hwnd);
     return m_hwnd != nullptr;
@@ -151,18 +155,44 @@ LRESULT CALLBACK PinWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CREATE:
+        {
+            const COLORREF noBorder = DWMWA_COLOR_NONE;
+            ::DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &noBorder, sizeof(noBorder));
+        }
         CreateQuickActions(hwnd);
         return 0;
 
     case WM_NCHITTEST: {
-        LRESULT hit = ::DefWindowProcW(hwnd, msg, wp, lp);
-        if (hit == HTCLIENT) {
-            // When editing, keep HTCLIENT so mouse events go to client drawing
-            if (m_isEditing) return HTCLIENT;
-            return HTCAPTION; // Draggable client area
-        }
-        return hit;
+        POINT point{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+        RECT window{}; ::GetWindowRect(hwnd, &window);
+        if (!m_isEditing && !m_quickActionsVisible && !::IsIconic(hwnd) && ::PtInRect(&window, point))
+            ShowQuickActions(true);
+        const int border = (std::max)(6, ::GetSystemMetricsForDpi(SM_CXSIZEFRAME, ::GetDpiForWindow(hwnd)));
+        const bool left = point.x < window.left + border;
+        const bool right = point.x >= window.right - border;
+        const bool top = point.y < window.top + border;
+        const bool bottom = point.y >= window.bottom - border;
+        if (top && left) return HTTOPLEFT;
+        if (top && right) return HTTOPRIGHT;
+        if (bottom && left) return HTBOTTOMLEFT;
+        if (bottom && right) return HTBOTTOMRIGHT;
+        if (left) return HTLEFT;
+        if (right) return HTRIGHT;
+        if (top) return HTTOP;
+        if (bottom) return HTBOTTOM;
+        POINT clientPoint = point; ::ScreenToClient(hwnd, &clientPoint);
+        if (IsQuickActionPoint(clientPoint) || m_isEditing) return HTCLIENT;
+        return HTCAPTION;
     }
+
+    case WM_NCCALCSIZE:
+        return 0; // Keep the window borderless; resize hit targets are handled above.
+
+    case WM_NCACTIVATE:
+        return TRUE; // Do not let DefWindowProc redraw the thick frame on focus changes.
+
+    case WM_NCPAINT:
+        return 0;
 
     case WM_SIZING: {
         if (m_height == 0) break;
@@ -173,13 +203,8 @@ LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         // Corner drag — lock aspect ratio
         RECT* r = reinterpret_cast<RECT*>(lp);
-        const DWORD style = static_cast<DWORD>(::GetWindowLongPtrW(hwnd, GWL_STYLE));
-        const DWORD exStyle = static_cast<DWORD>(::GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
-
-        RECT adj = {0, 0, 0, 0};
-        ::AdjustWindowRectEx(&adj, style, FALSE, exStyle);
-        int bw = adj.right - adj.left;
-        int bh = adj.bottom - adj.top;
+        const int bw = 0;
+        const int bh = 0;
 
         float aspect = static_cast<float>(m_width) / static_cast<float>(m_height);
 
@@ -200,6 +225,8 @@ LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             finalCH = proposedCH;
         }
 
+        finalCW = (std::max)(1, finalCW);
+        finalCH = (std::max)(1, finalCH);
         bool anchorRight  = (wp == WMSZ_TOPLEFT  || wp == WMSZ_BOTTOMLEFT);
         bool anchorBottom = (wp == WMSZ_TOPLEFT  || wp == WMSZ_TOPRIGHT);
 
@@ -215,9 +242,9 @@ LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_GETMINMAXINFO: {
         auto* limits = reinterpret_cast<MINMAXINFO*>(lp);
         if (limits) {
-            // The primary toolbar is 420 px wide; keep every action reachable.
-            limits->ptMinTrackSize.x = (std::max)(limits->ptMinTrackSize.x, 440L);
-            limits->ptMinTrackSize.y = (std::max)(limits->ptMinTrackSize.y, 120L);
+            // Never enlarge a small screenshot to fit annotation controls.
+            limits->ptMinTrackSize.x = 1;
+            limits->ptMinTrackSize.y = 1;
         }
         return 0;
     }
@@ -277,6 +304,7 @@ LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             OnLButtonDown(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
             return 0;
         }
+        break;
         break;
 
     case WM_MOUSEMOVE:
@@ -389,8 +417,14 @@ void PinWindow::CreateQuickActions(HWND parent) {
         m_quickButtons[index] = ::CreateWindowExW(WS_EX_LAYERED, L"BUTTON", labels[index],
             WS_CHILD | BS_PUSHBUTTON, 0, 0, 32, 28, parent,
             reinterpret_cast<HMENU>(static_cast<INT_PTR>(ids[index])), ::GetModuleHandleW(nullptr), nullptr);
+        if (!m_quickButtons[index])
+            m_quickButtons[index] = ::CreateWindowExW(0, L"BUTTON", labels[index],
+                WS_CHILD | BS_PUSHBUTTON, 0, 0, 32, 28, parent,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(ids[index])), ::GetModuleHandleW(nullptr), nullptr);
         if (m_quickButtons[index]) {
-            ::SetLayeredWindowAttributes(m_quickButtons[index], 0, 205, LWA_ALPHA);
+            if ((::GetWindowLongPtrW(m_quickButtons[index], GWL_EXSTYLE) & WS_EX_LAYERED) != 0 &&
+                !::SetLayeredWindowAttributes(m_quickButtons[index], 0, 145, LWA_ALPHA))
+                ::SetWindowLongPtrW(m_quickButtons[index], GWL_EXSTYLE, 0);
             if (m_font) ::SendMessageW(m_quickButtons[index], WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
         }
     }
@@ -401,7 +435,7 @@ void PinWindow::LayoutQuickActions() {
     if (!m_hwnd) return;
     RECT client{};
     ::GetClientRect(m_hwnd, &client);
-    constexpr int width = 32, height = 28, gap = 4, margin = 8;
+    constexpr int width = 32, height = 28, gap = 4, margin = 12;
     int x = (std::max)(margin, static_cast<int>(client.right) - margin - 4 * width - 3 * gap);
     for (HWND button : m_quickButtons) {
         if (button) ::SetWindowPos(button, HWND_TOP, x, margin, width, height, SWP_NOACTIVATE);
@@ -409,9 +443,22 @@ void PinWindow::LayoutQuickActions() {
     }
 }
 
+bool PinWindow::IsQuickActionPoint(POINT clientPoint) const {
+    for (HWND button : m_quickButtons) {
+        if (!button || !::IsWindowVisible(button)) continue;
+        RECT rect{}; ::GetWindowRect(button, &rect);
+        ::MapWindowPoints(HWND_DESKTOP, m_hwnd, reinterpret_cast<POINT*>(&rect), 2);
+        if (::PtInRect(&rect, clientPoint)) return true;
+    }
+    return false;
+}
+
 void PinWindow::ShowQuickActions(bool show) {
     if (m_isEditing) show = false;
-    if (m_quickActionsVisible == show) return;
+    bool visibilityMatches = m_quickActionsVisible == show;
+    for (HWND button : m_quickButtons)
+        if (button && (::IsWindowVisible(button) != FALSE) != show) visibilityMatches = false;
+    if (visibilityMatches) return;
     m_quickActionsVisible = show;
     for (HWND button : m_quickButtons) if (button) ::ShowWindow(button, show ? SW_SHOWNOACTIVATE : SW_HIDE);
     if (show) ::SetTimer(m_hwnd, kQuickHideTimer, 120, nullptr);
@@ -467,11 +514,12 @@ void PinWindow::ShowContextMenu(int screenX, int screenY) {
     }
 }
 
-void PinWindow::CopyToClipboard() {
-    if (!m_bitmap || m_width <= 0 || m_height <= 0) return;
+bool PinWindow::CopyToClipboard(HBITMAP bitmap) {
+    if (!bitmap) bitmap = m_bitmap;
+    if (!bitmap || m_width <= 0 || m_height <= 0) return false;
 
     HDC hdcScreen = ::GetDC(nullptr);
-    if (!hdcScreen) return;
+    if (!hdcScreen) return false;
     HDC hdcSrc = ::CreateCompatibleDC(hdcScreen);
     HDC hdcDst = ::CreateCompatibleDC(hdcScreen);
     HBITMAP hbmpClone = ::CreateCompatibleBitmap(hdcScreen, m_width, m_height);
@@ -479,7 +527,7 @@ void PinWindow::CopyToClipboard() {
     HGDIOBJ oldDst = nullptr;
     bool copied = false;
     if (hdcSrc && hdcDst && hbmpClone) {
-        oldSrc = ::SelectObject(hdcSrc, m_bitmap);
+        oldSrc = ::SelectObject(hdcSrc, bitmap);
         oldDst = ::SelectObject(hdcDst, hbmpClone);
         if (oldSrc && oldSrc != HGDI_ERROR && oldDst && oldDst != HGDI_ERROR) {
             copied = ::BitBlt(hdcDst, 0, 0, m_width, m_height, hdcSrc, 0, 0, SRCCOPY) != FALSE;
@@ -493,7 +541,7 @@ void PinWindow::CopyToClipboard() {
 
     if (!copied) {
         if (hbmpClone) ::DeleteObject(hbmpClone);
-        return;
+        return false;
     }
 
     bool clipboardOwnsBitmap = false;
@@ -502,10 +550,12 @@ void PinWindow::CopyToClipboard() {
         ::CloseClipboard();
     }
     if (!clipboardOwnsBitmap) ::DeleteObject(hbmpClone);
+    return clipboardOwnsBitmap;
 }
 
-void PinWindow::SaveToFile() {
-    if (!m_bitmap) return;
+bool PinWindow::SaveToFile(HBITMAP bitmap) {
+    if (!bitmap) bitmap = m_bitmap;
+    if (!bitmap) return false;
 
     wchar_t szFile[MAX_PATH] = L"pinned_screenshot.png";
     OPENFILENAMEW ofn{};
@@ -518,19 +568,21 @@ void PinWindow::SaveToFile() {
     ofn.lpstrDefExt  = L"png";
     ofn.lpstrTitle   = L"Nskry \u2014 Save Pinned Screenshot";
 
-    if (!::GetSaveFileNameW(&ofn)) return;
+    if (!::GetSaveFileNameW(&ofn)) return false;
 
     CLSID clsid;
     if (GetPngEncoderClsidHelper(&clsid) < 0) {
         ::MessageBoxW(m_hwnd, L"PNG encoder not found.", L"Nskry", MB_ICONERROR);
-        return;
+        return false;
     }
 
-    Gdiplus::Bitmap bmp(m_bitmap, nullptr);
+    Gdiplus::Bitmap bmp(bitmap, nullptr);
     Gdiplus::Status st = bmp.Save(szFile, &clsid);
     if (st != Gdiplus::Ok) {
         ::MessageBoxW(m_hwnd, L"Failed to save PNG file.", L"Nskry", MB_ICONERROR);
+        return false;
     }
+    return true;
 }
 
 // ============================================================================
@@ -552,21 +604,7 @@ void PinWindow::FinishEdit(bool apply) {
     CommitTextEdit();
 
     if (apply && !m_annotationEngine.IsEmpty()) {
-        HDC hdcScreen = ::GetDC(nullptr);
-        HDC hdcMem = hdcScreen ? ::CreateCompatibleDC(hdcScreen) : nullptr;
-        HBITMAP baked = nullptr;
-        HGDIOBJ old = nullptr;
-        if (hdcMem) {
-            old = ::SelectObject(hdcMem, m_bitmap);
-            if (old && old != HGDI_ERROR) {
-                RECT fullRect = { 0, 0, m_width, m_height };
-                baked = m_annotationEngine.BakeToBitmap(hdcMem, fullRect, m_width, m_height);
-                ::SelectObject(hdcMem, old);
-            }
-            ::DeleteDC(hdcMem);
-        }
-        if (hdcScreen) ::ReleaseDC(nullptr, hdcScreen);
-
+        HBITMAP baked = BakeEditedBitmap();
         if (baked) {
             ::DeleteObject(m_bitmap);
             m_bitmap = baked;
@@ -581,6 +619,41 @@ void PinWindow::FinishEdit(bool apply) {
     m_isEditing = false;
     m_toolbarItems.clear();
     ::InvalidateRect(m_hwnd, nullptr, FALSE);
+    if (m_requiresPinDecision) {
+        if (apply) m_requiresPinDecision = false;
+        else if (m_hwnd) ::DestroyWindow(m_hwnd);
+    }
+}
+
+HBITMAP PinWindow::BakeEditedBitmap() {
+    HDC hdcScreen = ::GetDC(nullptr);
+    HDC hdcMem = hdcScreen ? ::CreateCompatibleDC(hdcScreen) : nullptr;
+    HBITMAP baked = nullptr;
+    HGDIOBJ old = nullptr;
+    if (hdcMem) {
+        old = ::SelectObject(hdcMem, m_bitmap);
+        if (old && old != HGDI_ERROR) {
+            RECT fullRect = { 0, 0, m_width, m_height };
+            baked = m_annotationEngine.BakeToBitmap(hdcMem, fullRect, m_width, m_height);
+            ::SelectObject(hdcMem, old);
+        }
+        ::DeleteDC(hdcMem);
+    }
+    if (hdcScreen) ::ReleaseDC(nullptr, hdcScreen);
+
+    return baked;
+}
+
+void PinWindow::ExportEditedBitmap(bool save) {
+    CommitTextEdit();
+    HBITMAP rendered = m_annotationEngine.IsEmpty() ? m_bitmap : BakeEditedBitmap();
+    if (!rendered) {
+        ::MessageBoxW(m_hwnd, L"Failed to prepare the annotated screenshot.", L"Nskry", MB_ICONERROR);
+        return;
+    }
+    const bool exported = save ? SaveToFile(rendered) : CopyToClipboard(rendered);
+    if (rendered != m_bitmap) ::DeleteObject(rendered);
+    if (exported && m_requiresPinDecision && m_hwnd) ::DestroyWindow(m_hwnd);
 }
 
 void PinWindow::CommitTextEdit() {
@@ -625,7 +698,7 @@ void PinWindow::BuildPinToolbar(int clientW, int clientH) {
         { ToolType::None,    3, L"撤销",   36, false },
         { ToolType::None,    4, L"重做",   36, false },
         { ToolType::None,    0, nullptr,    4, true  },
-        { ToolType::None,    1, L"✓ 完成", 46, false },
+        { ToolType::None,    1, m_requiresPinDecision ? L"固定" : L"✓ 完成", 46, false },
         { ToolType::None,    2, L"✕ 取消", 46, false },
     };
 
@@ -656,6 +729,15 @@ void PinWindow::BuildPinToolbar(int clientW, int clientH) {
         item.selected    = (d.tool != ToolType::None && m_annotationEngine.GetTool() == d.tool);
         m_toolbarItems.push_back(item);
         curX += d.width + gap;
+    }
+
+    if (m_requiresPinDecision) {
+        const int exportY = (std::max)(4, startY - 30);
+        const int exportX = (std::max)(4, (clientW - 116) / 2);
+        m_toolbarItems.push_back({ RECT{ exportX, exportY, exportX + 54, exportY + 26 },
+                                   ToolType::None, 7, 0, 0, L"复制" });
+        m_toolbarItems.push_back({ RECT{ exportX + 62, exportY, exportX + 116, exportY + 26 },
+                                   ToolType::None, 8, 0, 0, L"保存" });
     }
 
     if (hasSub) {
@@ -851,10 +933,12 @@ void PinWindow::OnLButtonDown(int x, int y) {
         if (::PtInRect(&item.rect, pt)) {
             CommitTextEdit();
 
-            if (item.action == 1) { FinishEdit(true);  return; } // Done
-            if (item.action == 2) { FinishEdit(false); return; } // Cancel
+            if (item.action == 1) { FinishEdit(true); return; }
+            if (item.action == 2) { FinishEdit(false); return; }
             if (item.action == 3) { m_annotationEngine.Undo(); ::InvalidateRect(m_hwnd, nullptr, FALSE); return; }
             if (item.action == 4) { m_annotationEngine.Redo(); ::InvalidateRect(m_hwnd, nullptr, FALSE); return; }
+            if (item.action == 7) { ExportEditedBitmap(false); return; }
+            if (item.action == 8) { ExportEditedBitmap(true); return; }
 
             if (item.action == 5) { // Width
                 m_annotationEngine.SetStrokeWidth(item.widthVal);

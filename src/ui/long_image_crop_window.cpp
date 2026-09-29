@@ -12,17 +12,20 @@ constexpr int kCancelId = 2;
 constexpr int kZoomInId = 3;
 constexpr int kZoomOutId = 4;
 constexpr int kImageActionId = 5;
+constexpr int kCopyId = 6;
+constexpr int kSaveId = 7;
 constexpr int kCanvasMargin = 14;
-constexpr int kControlsHeight = 62;
+constexpr int kControlsHeight = 112;
 constexpr int kMinimumCropHeight = 24;
 }
 
 LongImageCropWindow::LongImageCropWindow(HBITMAP bitmap, int width, int height,
                                          ApplyCallback apply, CloseCallback closed,
-                                         ImageActions imageActions)
+                                         ImageActions imageActions,
+                                         ExportCallback copy, ExportCallback save)
     : m_bitmap(bitmap), m_width(width), m_height(height),
       m_cropBottom(height), m_apply(std::move(apply)), m_closed(std::move(closed)),
-      m_imageActions(std::move(imageActions)) {
+      m_imageActions(std::move(imageActions)), m_copy(std::move(copy)), m_save(std::move(save)) {
     if (!m_bitmap || m_width <= 0 || m_height < kMinimumCropHeight) return;
     BITMAP bitmapInfo{};
     if (::GetObjectW(m_bitmap, sizeof(bitmapInfo), &bitmapInfo) != sizeof(bitmapInfo) ||
@@ -95,6 +98,8 @@ LRESULT CALLBACK LongImageCropWindow::WndProc(HWND hwnd, UINT message, WPARAM wp
         self->m_zoomInButton = nullptr;
         self->m_zoomOutButton = nullptr;
         self->m_imageActionButton = nullptr;
+        self->m_copyButton = nullptr;
+        self->m_saveButton = nullptr;
         ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         auto closed = self->m_destroying ? CloseCallback{} : std::move(self->m_closed);
         const LRESULT result = ::DefWindowProcW(hwnd, message, wp, lp);
@@ -117,6 +122,10 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
             0, 0, 64, 30, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kZoomOutId)), ::GetModuleHandleW(nullptr), nullptr);
         m_zoomInButton = ::CreateWindowExW(0, L"BUTTON", L"Zoom +", WS_CHILD | WS_VISIBLE,
             0, 0, 64, 30, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kZoomInId)), ::GetModuleHandleW(nullptr), nullptr);
+        m_copyButton = ::CreateWindowExW(0, L"BUTTON", L"Copy", WS_CHILD | WS_VISIBLE,
+            0, 0, 70, 30, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopyId)), ::GetModuleHandleW(nullptr), nullptr);
+        m_saveButton = ::CreateWindowExW(0, L"BUTTON", L"Save", WS_CHILD | WS_VISIBLE,
+            0, 0, 70, 30, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSaveId)), ::GetModuleHandleW(nullptr), nullptr);
         if (!m_imageActions.empty()) {
             const std::wstring label = m_imageActions.size() == 1
                 ? L"Select " + m_imageActions.front().label + L" area" : L"Select image area";
@@ -124,6 +133,7 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
                 0, 0, 118, 30, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kImageActionId)), ::GetModuleHandleW(nullptr), nullptr);
         }
         if (!m_applyButton || !m_cancelButton || !m_zoomOutButton || !m_zoomInButton ||
+            !m_copyButton || !m_saveButton ||
             (!m_imageActions.empty() && !m_imageActionButton)) return -1;
         LayoutControls();
         return 0;
@@ -306,6 +316,8 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
     }
     case WM_COMMAND:
         if (LOWORD(wp) == kApplyId) { if (m_selectingOcr) RunImageAction(0); else ApplyCrop(); return 0; }
+        if (LOWORD(wp) == kCopyId) { ExportCrop(false); return 0; }
+        if (LOWORD(wp) == kSaveId) { ExportCrop(true); return 0; }
         if (LOWORD(wp) == kCancelId) { if (m_selectingOcr) SetOcrSelectionMode(false); else ::DestroyWindow(hwnd); return 0; }
         if (LOWORD(wp) == kZoomInId) { m_zoom = (std::min)(16.0, m_zoom * 1.4); m_zoomFocusY = (m_cropTop + m_cropBottom) / 2; CenterViewOn(m_zoomFocusY); ::InvalidateRect(hwnd, nullptr, FALSE); return 0; }
         if (LOWORD(wp) == kZoomOutId) { m_zoom = (std::max)(1.0, m_zoom / 1.4); m_zoomFocusY = (m_cropTop + m_cropBottom) / 2; CenterViewOn(m_zoomFocusY); ::InvalidateRect(hwnd, nullptr, FALSE); return 0; }
@@ -343,18 +355,22 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
 }
 
 void LongImageCropWindow::LayoutControls() {
-    if (!m_hwnd || !m_applyButton || !m_cancelButton || !m_zoomInButton || !m_zoomOutButton) return;
+    if (!m_hwnd || !m_applyButton || !m_cancelButton || !m_zoomInButton || !m_zoomOutButton ||
+        !m_copyButton || !m_saveButton) return;
     RECT client{};
     if (!::GetClientRect(m_hwnd, &client)) return;
-    const int y = (std::max)(0, static_cast<int>(client.bottom - 43));
+    const int upperY = (std::max)(0, static_cast<int>(client.bottom - 78));
+    const int lowerY = (std::max)(0, static_cast<int>(client.bottom - 42));
     const int cancelX = (std::max)(0, static_cast<int>(client.right - 100));
     const int applyX = (std::max)(0, cancelX - 170);
-    const int imageActionX = (std::max)(152, applyX - 126);
-    ::SetWindowPos(m_zoomOutButton, nullptr, 12, y, 64, 30, SWP_NOZORDER | SWP_NOACTIVATE);
-    ::SetWindowPos(m_zoomInButton, nullptr, 82, y, 64, 30, SWP_NOZORDER | SWP_NOACTIVATE);
-    ::SetWindowPos(m_cancelButton, nullptr, cancelX, y, 86, 30, SWP_NOZORDER | SWP_NOACTIVATE);
-    ::SetWindowPos(m_applyButton, nullptr, applyX, y, 160, 30, SWP_NOZORDER | SWP_NOACTIVATE);
-    if (m_imageActionButton) ::SetWindowPos(m_imageActionButton, nullptr, imageActionX, y, 118, 30, SWP_NOZORDER | SWP_NOACTIVATE);
+    const int imageActionX = (std::max)(12, applyX - 126);
+    ::SetWindowPos(m_zoomOutButton, nullptr, 12, upperY, 64, 30, SWP_NOZORDER | SWP_NOACTIVATE);
+    ::SetWindowPos(m_zoomInButton, nullptr, 82, upperY, 64, 30, SWP_NOZORDER | SWP_NOACTIVATE);
+    ::SetWindowPos(m_copyButton, nullptr, 152, upperY, 70, 30, SWP_NOZORDER | SWP_NOACTIVATE);
+    ::SetWindowPos(m_saveButton, nullptr, 228, upperY, 70, 30, SWP_NOZORDER | SWP_NOACTIVATE);
+    ::SetWindowPos(m_cancelButton, nullptr, cancelX, lowerY, 86, 30, SWP_NOZORDER | SWP_NOACTIVATE);
+    ::SetWindowPos(m_applyButton, nullptr, applyX, lowerY, 160, 30, SWP_NOZORDER | SWP_NOACTIVATE);
+    if (m_imageActionButton) ::SetWindowPos(m_imageActionButton, nullptr, imageActionX, lowerY, 118, 30, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 void LongImageCropWindow::SetOcrSelectionMode(bool enabled) {
@@ -363,6 +379,8 @@ void LongImageCropWindow::SetOcrSelectionMode(bool enabled) {
     if (!enabled) m_ocrSelection = {};
     if (m_applyButton) ::SetWindowTextW(m_applyButton, enabled ? L"Recognize selection" : L"Open annotation editor");
     if (m_cancelButton) ::SetWindowTextW(m_cancelButton, enabled ? L"Cancel selection" : L"Cancel");
+    if (m_copyButton) ::EnableWindow(m_copyButton, !enabled);
+    if (m_saveButton) ::EnableWindow(m_saveButton, !enabled);
     if (m_imageActionButton) ::ShowWindow(m_imageActionButton, enabled ? SW_HIDE : SW_SHOW);
     LayoutControls();
     if (m_hwnd) ::InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -566,7 +584,7 @@ void LongImageCropWindow::Paint(HWND hwnd) {
     const wchar_t* help = m_selectingOcr
         ? L"Drag a gold rectangle around the target content, then run the selected image action"
         : L"Drag blue lines to crop · Zoom +/- for detail · Hold Alt for precision";
-    ::TextOutW(dc, kCanvasMargin, client.bottom - 38, help, static_cast<int>(wcslen(help)));
+    ::TextOutW(dc, kCanvasMargin, client.bottom - 104, help, static_cast<int>(wcslen(help)));
     ::BitBlt(paintDc, 0, 0, client.right - client.left, client.bottom - client.top, dc, 0, 0, SRCCOPY);
     ::SelectObject(dc, oldBack);
     ::DeleteObject(back);
@@ -626,6 +644,21 @@ void LongImageCropWindow::ApplyCrop() {
         ::DeleteObject(cropped);
     }
     if (m_hwnd) ::DestroyWindow(m_hwnd);
+}
+
+void LongImageCropWindow::ExportCrop(bool save) {
+    const ExportCallback& callback = save ? m_save : m_copy;
+    if (!callback) return;
+    HBITMAP cropped = CreateCroppedBitmap();
+    if (!cropped) {
+        ::MessageBoxW(m_hwnd, L"Failed to prepare the cropped screenshot.", L"Nskry", MB_ICONERROR);
+        return;
+    }
+    bool exported = false;
+    try { exported = callback(m_hwnd, cropped, m_cropRight - m_cropLeft, m_cropBottom - m_cropTop); }
+    catch (...) { exported = false; }
+    ::DeleteObject(cropped);
+    if (exported && m_hwnd) ::DestroyWindow(m_hwnd);
 }
 
 void LongImageCropWindow::RunImageAction(size_t actionIndex) {
