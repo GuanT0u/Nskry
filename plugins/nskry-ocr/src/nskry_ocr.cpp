@@ -1,4 +1,5 @@
 #include "nskry_plugin.h"
+#include "ocr_arbitration.h"
 
 #include <windowsx.h>
 #include <commdlg.h>
@@ -14,9 +15,12 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <cwctype>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <new>
 #include <memory>
@@ -40,6 +44,7 @@ constexpr int kEditId = 1007;
 constexpr int kSaveId = 1008;
 constexpr int kRotateId = 1009;
 constexpr int kMaxPreviewDimension = 3200;
+constexpr size_t kMaxOcrPasses = 3;
 
 bool StartsWithIgnoreCase(const std::wstring& value, const wchar_t* prefix) {
     const size_t length = wcslen(prefix);
@@ -66,17 +71,74 @@ winrt::Windows::Media::Ocr::OcrEngine CreatePreferredOcrEngine() {
     return winrt::Windows::Media::Ocr::OcrEngine::TryCreateFromUserProfileLanguages();
 }
 
-struct WordBox {
-    RECT rect{};
-    std::wstring text;
-    size_t line{};
+using nskry::ocr::WordBox;
+using nskry::ocr::RecognizedLine;
+
+enum class OcrPassKind { Fast, Enhanced, Binary, InvertEnhanced };
+
+struct OcrPassResult {
+    OcrPassKind kind{};
+    double scale{1.0};
+    std::vector<RecognizedLine> lines;
+    double preprocessMs{};
+    double engineMs{};
 };
 
-struct RecognizedLine {
-    RECT rect{};
-    std::wstring text;
-    std::vector<WordBox> words;
-};
+double ElapsedMs(std::chrono::steady_clock::time_point start) {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+}
+
+std::string Utf8(const std::wstring& value) {
+    if (value.empty()) return {};
+    const int length = ::WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
+                                             nullptr, 0, nullptr, nullptr);
+    if (length <= 0) return {};
+    std::string bytes(static_cast<size_t>(length), '\0');
+    ::WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
+                          bytes.data(), length, nullptr, nullptr);
+    return bytes;
+}
+
+void DumpOcrTrace(uint64_t generation, const std::vector<OcrPassResult>& passes,
+                  const std::vector<RecognizedLine>& finalLines, double totalMs,
+                  const std::vector<nskry::ocr::AlignedLineGroup>& groups,
+                  const std::vector<nskry::ocr::ArbitrationDecision>& decisions) {
+    wchar_t path[32768]{};
+    const DWORD length = ::GetEnvironmentVariableW(L"NSKRY_OCR_TRACE_FILE", path, ARRAYSIZE(path));
+    if (!length || length >= ARRAYSIZE(path)) return; // Off by default, including Release.
+    std::ofstream output(std::filesystem::path(path), std::ios::binary | std::ios::app);
+    if (!output) return;
+    output << "========== OCR REQUEST " << generation << " ==========\n";
+    const char* names[]{ "Fast", "Enhanced", "Binary", "InvertEnhanced" };
+    for (size_t i = 0; i < passes.size(); ++i) {
+        const auto& pass = passes[i];
+        output << "========== OCR PASS " << static_cast<char>('A' + i) << " ==========\n"
+               << "Kind: " << names[static_cast<int>(pass.kind)] << " Scale: " << pass.scale
+               << " PreprocessMs: " << pass.preprocessMs << " EngineMs: " << pass.engineMs
+               << " Lines: " << pass.lines.size() << '\n';
+        for (const auto& line : pass.lines) {
+            output << "Line [" << line.rect.left << ',' << line.rect.top << ',' << line.rect.right << ','
+                   << line.rect.bottom << "] " << Utf8(line.text) << '\n';
+            for (const auto& word : line.words)
+                output << "  Word [" << word.rect.left << ',' << word.rect.top << ',' << word.rect.right
+                       << ',' << word.rect.bottom << "] " << Utf8(word.text) << '\n';
+        }
+    }
+    output << "========== OCR ARBITRATION ==========\n";
+    for (size_t i = 0; i < groups.size(); ++i) {
+        output << "Group #" << i << '\n';
+        for (size_t pass = 0; pass < groups[i].candidates.size(); ++pass)
+            if (const auto* candidate = groups[i].candidates[pass])
+                output << "  " << static_cast<char>('A' + pass) << ": " << Utf8(candidate->text) << '\n';
+        if (i < decisions.size()) output << "  Decision: " << static_cast<char>('A' + decisions[i].primaryPass)
+            << " Agreement: " << decisions[i].agreementCount
+            << " RecoveredWords: " << decisions[i].recoveredWords
+            << " ConflictReplacement: " << decisions[i].conflictReplacement
+            << " Reason: " << Utf8(decisions[i].reason) << '\n';
+    }
+    for (const auto& line : finalLines) output << "Final: " << Utf8(line.text) << '\n';
+    output << "PassCount: " << passes.size() << " TotalMs: " << totalMs << "\n";
+}
 
 bool IsHan(wchar_t ch) {
     return ch >= 0x3400 && ch <= 0x9fff;
@@ -84,26 +146,30 @@ bool IsHan(wchar_t ch) {
 
 void AddRecognizedWord(RecognizedLine& line, WordBox box) {
     if (box.text.empty() || box.rect.right <= box.rect.left || box.rect.bottom <= box.rect.top) return;
-    const bool splitHan = box.text.size() > 1 &&
-        std::all_of(box.text.begin(), box.text.end(), [](wchar_t ch) { return IsHan(ch); }) &&
-        box.rect.right - box.rect.left >= static_cast<LONG>(box.text.size());
-    const size_t count = splitHan ? box.text.size() : 1;
-    const LONG left = box.rect.left, right = box.rect.right;
-    for (size_t index = 0; index < count; ++index) {
-        WordBox piece = box;
-        if (splitHan) {
-            piece.text.assign(1, box.text[index]);
-            piece.rect.left = left + static_cast<LONG>((right - left) * index / count);
-            piece.rect.right = left + static_cast<LONG>((right - left) * (index + 1) / count);
-        }
-        if (line.words.empty()) line.rect = piece.rect;
-        else {
-            line.rect.left = (std::min)(line.rect.left, piece.rect.left);
-            line.rect.top = (std::min)(line.rect.top, piece.rect.top);
-            line.rect.right = (std::max)(line.rect.right, piece.rect.right);
-            line.rect.bottom = (std::max)(line.rect.bottom, piece.rect.bottom);
-        }
-        line.words.push_back(std::move(piece));
+    if (line.words.empty()) line.rect = box.rect;
+    else {
+        line.rect.left = (std::min)(line.rect.left, box.rect.left);
+        line.rect.top = (std::min)(line.rect.top, box.rect.top);
+        line.rect.right = (std::max)(line.rect.right, box.rect.right);
+        line.rect.bottom = (std::max)(line.rect.bottom, box.rect.bottom);
+    }
+    line.words.push_back(std::move(box));
+}
+
+void AddDisplayWord(std::vector<WordBox>& displayWords, WordBox word) {
+    // Only the UI highlight layer needs approximate character boxes. Keep the
+    // unmodified Windows word box for spatial arbitration above.
+    const bool splitHan = word.text.size() > 1 &&
+        std::all_of(word.text.begin(), word.text.end(), [](wchar_t ch) { return IsHan(ch); }) &&
+        word.rect.right - word.rect.left >= static_cast<LONG>(word.text.size());
+    if (!splitHan) { displayWords.push_back(std::move(word)); return; }
+    const LONG left = word.rect.left, right = word.rect.right;
+    for (size_t index = 0; index < word.text.size(); ++index) {
+        WordBox piece = word;
+        piece.text.assign(1, word.text[index]);
+        piece.rect.left = left + static_cast<LONG>((right - left) * index / word.text.size());
+        piece.rect.right = left + static_cast<LONG>((right - left) * (index + 1) / word.text.size());
+        displayWords.push_back(std::move(piece));
     }
 }
 
@@ -128,34 +194,6 @@ std::vector<RecognizedLine> ReadLines(const winrt::Windows::Media::Ocr::OcrResul
         if (!output.words.empty()) lines.push_back(std::move(output));
     }
     return lines;
-}
-
-bool SameTextLine(const RECT& a, const RECT& b) {
-    const int overlapY = (std::min)(a.bottom, b.bottom) - (std::max)(a.top, b.top);
-    const int minHeight = (std::min)(a.bottom - a.top, b.bottom - b.top);
-    const int overlapX = (std::min)(a.right, b.right) - (std::max)(a.left, b.left);
-    const int horizontalGap = (std::max)(0, -overlapX);
-    return overlapY > 0 && overlapY * 2 >= minHeight &&
-        horizontalGap <= 2 * (std::max)(a.bottom - a.top, b.bottom - b.top);
-}
-
-void RebuildLineText(RecognizedLine& line) {
-    std::stable_sort(line.words.begin(), line.words.end(), [](const WordBox& a, const WordBox& b) {
-        return a.rect.left < b.rect.left;
-    });
-    line.text.clear();
-    for (size_t i = 0; i < line.words.size(); ++i) {
-        const auto& word = line.words[i];
-        if (i) {
-            const auto& previous = line.words[i - 1];
-            const int gap = word.rect.left - previous.rect.right;
-            const bool adjacentHan = !previous.text.empty() && !word.text.empty() &&
-                IsHan(previous.text.back()) && IsHan(word.text.front());
-            if (!adjacentHan && gap > (std::max)(2L, (line.rect.bottom - line.rect.top) / 5))
-                line.text.push_back(L' ');
-        }
-        line.text += word.text;
-    }
 }
 
 bool HasUncoveredHanGap(const std::vector<RecognizedLine>& lines) {
@@ -210,10 +248,13 @@ int MedianLineHeight(const std::vector<RecognizedLine>& lines) {
 bool NeedsEnhancedPass(const std::vector<RecognizedLine>& lines) {
     if (lines.empty()) return true;
     if (HasUncoveredHanGap(lines)) return true;
-    if (MedianLineHeight(lines) < 19) return true; // small UI type needs another raster treatment
     double quality = 0.0;
     for (const auto& line : lines) quality += LineQuality(line);
-    return quality / lines.size() < 68.0;
+    quality /= lines.size();
+    // A small but otherwise clean single label should stay on the fast path.
+    // Dense small-type UI remains eligible for another treatment.
+    if (MedianLineHeight(lines) < 19 && (lines.size() >= 8 || quality < 82.0)) return true;
+    return quality < 68.0;
 }
 
 double AverageQuality(const std::vector<RecognizedLine>& lines) {
@@ -221,39 +262,6 @@ double AverageQuality(const std::vector<RecognizedLine>& lines) {
     double total = 0.0;
     for (const auto& line : lines) total += LineQuality(line);
     return total / lines.size();
-}
-
-void MergeLines(std::vector<RecognizedLine>& lines, std::vector<RecognizedLine> candidates) {
-    for (auto& candidate : candidates) {
-        auto match = std::find_if(lines.begin(), lines.end(), [&](const RecognizedLine& existing) {
-            return SameTextLine(existing.rect, candidate.rect);
-        });
-        if (match == lines.end()) lines.push_back(std::move(candidate));
-        else {
-            bool added = false;
-            for (auto& word : candidate.words) {
-                const int candidateArea = (word.rect.right - word.rect.left) *
-                    (word.rect.bottom - word.rect.top);
-                if (candidateArea <= 0) continue;
-                int coveredArea = 0;
-                for (const WordBox& existing : match->words) {
-                    const int overlapX = (std::max)(0L, (std::min)(word.rect.right, existing.rect.right) -
-                        (std::max)(word.rect.left, existing.rect.left));
-                    const int overlapY = (std::max)(0L, (std::min)(word.rect.bottom, existing.rect.bottom) -
-                        (std::max)(word.rect.top, existing.rect.top));
-                    coveredArea += overlapX * overlapY;
-                }
-                if (coveredArea * 5 >= candidateArea * 2) continue;
-                match->rect.left = (std::min)(match->rect.left, word.rect.left);
-                match->rect.top = (std::min)(match->rect.top, word.rect.top);
-                match->rect.right = (std::max)(match->rect.right, word.rect.right);
-                match->rect.bottom = (std::max)(match->rect.bottom, word.rect.bottom);
-                match->words.push_back(std::move(word));
-                added = true;
-            }
-            if (added) RebuildLineText(*match);
-        }
-    }
 }
 
 struct OcrJobResult {
@@ -287,7 +295,7 @@ struct OcrRequest {
 };
 
 NskryPluginInfo kInfo{ sizeof(NskryPluginInfo), NSKRY_PLUGIN_API_VERSION,
-    L"Text recognition", L"nskry-ocr", L"0.5.3", L"Nskry Team",
+    L"Text recognition", L"nskry-ocr", L"0.5.4", L"Nskry Team",
     L"Offline text recognition using Windows OCR", nullptr,
     NSKRY_CAP_TOOLBAR_ACTION | NSKRY_CAP_POST_CAPTURE, {} };
 
@@ -361,9 +369,10 @@ HBITMAP ResizeForOcr(HBITMAP source, int width, int height, int& outputWidth, in
     return scaled;
 }
 
-enum class OcrTreatment { Enhanced, Binary };
+enum class OcrTreatment { Enhanced, Binary, InvertEnhanced };
 
-HBITMAP TreatForOcr(HBITMAP source, int width, int height, OcrTreatment treatment) {
+HBITMAP TreatForOcr(HBITMAP source, int width, int height, OcrTreatment treatment,
+                    bool* darkBackgroundOut = nullptr) {
     if (!source || width <= 0 || height <= 0) return nullptr;
     HDC screen = ::GetDC(nullptr);
     if (!screen) return nullptr;
@@ -398,8 +407,9 @@ HBITMAP TreatForOcr(HBITMAP source, int width, int height, OcrTreatment treatmen
         }
     }
     const bool darkBackground = borderCount && borderSum / borderCount < 112;
+    if (darkBackgroundOut) *darkBackgroundOut = darkBackground;
     for (uint8_t& value : gray) {
-        const int oriented = darkBackground ? 255 - value : value;
+        const int oriented = treatment == OcrTreatment::InvertEnhanced ? 255 - value : value;
         value = static_cast<uint8_t>((std::clamp)(static_cast<int>((oriented - 128) * 1.25 + 128), 0, 255));
     }
 
@@ -511,6 +521,8 @@ std::unique_ptr<OcrJobResult> RunOcr(HBITMAP displayBitmap, int displayWidth, in
     result->anchor = anchor;
     result->copyBitmapToClipboard = copyBitmap;
     result->openBitmapEditor = openEditor;
+    const auto requestStart = std::chrono::steady_clock::now();
+    std::vector<OcrPassResult> passes;
     try {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
         const auto engine = CreatePreferredOcrEngine();
@@ -520,16 +532,25 @@ std::unique_ptr<OcrJobResult> RunOcr(HBITMAP displayBitmap, int displayWidth, in
         }
         if (generation != s_generation.load()) return nullptr;
         int ocrWidth{}, ocrHeight{};
-        guard.value = ResizeForOcr(displayBitmap, displayWidth, displayHeight, ocrWidth, ocrHeight);
+        const auto fastStart = std::chrono::steady_clock::now();
+        // Benchmark override only. Production keeps the existing auto-scale
+        // until fixture data demonstrates a better default.
+        const bool benchmarkFast1x = ::GetEnvironmentVariableW(L"NSKRY_OCR_BENCH_FAST_1X", nullptr, 0) > 0;
+        guard.value = ResizeForOcr(displayBitmap, displayWidth, displayHeight, ocrWidth, ocrHeight,
+                                   benchmarkFast1x ? 1.0 : 4.0);
         if (!guard.value) {
             result->error = L"Could not prepare the image for text recognition.";
             return result;
         }
         std::vector<RecognizedLine> lines;
+        const double fastPreprocessMs = ElapsedMs(fastStart);
+        const auto fastEngineStart = std::chrono::steady_clock::now();
         {
             const auto recognized = engine.RecognizeAsync(ToSoftwareBitmap(guard.value)).get();
             lines = ReadLines(recognized, ocrWidth, ocrHeight, displayWidth, displayHeight);
         }
+        passes.push_back({ OcrPassKind::Fast, static_cast<double>(ocrWidth) / displayWidth,
+                           lines, fastPreprocessMs, ElapsedMs(fastEngineStart) });
         // The first OCR input and WinRT result are no longer needed. In
         // particular, do not keep the large scaled bitmap during later passes.
         ::DeleteObject(guard.value);
@@ -540,38 +561,77 @@ std::unique_ptr<OcrJobResult> RunOcr(HBITMAP displayBitmap, int displayWidth, in
             const int textHeight = MedianLineHeight(lines);
             const double scale = textHeight == 0 || textHeight < 12 ? 4.0 :
                 textHeight < 18 ? 3.0 : textHeight < 28 ? 2.0 : 1.0;
+            bool darkBackground = false;
             auto runTreatment = [&](OcrTreatment treatment) {
                 if (generation != s_generation.load()) return;
                 struct BitmapGuard { HBITMAP value{}; ~BitmapGuard() { if (value) ::DeleteObject(value); } } scaled, prepared;
+                const auto preprocessStart = std::chrono::steady_clock::now();
                 int width{}, height{};
                 scaled.value = ResizeForOcr(displayBitmap, displayWidth, displayHeight, width, height, scale);
                 if (!scaled.value) return;
-                prepared.value = TreatForOcr(scaled.value, width, height, treatment);
+                prepared.value = TreatForOcr(scaled.value, width, height, treatment,
+                    treatment == OcrTreatment::Enhanced ? &darkBackground : nullptr);
                 ::DeleteObject(scaled.value);
                 scaled.value = nullptr;
                 if (!prepared.value) return;
+                const double preprocessMs = ElapsedMs(preprocessStart);
+                const auto engineStart = std::chrono::steady_clock::now();
                 const auto recognized = engine.RecognizeAsync(ToSoftwareBitmap(prepared.value)).get();
                 if (generation != s_generation.load()) return;
-                MergeLines(lines, ReadLines(recognized, width, height, displayWidth, displayHeight));
+                auto candidate = ReadLines(recognized, width, height, displayWidth, displayHeight);
+                const OcrPassKind kind = treatment == OcrTreatment::Enhanced ? OcrPassKind::Enhanced :
+                    treatment == OcrTreatment::Binary ? OcrPassKind::Binary : OcrPassKind::InvertEnhanced;
+                passes.push_back({ kind,
+                    static_cast<double>(width) / displayWidth, candidate, preprocessMs, ElapsedMs(engineStart) });
+                // Keep the raw candidate until pass scheduling is complete.
             };
             try { runTreatment(OcrTreatment::Enhanced); }
             catch (...) { /* Preserve the successful fast pass. */ }
             if (generation != s_generation.load()) return nullptr;
-            if (AverageQuality(lines) < 62.0 || HasUncoveredHanGap(lines)) {
-                try { runTreatment(OcrTreatment::Binary); }
+            std::vector<std::vector<RecognizedLine>> comparison;
+            for (const auto& pass : passes) comparison.push_back(pass.lines);
+            const auto localGroups = nskry::ocr::AlignLines(comparison);
+            const bool needThird = AverageQuality(lines) < 62.0 || HasUncoveredHanGap(lines) ||
+                nskry::ocr::HasLocalDisagreement(localGroups) ||
+                nskry::ocr::HasCoverageDifference(localGroups) ||
+                nskry::ocr::HasSuspiciousGeometry(localGroups);
+            if (passes.size() == 2 && passes.size() < kMaxOcrPasses && needThird) {
+                const bool conflict = nskry::ocr::HasLocalDisagreement(localGroups);
+                const OcrTreatment third = darkBackground && conflict ? OcrTreatment::InvertEnhanced :
+                    OcrTreatment::Binary;
+                try { runTreatment(third); }
                 catch (...) { /* Preserve prior passes. */ }
             }
         }
         if (generation != s_generation.load()) return nullptr;
+        std::vector<std::vector<RecognizedLine>> rawLines;
+        std::vector<nskry::ocr::AlignedLineGroup> groups;
+        std::vector<nskry::ocr::ArbitrationDecision> decisions;
+        try {
+            for (const auto& pass : passes) rawLines.push_back(pass.lines);
+            groups = nskry::ocr::AlignLines(rawLines);
+            decisions = nskry::ocr::Arbitrate(groups);
+            if (!decisions.empty()) {
+                lines.clear();
+                for (const auto& decision : decisions) lines.push_back(decision.line);
+            }
+        } catch (...) {
+            // Candidate logic must not make a successful Fast pass unusable.
+            lines = passes.front().lines;
+            groups.clear();
+            decisions.clear();
+        }
         std::stable_sort(lines.begin(), lines.end(), [](const RecognizedLine& a, const RecognizedLine& b) {
             return a.rect.top < b.rect.top || (a.rect.top == b.rect.top && a.rect.left < b.rect.left);
         });
+        try { DumpOcrTrace(generation, passes, lines, ElapsedMs(requestStart), groups, decisions); }
+        catch (...) { /* Optional diagnostics must not turn successful OCR into an error. */ }
         for (size_t index = 0; index < lines.size(); ++index) {
             if (!result->text.empty()) result->text += L"\r\n";
             result->text += lines[index].text;
             for (auto& word : lines[index].words) {
                 word.line = index;
-                result->words.push_back(std::move(word));
+                AddDisplayWord(result->words, std::move(word));
             }
         }
         if (result->text.empty()) result->text = L"No text was found in this image.";

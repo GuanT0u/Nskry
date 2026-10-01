@@ -99,9 +99,23 @@ if (BUILD_TESTING)
     if (MSVC)
         target_compile_options(NskryOcrSmokeTests PRIVATE /utf-8)
     endif()
-    target_link_libraries(NskryOcrSmokeTests PRIVATE gdi32 user32)
+    target_link_libraries(NskryOcrSmokeTests PRIVATE gdi32 user32 gdiplus)
     add_dependencies(NskryOcrSmokeTests nskry_ocr)
     add_test(NAME NskryOcrSmokeTests
         COMMAND NskryOcrSmokeTests $<TARGET_FILE:nskry_ocr>)
     set_tests_properties(NskryOcrSmokeTests PROPERTIES TIMEOUT 25)
+    add_test(NAME NskryOcrExplorerFixture
+        COMMAND NskryOcrSmokeTests $<TARGET_FILE:nskry_ocr> --fixture
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/ocr/fixtures/explorer_dark_zh.png" 1)
+    set_tests_properties(NskryOcrExplorerFixture PROPERTIES TIMEOUT 25)
+
+    add_executable(NskryOcrArbitrationTests
+        tests/ocr_arbitration_tests.cpp
+        plugins/nskry-ocr/src/ocr_arbitration.cpp)
+    target_include_directories(NskryOcrArbitrationTests PRIVATE plugins/nskry-ocr/src)
+    target_compile_definitions(NskryOcrArbitrationTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+    if (MSVC)
+        target_compile_options(NskryOcrArbitrationTests PRIVATE /utf-8)
+    endif()
+    add_test(NAME NskryOcrArbitrationTests COMMAND NskryOcrArbitrationTests)
 endif()

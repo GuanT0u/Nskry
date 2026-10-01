@@ -1,7 +1,7 @@
 set(NSKRY_OCR_STAGE "${CMAKE_CURRENT_BINARY_DIR}/package")
 set(NSKRY_OCR_BUNDLE "${CMAKE_SOURCE_DIR}/installer/bundled/nskry-ocr.nskryplugin")
 
-add_library(nskry_ocr SHARED src/nskry_ocr.cpp)
+add_library(nskry_ocr SHARED src/nskry_ocr.cpp src/ocr_arbitration.cpp)
 target_compile_features(nskry_ocr PRIVATE cxx_std_20)
 if (MSVC)
     target_compile_options(nskry_ocr PRIVATE /utf-8)
