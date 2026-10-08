@@ -1,5 +1,7 @@
 # OCR Candidate Arbitration Implementation Report
 
+> 2026-10-04 样例校正：Explorer 原图列名是“类型”，不是“类别”。下面保留 2026-10-01 当时的验收记录；其中“类别”不应作为真实漏字证据。预期文件现已纠正。新的局部坐标验收、原生裁剪实验与离线模型对照见 [引擎实测报告](ocr_engine_evaluation_20261004.md)。
+
 验证日期：2026-10-01。依据 `docs/Proposal/nskry_ocr_candidate_arbitration_proposal.md` 的 Step 1→9 顺序开发；每步接入后均构建 OCR plugin。测试环境为当前 Windows 主机与已安装的 Windows OCR 中文语言包。
 
 ## 1. Changed files

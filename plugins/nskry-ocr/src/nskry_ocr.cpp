@@ -1,5 +1,6 @@
 #include "nskry_plugin.h"
 #include "ocr_arbitration.h"
+#include "model/ocr_process.h"
 
 #include <windowsx.h>
 #include <commdlg.h>
@@ -34,6 +35,8 @@ namespace {
 using Microsoft::WRL::ComPtr;
 
 constexpr UINT kResultMessage = WM_APP + 0x4B1;
+constexpr UINT kProgressMessage = WM_APP + 0x4B2;
+constexpr int kCancelOcrId = 1100;
 constexpr int kTextModeId = 1001;
 constexpr int kVisualModeId = 1002;
 constexpr int kCopyAllId = 1003;
@@ -43,6 +46,7 @@ constexpr int kHighlightId = 1006;
 constexpr int kEditId = 1007;
 constexpr int kSaveId = 1008;
 constexpr int kRotateId = 1009;
+constexpr int kEngineId = 1010;
 constexpr int kMaxPreviewDimension = 3200;
 constexpr size_t kMaxOcrPasses = 3;
 
@@ -167,6 +171,7 @@ void AddDisplayWord(std::vector<WordBox>& displayWords, WordBox word) {
     for (size_t index = 0; index < word.text.size(); ++index) {
         WordBox piece = word;
         piece.text.assign(1, word.text[index]);
+        piece.joinPrevious = index > 0 || word.joinPrevious;
         piece.rect.left = left + static_cast<LONG>((right - left) * index / word.text.size());
         piece.rect.right = left + static_cast<LONG>((right - left) * (index + 1) / word.text.size());
         displayWords.push_back(std::move(piece));
@@ -264,6 +269,20 @@ double AverageQuality(const std::vector<RecognizedLine>& lines) {
     return total / lines.size();
 }
 
+enum class OcrEngineKind { Accurate, Fast };
+std::atomic<OcrEngineKind> s_preferredEngine{
+    NSKRY_OCR_MODEL_ENGINE ? OcrEngineKind::Accurate : OcrEngineKind::Fast };
+
+OcrEngineKind PreferredEngine() {
+    wchar_t value[32]{};
+    const DWORD count = ::GetEnvironmentVariableW(L"NSKRY_OCR_ENGINE", value, ARRAYSIZE(value));
+    if (count && count < ARRAYSIZE(value)) {
+        if (_wcsicmp(value, L"windows") == 0 || _wcsicmp(value, L"fast") == 0) return OcrEngineKind::Fast;
+        if (_wcsicmp(value, L"accurate") == 0) return OcrEngineKind::Accurate;
+    }
+    return s_preferredEngine.load();
+}
+
 struct OcrJobResult {
     HBITMAP bitmap{};
     uint64_t generation{};
@@ -273,6 +292,7 @@ struct OcrJobResult {
     std::wstring text;
     std::wstring error;
     std::vector<WordBox> words;
+    OcrEngineKind engine{OcrEngineKind::Fast};
     int32_t (*copyBitmapToClipboard)(HBITMAP){};
     void (*openBitmapEditor)(HBITMAP, int, int){};
 
@@ -288,6 +308,7 @@ struct OcrRequest {
     RECT anchor{};
     bool rotate{};
     uint64_t generation{};
+    OcrEngineKind engine{PreferredEngine()};
     int32_t (*copyBitmapToClipboard)(HBITMAP){};
     void (*openBitmapEditor)(HBITMAP, int, int){};
 
@@ -295,8 +316,8 @@ struct OcrRequest {
 };
 
 NskryPluginInfo kInfo{ sizeof(NskryPluginInfo), NSKRY_PLUGIN_API_VERSION,
-    L"Text recognition", L"nskry-ocr", L"0.5.4", L"Nskry Team",
-    L"Offline text recognition using Windows OCR", nullptr,
+    L"Text recognition", L"nskry-ocr", L"0.6.0", L"Nskry Team",
+    L"On-demand offline text recognition", nullptr,
     NSKRY_CAP_TOOLBAR_ACTION | NSKRY_CAP_POST_CAPTURE, {} };
 
 HWND s_dispatchWindow{};
@@ -307,6 +328,9 @@ std::thread s_worker;
 std::unique_ptr<OcrRequest> s_queuedRequest;
 std::mutex s_pendingMutex;
 std::vector<std::unique_ptr<OcrJobResult>> s_pendingResults;
+struct ProgressInfo { uint64_t generation{}; RECT anchor{}; OcrEngineKind engine{OcrEngineKind::Fast}; };
+ProgressInfo s_progressInfo;
+HWND s_progressWindow{}; // UI-thread-owned; background work posts to dispatch.
 
 bool GetBitmapSize(HBITMAP bitmap, int& width, int& height) {
     BITMAP info{};
@@ -508,13 +532,15 @@ winrt::Windows::Graphics::Imaging::SoftwareBitmap ToSoftwareBitmap(HBITMAP bitma
     return converted;
 }
 
-std::unique_ptr<OcrJobResult> RunOcr(HBITMAP displayBitmap, int displayWidth, int displayHeight, RECT anchor,
+std::unique_ptr<OcrJobResult> RunWindowsOcr(HBITMAP displayBitmap, int displayWidth, int displayHeight, RECT anchor,
                                      uint64_t generation,
                                      int32_t (*copyBitmap)(HBITMAP) = nullptr,
                                      void (*openEditor)(HBITMAP, int, int) = nullptr) {
     struct OcrBitmapGuard { HBITMAP value{}; ~OcrBitmapGuard() { if (value) ::DeleteObject(value); } } guard;
+    OcrBitmapGuard original{displayBitmap};
     auto result = std::make_unique<OcrJobResult>();
     result->bitmap = displayBitmap;
+    original.value = nullptr;
     result->generation = generation;
     result->width = displayWidth;
     result->height = displayHeight;
@@ -652,6 +678,82 @@ std::unique_ptr<OcrJobResult> RunOcr(HBITMAP displayBitmap, int displayWidth, in
     return result;
 }
 
+std::filesystem::path ModelExecutable() {
+    HMODULE module{};
+    if (!::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(&s_preferredEngine), &module)) return {};
+    wchar_t path[32768]{};
+    const DWORD count = ::GetModuleFileNameW(module, path, ARRAYSIZE(path));
+    if (!count || count >= ARRAYSIZE(path)) return {};
+    return std::filesystem::path(path).parent_path() / L"engine" / L"nskry-ocr-worker.exe";
+}
+
+void DumpModelTrace(uint64_t generation, const nskry::ocr::ModelResult& model) {
+    wchar_t path[32768]{};
+    const DWORD count = ::GetEnvironmentVariableW(L"NSKRY_OCR_TRACE_FILE", path, ARRAYSIZE(path));
+    if (!count || count >= ARRAYSIZE(path)) return;
+    std::ofstream output(std::filesystem::path(path), std::ios::binary | std::ios::app);
+    if (!output) return;
+    output << "========== OCR MODEL REQUEST " << generation << " ==========\n"
+        << "Backend: PP-OCRv4 ModelPassCount: 1 Threads: " << model.threads
+        << " LoadMs: " << model.reply.loadMs << " InferenceMs: " << model.reply.inferenceMs
+        << " TotalMs: " << model.elapsedMs << " CpuMs: " << model.reply.cpuMs
+        << " PeakWorkingSetBytes: " << model.reply.peakWorkingSetBytes << " PeakCommitBytes: " << model.reply.peakCommitBytes
+        << " ProcessId: " << model.processId << " WorkerExited: " << model.workerExited << '\n';
+    for (const auto& line : model.reply.lines) {
+        output << "Line [" << line.rect.left << ',' << line.rect.top << ',' << line.rect.right << ',' << line.rect.bottom
+            << "] " << Utf8(line.text) << "\n  Confidence: " << line.confidence << '\n';
+        for (const auto& glyph : line.glyphs)
+            output << "  Glyph [" << glyph.rect.left << ',' << glyph.rect.top << ',' << glyph.rect.right << ',' << glyph.rect.bottom
+                << "] " << Utf8(line.text.substr(glyph.offset, glyph.length)) << '\n';
+    }
+    if (!model.reply.error.empty()) output << "Error: " << Utf8(model.reply.error) << '\n';
+}
+
+std::unique_ptr<OcrJobResult> RunOcr(HBITMAP bitmap, int width, int height, RECT anchor, uint64_t generation,
+    OcrEngineKind engine, int32_t (*copyBitmap)(HBITMAP), void (*openEditor)(HBITMAP, int, int)) {
+    if (engine == OcrEngineKind::Fast) return RunWindowsOcr(bitmap, width, height, anchor, generation, copyBitmap, openEditor);
+    struct BitmapGuard { HBITMAP value; ~BitmapGuard() { if (value) ::DeleteObject(value); } } original{bitmap};
+    auto result = std::make_unique<OcrJobResult>();
+    result->bitmap = bitmap; result->width = width; result->height = height; result->anchor = anchor;
+    original.value = nullptr;
+    result->generation = generation; result->engine = engine;
+    result->copyBitmapToClipboard = copyBitmap; result->openBitmapEditor = openEditor;
+    try {
+        const auto executable = ModelExecutable();
+        nskry::ocr::ModelResult model;
+        const auto directory = executable.parent_path();
+        bool complete = !executable.empty();
+        std::error_code error;
+        for (const auto& file : {executable, directory / L"onnxruntime.dll",
+                directory / L"models/ch_PP-OCRv4_det_infer.onnx", directory / L"models/ch_PP-OCRv4_rec_infer.onnx"})
+            complete = std::filesystem::is_regular_file(file, error) && complete;
+        if (complete) model = nskry::ocr::RunModelProcess(bitmap, width, height, executable,
+            [generation] { return generation != s_generation.load(); });
+        else {
+            model.status = nskry::ocr::ModelStatus::Unavailable;
+            model.reply.error = L"The offline OCR engine or its models are missing. Reinstall the complete OCR plugin package, or select Fast OCR.";
+        }
+        if (model.status == nskry::ocr::ModelStatus::Canceled || generation != s_generation.load()) return nullptr;
+        try { DumpModelTrace(generation, model); } catch (...) {}
+        if (model.status != nskry::ocr::ModelStatus::Success) { result->error = model.reply.error; return result; }
+        for (size_t index = 0; index < model.reply.lines.size(); ++index) {
+            const auto& line = model.reply.lines[index];
+            if (!result->text.empty()) result->text += L"\r\n";
+            result->text += line.text;
+            if (line.glyphs.empty()) {
+                AddDisplayWord(result->words, {{line.rect.left, line.rect.top, line.rect.right, line.rect.bottom}, line.text, index});
+            } else for (size_t glyphIndex = 0; glyphIndex < line.glyphs.size(); ++glyphIndex) {
+                const auto& glyph = line.glyphs[glyphIndex];
+                result->words.push_back({{glyph.rect.left, glyph.rect.top, glyph.rect.right, glyph.rect.bottom},
+                    line.text.substr(glyph.offset, glyph.length), index, glyphIndex > 0});
+            }
+        }
+        if (result->text.empty()) result->text = L"No text was found in this image.";
+    } catch (...) { result->error = L"Could not complete offline OCR. Try a smaller area or select Fast OCR."; }
+    return result;
+}
+
 void ProcessRequests(std::unique_ptr<OcrRequest> request) {
     while (request) {
         HBITMAP bitmap = request->bitmap;
@@ -667,8 +769,8 @@ void ProcessRequests(std::unique_ptr<OcrRequest> request) {
         std::unique_ptr<OcrJobResult> result;
         try {
             result = RunOcr(bitmap, width, height, request->anchor, request->generation,
-                            request->copyBitmapToClipboard, request->openBitmapEditor);
-        } catch (...) { ::DeleteObject(bitmap); }
+                            request->engine, request->copyBitmapToClipboard, request->openBitmapEditor);
+        } catch (...) { /* RunOcr adopts the bitmap, including allocation/error paths. */ }
         request.reset();
         {
             std::lock_guard lock(s_workerMutex);
@@ -683,22 +785,77 @@ void ProcessRequests(std::unique_ptr<OcrRequest> request) {
     }
 }
 
+void CloseProgress() {
+    if (s_progressWindow) ::DestroyWindow(s_progressWindow);
+    s_progressWindow = nullptr;
+}
+
+LRESULT CALLBACK ProgressProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
+    if (message == WM_NCCREATE) {
+        const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lp);
+        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+    }
+    if (message == WM_CREATE) {
+        HWND label = ::CreateWindowExW(0, L"STATIC", L"Recognizing text…", WS_CHILD | WS_VISIBLE | SS_CENTER,
+            12, 12, 300, 24, hwnd, nullptr, nullptr, nullptr);
+        HWND button = ::CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            122, 46, 80, 28, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelOcrId)), nullptr, nullptr);
+        for (HWND child : {label, button}) if (child)
+            ::SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(::GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+        return 0;
+    }
+    if (message == WM_CLOSE || (message == WM_COMMAND && LOWORD(wp) == kCancelOcrId) ||
+        (message == WM_KEYDOWN && wp == VK_ESCAPE)) {
+        uint64_t expected = static_cast<uint64_t>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        const uint64_t canceledGeneration = expected;
+        if (s_generation.compare_exchange_strong(expected, expected + 1)) {
+            std::lock_guard lock(s_workerMutex);
+            if (s_queuedRequest && s_queuedRequest->generation <= canceledGeneration) s_queuedRequest.reset();
+        }
+        ::DestroyWindow(hwnd);
+        return 0;
+    }
+    if (message == WM_NCDESTROY && s_progressWindow == hwnd) s_progressWindow = nullptr;
+    return ::DefWindowProcW(hwnd, message, wp, lp);
+}
+
+void ShowProgress(const ProgressInfo& info) {
+    if (info.engine == OcrEngineKind::Fast) { CloseProgress(); return; }
+    constexpr const wchar_t* name = L"NskryOcrProgress";
+    WNDCLASSEXW wc{}; wc.cbSize = sizeof(wc); wc.lpfnWndProc = ProgressProc;
+    wc.hInstance = ::GetModuleHandleW(nullptr); wc.lpszClassName = name;
+    wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW); wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    ::RegisterClassExW(&wc);
+    MONITORINFO monitor{sizeof(monitor)};
+    RECT work{0, 0, 1280, 720};
+    if (::GetMonitorInfoW(::MonitorFromRect(&info.anchor, MONITOR_DEFAULTTONEAREST), &monitor)) work = monitor.rcWork;
+    const int x = (std::clamp)((info.anchor.left + info.anchor.right) / 2 - 170, work.left, (std::max)(work.left, work.right - 340));
+    const int y = (std::clamp)((info.anchor.top + info.anchor.bottom) / 2 - 60, work.top, (std::max)(work.top, work.bottom - 120));
+    if (!s_progressWindow) s_progressWindow = ::CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, name,
+        L"Nskry — Text recognition", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
+        x, y, 340, 120, nullptr, nullptr, wc.hInstance, reinterpret_cast<void*>(static_cast<uintptr_t>(info.generation)));
+    else {
+        ::SetWindowLongPtrW(s_progressWindow, GWLP_USERDATA, static_cast<LONG_PTR>(info.generation));
+        ::SetWindowPos(s_progressWindow, HWND_TOPMOST, x, y, 340, 120, SWP_NOACTIVATE);
+    }
+    if (s_progressWindow) ::ShowWindow(s_progressWindow, SW_SHOWNOACTIVATE);
+}
+
 bool QueueOcr(std::unique_ptr<OcrRequest> request) {
     if (!request || !request->bitmap) return false;
-    std::lock_guard lock(s_workerMutex);
-    request->generation = ++s_generation;
-    if (s_running) {
-        s_queuedRequest = std::move(request); // replaces and releases an older waiting image
-        return true;
+    {
+        std::lock_guard lock(s_workerMutex);
+        request->generation = ++s_generation;
+        s_progressInfo = {request->generation, request->anchor, request->engine};
+        if (s_running) s_queuedRequest = std::move(request);
+        else {
+            if (s_worker.joinable()) s_worker.join();
+            s_running = true;
+            try { s_worker = std::thread(ProcessRequests, std::move(request)); }
+            catch (...) { s_running = false; return false; }
+        }
     }
-    if (s_worker.joinable()) s_worker.join();
-    s_running = true;
-    try {
-        s_worker = std::thread(ProcessRequests, std::move(request));
-    } catch (...) {
-        s_running = false;
-        return false;
-    }
+    ::PostMessageW(s_dispatchWindow, kProgressMessage, 0, 0);
     return true;
 }
 
@@ -754,7 +911,8 @@ public:
         const int height = (std::max)(360, static_cast<int>(std::lround(width * 9.0 / 16.0)));
         const int x = work.left + (monitorWidth - width) / 2;
         const int y = work.top + (monitorHeight - height) / 2;
-        m_hwnd = ::CreateWindowExW(WS_EX_TOPMOST | WS_EX_APPWINDOW, kClassName, L"Nskry — Text recognition",
+        m_hwnd = ::CreateWindowExW(WS_EX_TOPMOST | WS_EX_APPWINDOW, kClassName,
+            m_result->engine == OcrEngineKind::Accurate ? L"Nskry — Text recognition (Accurate)" : L"Nskry — Text recognition (Fast)",
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME |
                 WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_CLIPCHILDREN,
             x, y, width, height, nullptr, nullptr, ::GetModuleHandleW(nullptr), this);
@@ -821,11 +979,13 @@ private:
         m_copyButton = Button(L"Copy", kCopyAllId);
         m_saveButton = Button(L"Save", kSaveId);
         m_rotateButton = Button(L"Rotate 90°", kRotateId);
+        if (NSKRY_OCR_MODEL_ENGINE)
+            m_engineButton = Button(m_result->engine == OcrEngineKind::Accurate ? L"Fast OCR" : L"Accurate OCR", kEngineId);
         m_textEdit = ::CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", m_result->error.empty() ? m_result->text.c_str() : m_result->error.c_str(),
             WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_READONLY | WS_VSCROLL | WS_HSCROLL,
             0, 0, 1, 1, m_hwnd, nullptr, nullptr, nullptr);
         for (HWND child : { m_zoomOutButton, m_zoomInButton, m_scaleLabel, m_highlightButton, m_editButton,
-                            m_copyButton, m_saveButton, m_rotateButton, m_textEdit })
+                            m_copyButton, m_saveButton, m_rotateButton, m_engineButton, m_textEdit })
             if (child) ::SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
         LayoutControls();
     }
@@ -837,8 +997,8 @@ private:
 
     RECT CanvasRect() const {
         RECT client{}; ::GetClientRect(m_hwnd, &client);
-        const int textWidth = (std::clamp)(m_textPaneWidth, 180, (std::max)(180, static_cast<int>(client.right) - 320));
-        const int leftWidth = (std::max)(320, static_cast<int>(client.right) - textWidth);
+        const int textWidth = (std::clamp)(m_textPaneWidth, 180, (std::max)(180, static_cast<int>(client.right) - 400));
+        const int leftWidth = (std::max)(400, static_cast<int>(client.right) - textWidth);
         return { 0, 0, leftWidth, (std::max)(0, static_cast<int>(client.bottom) - 40) };
     }
 
@@ -857,9 +1017,17 @@ private:
         int x = 8;
         const int y = canvas.bottom;
         const auto place = [&](HWND control, int width) { if (control) ::SetWindowPos(control, nullptr, x, y, width, 40, SWP_NOZORDER | SWP_NOACTIVATE); x += width + 4; };
-        place(m_zoomOutButton, 34); place(m_scaleLabel, 58); place(m_zoomInButton, 34);
-        place(m_highlightButton, 78); place(m_editButton, 52); place(m_copyButton, 54);
-        place(m_saveButton, 54); place(m_rotateButton, 88);
+        const bool narrow = canvas.right < 620;
+        place(m_zoomOutButton, narrow ? 30 : 34); place(m_scaleLabel, narrow ? 52 : 58); place(m_zoomInButton, narrow ? 30 : 34);
+        ::SetWindowTextW(m_highlightButton, narrow ? (m_highlights ? L"HL: on" : L"HL: off") :
+            (m_highlights ? L"Highlight" : L"Highlight: off"));
+        place(m_highlightButton, narrow ? 64 : 78); place(m_editButton, narrow ? 44 : 52); place(m_copyButton, narrow ? 44 : 54);
+        place(m_saveButton, narrow ? 44 : 54);
+        ::SetWindowTextW(m_rotateButton, narrow ? L"↻ 90°" : L"Rotate 90°");
+        place(m_rotateButton, narrow ? 52 : 88);
+        m_engineAtTop = m_engineButton && x + 106 > canvas.right;
+        if (m_engineAtTop) ::SetWindowPos(m_engineButton, nullptr, canvas.right - 112, 4, 106, 28, SWP_NOZORDER | SWP_NOACTIVATE);
+        else place(m_engineButton, 106);
         UpdateScaleLabel();
     }
 
@@ -937,7 +1105,8 @@ private:
         }
         ::SetBkMode(dc, TRANSPARENT); ::SetTextColor(dc, RGB(190, 190, 190));
         const wchar_t* hint = L"Wheel: zoom · Shift+wheel: horizontal pan · Alt+wheel: vertical pan";
-        ::TextOutW(dc, canvas.left + 10, canvas.top + 10, hint, static_cast<int>(wcslen(hint)));
+        RECT hintArea{canvas.left + 10, canvas.top + 8, canvas.right - (m_engineAtTop ? 120 : 10), canvas.top + 30};
+        ::DrawTextW(dc, hint, -1, &hintArea, DT_SINGLELINE | DT_END_ELLIPSIS | DT_VCENTER);
     }
 
     void UpdateSelection(POINT first, POINT last) {
@@ -960,7 +1129,10 @@ private:
         std::wstring text;
         size_t previousLine = static_cast<size_t>(-1);
         for (const size_t index : m_selected) {
-            if (!text.empty()) text += m_result->words[index].line == previousLine ? L" " : L"\r\n";
+            if (!text.empty()) {
+                if (m_result->words[index].line != previousLine) text += L"\r\n";
+                else if (!m_result->words[index].joinPrevious) text += L" ";
+            }
             text += m_result->words[index].text;
             previousLine = m_result->words[index].line;
         }
@@ -1002,7 +1174,7 @@ private:
         case WM_COMMAND:
             if (LOWORD(wp) == kZoomOutId) { RECT canvas = CanvasRect(); ZoomAt({ (canvas.left + canvas.right) / 2, (canvas.top + canvas.bottom) / 2 }, 1.0 / 1.2); return 0; }
             if (LOWORD(wp) == kZoomInId) { RECT canvas = CanvasRect(); ZoomAt({ (canvas.left + canvas.right) / 2, (canvas.top + canvas.bottom) / 2 }, 1.2); return 0; }
-            if (LOWORD(wp) == kHighlightId) { m_highlights = !m_highlights; ::SetWindowTextW(m_highlightButton, m_highlights ? L"Highlight: on" : L"Highlight: off"); ::InvalidateRect(m_hwnd, nullptr, FALSE); return 0; }
+            if (LOWORD(wp) == kHighlightId) { m_highlights = !m_highlights; LayoutControls(); ::InvalidateRect(m_hwnd, nullptr, FALSE); return 0; }
             if (LOWORD(wp) == kCopyAllId) { if (m_result->copyBitmapToClipboard) m_result->copyBitmapToClipboard(m_result->bitmap); return 0; }
             if (LOWORD(wp) == kEditId) {
                 if (m_result->openBitmapEditor) {
@@ -1011,13 +1183,16 @@ private:
                 return 0;
             }
             if (LOWORD(wp) == kSaveId) { SaveBitmapAsPng(m_hwnd, m_result->bitmap); return 0; }
-            if (LOWORD(wp) == kRotateId) {
+            if (LOWORD(wp) == kRotateId || LOWORD(wp) == kEngineId) {
                 auto request = std::make_unique<OcrRequest>();
                 request->bitmap = CopyBitmap(m_result->bitmap);
                 request->width = m_result->width;
                 request->height = m_result->height;
                 request->anchor = m_result->anchor;
-                request->rotate = true;
+                request->rotate = LOWORD(wp) == kRotateId;
+                request->engine = LOWORD(wp) == kEngineId ?
+                    (m_result->engine == OcrEngineKind::Accurate ? OcrEngineKind::Fast : OcrEngineKind::Accurate) : m_result->engine;
+                if (LOWORD(wp) == kEngineId) s_preferredEngine = request->engine;
                 request->copyBitmapToClipboard = m_result->copyBitmapToClipboard;
                 request->openBitmapEditor = m_result->openBitmapEditor;
                 if (QueueOcr(std::move(request))) ::DestroyWindow(m_hwnd);
@@ -1130,11 +1305,13 @@ private:
     HWND m_copyButton{};
     HWND m_saveButton{};
     HWND m_rotateButton{};
+    HWND m_engineButton{};
     HWND m_textEdit{};
     HFONT m_font{};
     HFONT m_boldFont{};
     std::unique_ptr<OcrJobResult> m_result;
     bool m_highlights{ true };
+    bool m_engineAtTop{};
     bool m_windowOwnsLifetime{};
     bool m_dragSelecting{};
     POINT m_dragStart{};
@@ -1153,6 +1330,12 @@ void ShowResult(std::unique_ptr<OcrJobResult> result) {
 }
 
 LRESULT CALLBACK DispatchProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
+    if (message == kProgressMessage) {
+        ProgressInfo info;
+        { std::lock_guard lock(s_workerMutex); info = s_progressInfo; }
+        if (info.generation == s_generation.load() && s_running.load()) ShowProgress(info);
+        return 0;
+    }
     if (message == kResultMessage) {
         std::unique_ptr<OcrJobResult> result;
         {
@@ -1165,7 +1348,10 @@ LRESULT CALLBACK DispatchProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             std::lock_guard lock(s_workerMutex);
             if (!s_running && s_worker.joinable()) s_worker.join();
         }
-        if (result && result->generation == s_generation.load()) ShowResult(std::move(result));
+        if (result && result->generation == s_generation.load()) {
+            CloseProgress();
+            ShowResult(std::move(result));
+        }
         return 0;
     }
     return ::DefWindowProcW(hwnd, message, wp, lp);
@@ -1218,6 +1404,7 @@ extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext
 }
 
 extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_shutdown() {
+    CloseProgress();
     std::thread worker;
     {
         std::lock_guard lock(s_workerMutex);
@@ -1232,6 +1419,15 @@ extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_shutdown() {
         s_pendingResults.clear();
     }
     if (s_dispatchWindow) {
+        // Result windows own bitmaps and DLL callbacks. Close them on the
+        // dispatch/UI thread before the host releases this plugin.
+        const DWORD uiThread = ::GetWindowThreadProcessId(s_dispatchWindow, nullptr);
+        ::EnumThreadWindows(uiThread, [](HWND window, LPARAM) -> BOOL {
+            wchar_t name[64]{};
+            ::GetClassNameW(window, name, ARRAYSIZE(name));
+            if (wcscmp(name, L"NskryOcrResult") == 0) ::DestroyWindow(window);
+            return TRUE;
+        }, 0);
         ::DestroyWindow(s_dispatchWindow);
         s_dispatchWindow = nullptr;
     }

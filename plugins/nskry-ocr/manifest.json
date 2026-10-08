@@ -2,9 +2,9 @@
   "manifest_version": 1,
   "id": "nskry-ocr",
   "name": "Text recognition",
-  "version": "0.5.4",
+  "version": "0.6.0",
   "author": "Nskry Team",
-  "description": "Offline text recognition using the Windows OCR language packs.",
+  "description": "On-demand offline Chinese and English text recognition, with a lightweight Windows OCR option.",
   "runtime": {
     "entry": "nskry-ocr.dll",
     "architecture": "x64",

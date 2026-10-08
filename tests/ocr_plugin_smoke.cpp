@@ -11,10 +11,82 @@ namespace {
 using PluginInit = int32_t (NSKRY_CALL*)(const NskryHostContext*);
 using PluginExecute = void (NSKRY_CALL*)(const NskryHostContext*);
 using PluginShutdown = void (NSKRY_CALL*)();
+int s_copiedWidth{}, s_copiedHeight{};
+int s_editedWidth{}, s_editedHeight{};
 
 void Notify(const wchar_t*, int) {}
-int32_t CopyToClipboard(HBITMAP) { return 0; }
-void OpenEditor(HBITMAP bitmap, int, int) { if (bitmap) ::DeleteObject(bitmap); }
+int32_t CopyToClipboard(HBITMAP bitmap) {
+    BITMAP info{};
+    if (::GetObjectW(bitmap, sizeof(info), &info) != sizeof(info)) return 0;
+    s_copiedWidth = info.bmWidth; s_copiedHeight = std::abs(info.bmHeight);
+    return 1; // Test callback does not touch the user's clipboard.
+}
+void OpenEditor(HBITMAP bitmap, int width, int height) {
+    s_editedWidth = width; s_editedHeight = height;
+    if (bitmap) ::DeleteObject(bitmap);
+}
+
+HWND FindOwnWindow(const wchar_t* wantedClass) {
+    struct Search { const wchar_t* wanted; HWND result{}; } search{wantedClass};
+    ::EnumWindows([](HWND window, LPARAM parameter) -> BOOL {
+        DWORD pid{}; ::GetWindowThreadProcessId(window, &pid);
+        if (pid != ::GetCurrentProcessId()) return TRUE;
+        wchar_t name[64]{}; ::GetClassNameW(window, name, ARRAYSIZE(name));
+        auto& search = *reinterpret_cast<Search*>(parameter);
+        if (wcscmp(name, search.wanted) != 0) return TRUE;
+        search.result = window; return FALSE;
+    }, reinterpret_cast<LPARAM>(&search));
+    return search.result;
+}
+HWND FindOwnResult() { return FindOwnWindow(L"NskryOcrResult"); }
+HWND WaitForResult(std::wstring& text) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (std::chrono::steady_clock::now() < deadline) {
+        MSG message{};
+        while (::PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+            ::TranslateMessage(&message); ::DispatchMessageW(&message);
+        }
+        if (HWND result = FindOwnResult()) {
+            HWND edit = ::FindWindowExW(result, nullptr, L"EDIT", nullptr);
+            const int length = edit ? ::GetWindowTextLengthW(edit) : 0;
+            text.resize(length + 1);
+            if (edit) ::GetWindowTextW(edit, text.data(), length + 1);
+            text.resize(length); return result;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return nullptr;
+}
+bool InClient(HWND parent, HWND child) {
+    RECT bounds{}, client{}; ::GetClientRect(parent, &client);
+    if (!child || !::IsWindowVisible(child) || !::GetWindowRect(child, &bounds)) return false;
+    ::MapWindowPoints(nullptr, parent, reinterpret_cast<POINT*>(&bounds), 2);
+    return bounds.left >= 0 && bounds.top >= 0 && bounds.right <= client.right && bounds.bottom <= client.bottom;
+}
+bool Workflow(HWND& result, std::wstring& text, bool missingEngine) {
+    // Public UI workflow: original bitmap callbacks, small-window controls,
+    // engine switching, rotation. Only windows in this test process are used.
+    ::SetWindowPos(result, nullptr, 0, 0, 640, 360, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    for (int id : {1004, 1005, 1006, 1007, 1003, 1008, 1009, 1010})
+        if (!InClient(result, ::GetDlgItem(result, id))) return false;
+    ::SendMessageW(result, WM_COMMAND, 1003, 0);
+    ::SendMessageW(result, WM_COMMAND, 1007, 0);
+    ::SendMessageW(result, WM_COMMAND, 1003, 0);
+    if (s_copiedWidth != 640 || s_copiedHeight != 240 || s_editedWidth != 640 || s_editedHeight != 240) return false;
+    if (missingEngine && text.find(L"missing") == std::wstring::npos) return false;
+    ::SendMessageW(result, WM_COMMAND, 1010, 0); // Accurate -> Fast.
+    result = WaitForResult(text);
+    if (!result || text.find(L"Nskry") == std::wstring::npos) return false;
+    if (missingEngine) return true;
+    ::SendMessageW(result, WM_COMMAND, 1010, 0); // Fast -> Accurate.
+    result = WaitForResult(text);
+    if (!result || text.find(L"Nskry") == std::wstring::npos) return false;
+    ::SendMessageW(result, WM_COMMAND, 1009, 0); // Rotate and re-recognize.
+    result = WaitForResult(text);
+    if (!result || text.find(L"Nskry") == std::wstring::npos) return false;
+    ::SendMessageW(result, WM_COMMAND, 1003, 0);
+    return s_copiedWidth == 240 && s_copiedHeight == 640;
+}
 
 HBITMAP MakeTestBitmap() {
     BITMAPINFO info{};
@@ -55,7 +127,10 @@ HBITMAP LoadFixtureBitmap(const wchar_t* path) {
 
 int wmain(int argc, wchar_t** argv) {
     const bool fixtureMode = argc == 5 && wcscmp(argv[2], L"--fixture") == 0;
-    if (argc != 2 && !fixtureMode) return 2;
+    const bool workflow = (argc == 3 || argc == 4) && wcscmp(argv[2], L"--workflow") == 0;
+    const bool missingEngine = workflow && argc == 4 && wcscmp(argv[3], L"--missing-engine") == 0;
+    if (argc != 2 && !fixtureMode && !workflow) return 2;
+    if (workflow) ::SetEnvironmentVariableW(L"NSKRY_OCR_ENGINE", L"accurate");
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken{};
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) return 2;
@@ -76,6 +151,18 @@ int wmain(int argc, wchar_t** argv) {
     context.copyBitmapToClipboard = CopyToClipboard;
     context.openBitmapEditor = OpenEditor;
     if (!init(&context)) return 5;
+    if (workflow && !missingEngine) {
+        execute(&context);
+        // Dispatch the posted progress UI, then cancel before model loading.
+        MSG message{};
+        while (::PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+            ::TranslateMessage(&message); ::DispatchMessageW(&message);
+        }
+        HWND progress = FindOwnWindow(L"NskryOcrProgress");
+        if (!progress) return 8;
+        ::SendMessageW(progress, WM_COMMAND, 1100, 0);
+        if (FindOwnWindow(L"NskryOcrProgress") || FindOwnResult()) return 9;
+    }
     bool resultShown = false;
     bool recognizedText = false;
     std::wstring observedText;
@@ -87,26 +174,10 @@ int wmain(int argc, wchar_t** argv) {
             execute(&context);
         }
         resultShown = false;
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
-        while (std::chrono::steady_clock::now() < deadline) {
-            MSG message{};
-            while (::PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
-                ::TranslateMessage(&message);
-                ::DispatchMessageW(&message);
-            }
-            if (HWND result = ::FindWindowW(L"NskryOcrResult", nullptr)) {
-                if (HWND edit = ::FindWindowExW(result, nullptr, L"EDIT", nullptr)) {
-                    const int length = ::GetWindowTextLengthW(edit);
-                    observedText.resize(length + 1);
-                    ::GetWindowTextW(edit, observedText.data(), length + 1);
-                    observedText.resize(length);
-                    recognizedText = observedText.find(L"Nskry") != std::wstring::npos;
-                }
-                ::SendMessageW(result, WM_CLOSE, 0, 0);
-                resultShown = true;
-                break;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        if (HWND result = WaitForResult(observedText)) {
+            resultShown = !workflow || Workflow(result, observedText, missingEngine);
+            recognizedText = observedText.find(L"Nskry") != std::wstring::npos;
+            if (result && !workflow) ::SendMessageW(result, WM_CLOSE, 0, 0);
         }
         if (fixtureMode) {
             const int bytes = ::WideCharToMultiByte(CP_UTF8, 0, observedText.data(),
@@ -120,6 +191,7 @@ int wmain(int argc, wchar_t** argv) {
     }
 
     shutdown();
+    if (workflow && (FindOwnResult() || FindOwnWindow(L"NskryOcrProgress"))) return 10;
     ::DeleteObject(bitmap);
     ::FreeLibrary(module);
     Gdiplus::GdiplusShutdown(gdiplusToken);

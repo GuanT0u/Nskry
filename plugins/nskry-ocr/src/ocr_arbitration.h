@@ -12,6 +12,7 @@ struct WordBox {
     RECT rect{};
     std::wstring text;
     size_t line{};
+    bool joinPrevious{}; // Contiguous characters from the same recognized text.
 };
 
 struct RecognizedLine {

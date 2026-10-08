@@ -1,0 +1,7 @@
+[
+  {"name": "breadcrumb", "rect": [338, 65, 412, 98], "text": "此电脑"},
+  {"name": "toolbar_view", "rect": [607, 121, 698, 162], "text": "查看"},
+  {"name": "column_type", "rect": [731, 170, 800, 203], "text": "类型"},
+  {"name": "breadcrumb_build", "rect": [751, 64, 809, 98], "text": "build"},
+  {"name": "folder_type", "rect": [732, 210, 803, 240], "text": "文件夹"}
+]

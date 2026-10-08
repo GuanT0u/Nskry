@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 project(Nskry LANGUAGES CXX)
+# Keep host/test output locations stable when OpenCV sets legacy bin defaults.
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
 include(CTest)
 
@@ -73,6 +75,42 @@ add_subdirectory(plugins/nskry-scroll)
 add_subdirectory(plugins/nskry-ocr)
 
 if (BUILD_TESTING)
+    add_executable(NskryOcrWireTests tests/ocr_wire_ctc_tests.cpp)
+    target_link_libraries(NskryOcrWireTests PRIVATE nskry_ocr_wire)
+    if (MSVC)
+        target_compile_options(NskryOcrWireTests PRIVATE /utf-8)
+    endif()
+    add_test(NAME NskryOcrWireTests COMMAND NskryOcrWireTests)
+    add_executable(NskryOcrFakeWorker tests/ocr_fake_worker.cpp)
+    target_compile_definitions(NskryOcrFakeWorker PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    add_executable(NskryOcrProcessFailureTests tests/ocr_process_failure_tests.cpp plugins/nskry-ocr/src/model/ocr_process.cpp)
+    target_link_libraries(NskryOcrProcessFailureTests PRIVATE nskry_ocr_wire gdi32 user32)
+    add_test(NAME NskryOcrProcessFailureTests COMMAND NskryOcrProcessFailureTests $<TARGET_FILE:NskryOcrFakeWorker>)
+    set_tests_properties(NskryOcrProcessFailureTests PROPERTIES TIMEOUT 15)
+    if (NSKRY_OCR_MODEL_ENGINE)
+        add_executable(NskryOcrModelTests tests/ocr_model_tests.cpp src/core/json.cpp plugins/nskry-ocr/src/model/ocr_process.cpp)
+        target_include_directories(NskryOcrModelTests PRIVATE src)
+        target_link_libraries(NskryOcrModelTests PRIVATE nskry_ocr_wire gdiplus gdi32 user32)
+        if (MSVC)
+            target_compile_options(NskryOcrModelTests PRIVATE /utf-8)
+        endif()
+        add_dependencies(NskryOcrModelTests nskry_ocr_worker nskry_ocr_assets)
+        add_test(NAME NskryOcrModelExplorer COMMAND NskryOcrModelTests $<TARGET_FILE:nskry_ocr_worker>
+            "${CMAKE_SOURCE_DIR}/tests/ocr/fixtures/explorer_dark_zh.png" --regions
+            "${CMAKE_SOURCE_DIR}/tests/ocr/fixtures/explorer_dark_zh.regions.json" 1 "${CMAKE_BINARY_DIR}/ocr_model_explorer_test.json")
+        add_test(NAME NskryOcrModelParagraph COMMAND NskryOcrModelTests $<TARGET_FILE:nskry_ocr_worker>
+            "${CMAKE_SOURCE_DIR}/tests/ocr/fixtures/paragraph_dark_zh.png" --content
+            "${CMAKE_SOURCE_DIR}/tests/ocr/fixtures/paragraph_dark_zh.expected.txt" 1 "${CMAKE_BINARY_DIR}/ocr_model_paragraph_test.json")
+        set_tests_properties(NskryOcrModelExplorer NskryOcrModelParagraph PROPERTIES TIMEOUT 30)
+    endif()
+    # Opt-in diagnostic matrix; never runs as part of normal build/CTest.
+    add_executable(NskryOcrNativeProbe EXCLUDE_FROM_ALL tests/ocr_native_probe.cpp)
+    target_compile_definitions(NskryOcrNativeProbe PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+    target_link_libraries(NskryOcrNativeProbe PRIVATE gdiplus windowsapp)
+    if (MSVC)
+        target_compile_options(NskryOcrNativeProbe PRIVATE /utf-8)
+    endif()
+
     add_executable(NskryCoreTests
         tests/json_manifest_tests.cpp
         src/core/json.cpp
@@ -104,6 +142,13 @@ if (BUILD_TESTING)
     add_test(NAME NskryOcrSmokeTests
         COMMAND NskryOcrSmokeTests $<TARGET_FILE:nskry_ocr>)
     set_tests_properties(NskryOcrSmokeTests PROPERTIES TIMEOUT 25)
+    add_test(NAME NskryOcrFastSmoke
+        COMMAND NskryOcrSmokeTests $<TARGET_FILE:nskry_ocr>)
+    set_tests_properties(NskryOcrFastSmoke PROPERTIES TIMEOUT 25 ENVIRONMENT "NSKRY_OCR_ENGINE=fast")
+    if (NSKRY_OCR_MODEL_ENGINE)
+        add_test(NAME NskryOcrWorkflow COMMAND NskryOcrSmokeTests $<TARGET_FILE:nskry_ocr> --workflow)
+        set_tests_properties(NskryOcrWorkflow PROPERTIES TIMEOUT 90)
+    endif()
     add_test(NAME NskryOcrExplorerFixture
         COMMAND NskryOcrSmokeTests $<TARGET_FILE:nskry_ocr> --fixture
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/ocr/fixtures/explorer_dark_zh.png" 1)

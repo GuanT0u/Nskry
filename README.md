@@ -11,7 +11,7 @@
 - **PiP 实时监控** — 框选任意窗口区域，生成画中画实时镜像
 - **窗口缩放** — 固定截图和 PiP 窗口拖四角保持原始比例，拖四边自由缩放
 - **长截图** — 手动或自动滚动采集页面，带实时预览；可调整裁剪范围并编辑结果
-- **OCR 文字识别** — 使用 Windows 内置 OCR 离线识别截图，可查看识别文字或在图片上选择识别结果
+- **OCR 文字识别** — 默认使用按需启动的 PP-OCRv4 离线 CPU 引擎；保留 Windows OCR 快速选项，可查看或在图片上选择文字
 - **截图标注** — 矩形、椭圆、箭头、画笔、马赛克和文字工具，支持撤销/重做
 - **系统托盘** — 后台运行，托盘右键菜单快捷操作
 - **插件管理** — 插件按需加载，可在设置中管理；官方长截图和 OCR 插件随安装器提供
@@ -24,15 +24,20 @@
 | `Ctrl+Alt+Q` | 退出 |
 | `ESC` / 右键 | 取消当前截图或关闭当前操作 |
 
-快捷键可在设置中调整。OCR 使用 Windows 提供的 OCR 语言包；可识别的语言取决于系统中已安装的语言组件。长截图和 OCR 插件可在设置的插件页面启用或管理。
+快捷键可在设置中调整。精确 OCR 自带中英文模型，任务结束后识别进程退出；快速 OCR 使用 Windows 已安装的语言组件。长截图和 OCR 插件可在设置的插件页面启用或管理。
 
 ## 构建
 
 ```powershell
-# 需要 Visual Studio (MSVC) + CMake + Ninja
+# 需要 x64 Visual Studio (MSVC) + CMake + Ninja；准备依赖需要 Python 3.11+
+python tools/prepare_ocr_dependencies.py
 $vcvars = "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat"
 cmd /c "`"$vcvars`" > nul 2>&1 && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build"
 ```
+
+依赖仅下载到 `build/ocr-deps/`，并校验固定 SHA-256；运行时不需要 Python、网络或 GPU。
+只构建 Windows OCR 可传入 `-DNSKRY_OCR_MODEL_ENGINE=OFF`，不需要上述依赖准备。
+完整 OCR 插件包必须包含 `engine/`，不能仅复制 DLL。安装与资源限制见 [OCR 插件说明](plugins/nskry-ocr/README.md)。
 
 如需构建安装器，先完成上述 CMake 构建。构建过程会生成官方插件包：
 `installer/bundled/nskry-scroll.nskryplugin` 和
@@ -46,7 +51,7 @@ iscc installer/NskrySetup.iss
 
 ## 技术栈
 
-C++20 · Win32 API · D3D11 · Windows.Graphics.Capture · Windows OCR · GDI+
+C++20 · Win32 API · D3D11 · Windows.Graphics.Capture · Windows OCR · ONNX Runtime CPU · GDI+
 
 ## 文档
 
