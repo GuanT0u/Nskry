@@ -1,9 +1,15 @@
 # Nskry — 插件化架构设计与功能路线图
 
+> 历史设计档案。2026-10-12 核对：Stage A–G、基础编辑、长截图和 OCR 已实现；翻译和录屏尚未交付。
+> 下方早期 SDK、目录布局、`nskry-edit.dll` 和技术预选描述保留作演进记录，不能作为当前交付规范。
+> 当前编辑器/标注属于 Core，公开 ABI 为 API 2；安装发现读取 Registry/manifest，DLL 按需加载。
+> 精确 OCR 使用一次性离线模型 worker，Windows OCR 为 Fast 选项。
+> 当前状态见 [维护指南](HANDOFF.md)、[Core 契约](architecture/core_plugin_contract.md) 和 [插件规范](plugins/development_standard.md)。
+
 ## 1. 设计理念
 
 Nskry 的核心理念是 **"极致轻量的可组装工具箱"**：
-- **核心极小**：主程序仅包含截图框选 + PiP 实时监控，体积 < 200KB
+- **核心轻量**：控制后台稳态资源；早期体积目标不代表当前发行物测量结果
 - **按需扩展**：截长图、OCR、翻译、录屏等功能各自独立为插件 DLL，用户按需下载
 - **开放生态**：提供清晰的 C++ 插件开发 SDK，社区可自行开发插件
 
@@ -13,7 +19,7 @@ Nskry 的核心理念是 **"极致轻量的可组装工具箱"**：
 
 ```mermaid
 graph TB
-    subgraph Core ["nskry.exe — 核心 (~150KB)"]
+    subgraph Core ["早期 Core 设计（历史）"]
         HK["全局热键管理"]
         SEL["SelectionWindow<br/>全屏框选"]
         WE["WindowEnumerator<br/>窗口缓存"]
@@ -182,7 +188,7 @@ extern "C" {
 ## 5. 目录结构规划
 
 ```
-d:\codes\Nskry\
+Nskry/
 ├── CMakeLists.txt                 # 顶层 CMake
 ├── sdk/
 │   └── nskry_plugin.h             # 公开的插件 SDK 头文件
@@ -226,7 +232,7 @@ d:\codes\Nskry\
 
 | 功能模块 | 技术方案 | 说明 |
 |----------|----------|------|
-| 截图编辑 | Direct2D + DirectWrite | GPU 加速 2D 绘制，比 GDI+ 快 10 倍 |
+| 截图编辑 | Direct2D + DirectWrite（早期预选） | 当前采用 Win32/GDI+；未经对照测试不承诺性能倍数 |
 | 截长图 | `SendMessage(WM_VSCROLL)` + WGC 多帧拼接 | 模拟滚动，逐帧捕获后 GPU 拼接 |
 | OCR | `Windows.Media.Ocr` (内置) | 零依赖，支持中英日韩，Win10+ 自带 |
 | 翻译 | 本地 LLM 或云端 API (可配置) | 插件自行处理网络请求 |

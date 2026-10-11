@@ -24,8 +24,8 @@ target_include_directories(nskry_ocr PRIVATE ${CMAKE_SOURCE_DIR}/sdk)
 target_link_libraries(nskry_ocr PRIVATE nskry_ocr_wire gdi32 user32 ole32 windowsapp msimg32 comdlg32 windowscodecs)
 set_target_properties(nskry_ocr PROPERTIES OUTPUT_NAME "nskry-ocr" RUNTIME_OUTPUT_DIRECTORY "${NSKRY_OCR_STAGE}")
 
-set(NSKRY_OCR_PACKAGE_FILES manifest.json nskry-ocr.dll)
-set(NSKRY_OCR_PACKAGE_DEPS nskry_ocr "$<TARGET_FILE:nskry_ocr>" "${CMAKE_CURRENT_SOURCE_DIR}/manifest.json")
+set(NSKRY_OCR_PACKAGE_FILES manifest.json nskry-ocr.dll LICENSE COPYING PLUGIN_EXCEPTION)
+set(NSKRY_OCR_PACKAGE_DEPS nskry_ocr "$<TARGET_FILE:nskry_ocr>" "${CMAKE_CURRENT_SOURCE_DIR}/manifest.json" "${CMAKE_SOURCE_DIR}/LICENSE" "${CMAKE_SOURCE_DIR}/COPYING" "${CMAKE_SOURCE_DIR}/PLUGIN_EXCEPTION")
 if (NSKRY_OCR_MODEL_ENGINE)
     add_library(nskry_ocr_inference STATIC src/model/ocr_inference.cpp "${NSKRY_CLIPPER_DIR}/src/clipper.cpp")
     target_compile_features(nskry_ocr_inference PUBLIC cxx_std_20)
@@ -87,6 +87,7 @@ endif()
 add_custom_command(OUTPUT "${NSKRY_OCR_BUNDLE}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${NSKRY_OCR_STAGE}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/manifest.json" "${NSKRY_OCR_STAGE}/manifest.json"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/LICENSE" "${CMAKE_SOURCE_DIR}/COPYING" "${CMAKE_SOURCE_DIR}/PLUGIN_EXCEPTION" "${NSKRY_OCR_STAGE}"
     COMMAND ${CMAKE_COMMAND} -E tar cf "${NSKRY_OCR_BUNDLE}" --format=zip ${NSKRY_OCR_PACKAGE_FILES}
     DEPENDS ${NSKRY_OCR_PACKAGE_DEPS}
     WORKING_DIRECTORY "${NSKRY_OCR_STAGE}"

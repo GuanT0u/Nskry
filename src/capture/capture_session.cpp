@@ -30,6 +30,7 @@ CaptureSession::CaptureSession(
 
     // --- 2. Free-threaded frame pool (event-driven, no dispatcher needed) ---
     auto sz = m_item.Size();
+    m_poolWidth = sz.Width; m_poolHeight = sz.Height;
     m_pool = winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool
         ::CreateFreeThreaded(
             m_device->WinRTDevice(),
@@ -46,8 +47,15 @@ CaptureSession::CaptureSession(
     try { m_session.IsCursorCaptureEnabled(false); } catch (...) {}
 
     // --- 4. Subscribe to events --------------------------------------------
-    m_frameToken  = m_pool.FrameArrived({ this, &CaptureSession::OnFrameArrived });
-    m_closedToken = m_item.Closed({ this, &CaptureSession::OnItemClosed });
+    m_eventGate = std::make_shared<CallbackGate<CaptureSession>>(this);
+    try {
+        m_frameToken = m_pool.FrameArrived([gate = m_eventGate](auto const& sender, auto const& args) {
+            gate->Run([&](CaptureSession& owner) { owner.OnFrameArrived(sender, args); });
+        });
+        m_closedToken = m_item.Closed([gate = m_eventGate](auto const& sender, auto const& args) {
+            gate->Run([&](CaptureSession& owner) { owner.OnItemClosed(sender, args); });
+        });
+    } catch (...) { Stop(); throw; }
 }
 
 CaptureSession::~CaptureSession() {
@@ -69,25 +77,21 @@ void CaptureSession::Stop() {
     if (m_stopped.exchange(true)) return;
     m_capturing.store(false);
 
-    // Unsubscribe before closing (prevents callbacks during teardown)
-    if (m_pool)    m_pool.FrameArrived(m_frameToken);
-    if (m_item)    m_item.Closed(m_closedToken);
-
-    // A free-threaded frame callback may already have entered before event
-    // revocation completed.  Wait for it (including the consumer callback) so
-    // CleanupPip cannot release PipWindow while RenderFrame is still running.
-    {
-        std::unique_lock lock(m_frameDrainMutex);
-        m_frameDrainCv.wait(lock, [this] { return m_activeFrameCallbacks.load() == 0; });
-    }
+    // Stop accepting owner access and drain existing leases before teardown.
+    // Delegate revocation alone is not a barrier for previously queued calls.
+    if (m_eventGate) m_eventGate->Close();
+    try { if (m_pool) m_pool.FrameArrived(m_frameToken); } catch (...) {}
+    try { if (m_item) m_item.Closed(m_closedToken); } catch (...) {}
 
     {
         std::lock_guard lock(m_callbackMutex);
         m_callback = {};
+        m_closedCallback = {};
     }
 
-    if (m_session) { m_session.Close(); m_session = nullptr; }
-    if (m_pool)    { m_pool.Close();    m_pool    = nullptr; }
+    try { if (m_session) m_session.Close(); } catch (...) {}
+    try { if (m_pool) m_pool.Close(); } catch (...) {}
+    m_session = nullptr; m_pool = nullptr;
     m_item        = nullptr;
     m_cropTexture = nullptr;
 }
@@ -102,7 +106,11 @@ void CaptureSession::SetFrameCallback(FrameCallback cb) {
 }
 
 void CaptureSession::SetCropRegion(CropRegion crop) {
+    std::lock_guard lock(m_processingMutex);
     m_crop = crop;
+}
+void CaptureSession::SetClosedCallback(std::function<void()> cb) {
+    std::lock_guard lock(m_callbackMutex); m_closedCallback = std::move(cb);
 }
 
 // ---------------------------------------------------------------------------
@@ -113,22 +121,27 @@ void CaptureSession::OnFrameArrived(
     winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool const& sender,
     winrt::Windows::Foundation::IInspectable const&)
 {
-    m_activeFrameCallbacks.fetch_add(1);
-    struct DrainGuard {
-        CaptureSession* owner;
-        ~DrainGuard() {
-            if (owner->m_activeFrameCallbacks.fetch_sub(1) == 1)
-                owner->m_frameDrainCv.notify_all();
-        }
-    } drain{ this };
-
     if (!m_capturing.load()) return;
 
     try {
+        std::lock_guard processingLock(m_processingMutex);
+        if (!m_capturing.load()) return;
         auto frame = sender.TryGetNextFrame();
         if (!frame) return;
-        ProcessFrame(frame);
-        frame.Close();      // return the buffer to the pool
+        ++m_acquired;
+        struct FrameCloser {
+            decltype(frame)& value; bool active = true;
+            ~FrameCloser() { if (active) try { value.Close(); } catch (...) {} }
+        } closer{frame};
+        if (m_processingEnabled.load()) {
+            const auto size = frame.ContentSize();
+            if (size.Width > 0 && size.Height > 0 && (size.Width != m_poolWidth || size.Height != m_poolHeight)) {
+                frame.Close(); closer.active = false;
+                sender.Recreate(m_device->WinRTDevice(),
+                    winrt::Windows::Graphics::DirectX::DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, size);
+                m_poolWidth = size.Width; m_poolHeight = size.Height;
+            } else { ProcessFrame(frame); ++m_processed; }
+        }
     } catch (...) {
         // Capture failures must not escape a WinRT thread-pool callback.
         // Keep the session alive; a later frame may still be valid, and Stop()
@@ -140,7 +153,12 @@ void CaptureSession::OnItemClosed(
     winrt::Windows::Graphics::Capture::GraphicsCaptureItem const&,
     winrt::Windows::Foundation::IInspectable const&)
 {
-    Stop();
+    // Never synchronously tear down/drain from a capture event callback.
+    m_capturing.store(false);
+    {
+        std::lock_guard lock(m_callbackMutex);
+        try { if (!m_stopped.load() && m_closedCallback) m_closedCallback(); } catch (...) {}
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -164,11 +182,15 @@ void CaptureSession::ProcessFrame(
 
     // --- Clamp crop to actual content size ---------------------------------
     auto cs = frame.ContentSize();
+    D3D11_TEXTURE2D_DESC sourceDesc{}; srcTex->GetDesc(&sourceDesc);
+    cs.Width = (std::min)(cs.Width, static_cast<int>(sourceDesc.Width));
+    cs.Height = (std::min)(cs.Height, static_cast<int>(sourceDesc.Height));
 
     const int srcX  = (std::max)(0, (std::min)(m_crop.x, cs.Width));
     const int srcY  = (std::max)(0, (std::min)(m_crop.y, cs.Height));
-    const int cropW = (std::max)(1, (std::min)(m_crop.width,  cs.Width  - srcX));
-    const int cropH = (std::max)(1, (std::min)(m_crop.height, cs.Height - srcY));
+    const int cropW = (std::min)(m_crop.width, cs.Width - srcX);
+    const int cropH = (std::min)(m_crop.height, cs.Height - srcY);
+    if (cropW <= 0 || cropH <= 0) return;
 
     // --- Ensure intermediate crop texture ----------------------------------
     EnsureCropTexture(static_cast<UINT>(cropW), static_cast<UINT>(cropH));

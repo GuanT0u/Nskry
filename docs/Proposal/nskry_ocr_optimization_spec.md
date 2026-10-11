@@ -1,5 +1,10 @@
 # nskry-ocr OCR 优化方案
 
+> 历史 Windows OCR 预处理设计，2026-10-12 补充范围说明：当前默认精确模式使用一次性离线模型 worker，
+> 本文的 Fast/Enhanced/最多三轮约束适用于 Windows OCR 分支。
+> 已实现的仲裁和资源生命周期见 [原生 worker 报告](../report/devProgress/ocr_native_worker_implementation_report.md)。
+> 下方性能推断是设计依据，未构成低配时延或所有场景准确率保证。
+
 ## 1. 性能结论
 
 这些优化会增加一定 CPU 和 RAM
@@ -526,7 +531,7 @@ Final
 
 ------------------------------------------------------------------------
 
-## 17. Agent 实现方式
+## 17. 分阶段实施与回归
 
 不要一次性重写整个 `nskry-ocr`。
 

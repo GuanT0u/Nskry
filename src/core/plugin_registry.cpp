@@ -174,8 +174,11 @@ bool PluginRegistry::UpsertInstalled(PluginManifest manifest, const std::wstring
 bool PluginRegistry::SetEnabled(const std::wstring& pluginId, bool enabled) {
     PluginRecord* record = Find(pluginId);
     if (!record) return false;
+    const bool previous = record->enabled;
     record->enabled = enabled;
-    return Save();
+    if (Save()) return true;
+    record->enabled = previous;
+    return false;
 }
 
 void PluginRegistry::SetLoaded(const std::wstring& pluginId, bool loaded) {

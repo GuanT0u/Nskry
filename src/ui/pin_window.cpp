@@ -9,7 +9,7 @@ namespace nskry {
 namespace {
 constexpr UINT_PTR kQuickHideTimer = 0x51A;
 constexpr int kQuickEditId = 7101;
-constexpr int kQuickOcrId = 7102;
+constexpr int kQuickImageActionId = 7102;
 constexpr int kQuickMinimizeId = 7103;
 constexpr int kQuickCloseId = 7104;
 }
@@ -36,9 +36,9 @@ static int GetPngEncoderClsidHelper(CLSID* pClsid) {
 }
 
 PinWindow::PinWindow(HBITMAP bitmap, int width, int height, CloseCallback closed,
-                     ImageActions imageActions, RECT initialScreenRect)
+              ImageActions imageActions, RECT initialScreenRect, ImageEditorCallback editor)
     : m_bitmap(bitmap), m_width(width), m_height(height), m_closed(std::move(closed)),
-      m_imageActions(std::move(imageActions)),
+      m_imageActions(std::move(imageActions)), m_editor(std::move(editor)),
       m_hasInitialScreenRect(initialScreenRect.right > initialScreenRect.left && initialScreenRect.bottom > initialScreenRect.top)
 {
     std::call_once(s_classOnce, [] {
@@ -98,6 +98,7 @@ PinWindow::PinWindow(HBITMAP bitmap, int width, int height, CloseCallback closed
 }
 
 PinWindow::~PinWindow() {
+    m_visualStyle.reset();
     m_destroying = true;
     CommitTextEdit();
     if (m_font)     { ::DeleteObject(m_font); m_font = nullptr; }
@@ -155,6 +156,12 @@ LRESULT CALLBACK PinWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+    case WM_ENTERSIZEMOVE: if (m_visualStyle) m_visualStyle->BeginSizeMove(); break;
+    case WM_EXITSIZEMOVE: if (m_visualStyle) m_visualStyle->EndSizeMove(); break;
+    case WM_WINDOWPOSCHANGED: if (m_visualStyle) m_visualStyle->Sync(); break;
+    case WM_DPICHANGED:
+        if (m_visualStyle) m_visualStyle->Sync();
+        break;
     case WM_CREATE:
         {
             const COLORREF noBorder = DWMWA_COLOR_NONE;
@@ -353,7 +360,7 @@ LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_COMMAND:
         switch (LOWORD(wp)) {
         case kQuickEditId: EnterEditMode(); return 0;
-        case kQuickOcrId: RunTextRecognition(); return 0;
+        case kQuickImageActionId: RunQuickImageAction(); return 0;
         case kQuickMinimizeId: ShowQuickActions(false); ::ShowWindow(hwnd, SW_MINIMIZE); return 0;
         case kQuickCloseId: ::DestroyWindow(hwnd); return 0;
         default: break;
@@ -406,6 +413,7 @@ LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 1;
 
     case WM_DESTROY:
+        m_visualStyle.reset();
         return 0;
     }
     return ::DefWindowProcW(hwnd, msg, wp, lp);
@@ -415,8 +423,8 @@ void PinWindow::CreateQuickActions(HWND parent) {
     m_quickFont = ::CreateFontW(-9, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-    const wchar_t* labels[] = { L"\x270E", L"T", L"\x2212", L"\x00D7" };
-    const int ids[] = { kQuickEditId, kQuickOcrId, kQuickMinimizeId, kQuickCloseId };
+    const wchar_t* labels[] = { L"\x270E", L"\x2026", L"\x2212", L"\x00D7" };
+    const int ids[] = { kQuickEditId, kQuickImageActionId, kQuickMinimizeId, kQuickCloseId };
     for (size_t index = 0; index < 4; ++index) {
         m_quickButtons[index] = ::CreateWindowExW(WS_EX_LAYERED, L"BUTTON", labels[index],
             WS_CHILD | BS_PUSHBUTTON, 0, 0, 16, 14, parent,
@@ -460,23 +468,24 @@ bool PinWindow::IsQuickActionPoint(POINT clientPoint) const {
 void PinWindow::ShowQuickActions(bool show) {
     if (m_isEditing) show = false;
     bool visibilityMatches = m_quickActionsVisible == show;
-    for (HWND button : m_quickButtons)
-        if (button && (::IsWindowVisible(button) != FALSE) != show) visibilityMatches = false;
+    for (size_t i = 0; i < std::size(m_quickButtons); ++i)
+        if (m_quickButtons[i] && (::IsWindowVisible(m_quickButtons[i]) != FALSE) !=
+            (show && (i != 1 || !m_imageActions.empty()))) visibilityMatches = false;
     if (visibilityMatches) return;
     m_quickActionsVisible = show;
-    for (HWND button : m_quickButtons) if (button) ::ShowWindow(button, show ? SW_SHOWNOACTIVATE : SW_HIDE);
+    for (size_t i = 0; i < std::size(m_quickButtons); ++i) if (m_quickButtons[i])
+        ::ShowWindow(m_quickButtons[i], show && (i != 1 || !m_imageActions.empty()) ? SW_SHOWNOACTIVATE : SW_HIDE);
     if (show) ::SetTimer(m_hwnd, kQuickHideTimer, 120, nullptr);
     else if (m_hwnd) ::KillTimer(m_hwnd, kQuickHideTimer);
 }
 
-void PinWindow::RunTextRecognition() {
-    const auto action = std::find_if(m_imageActions.begin(), m_imageActions.end(), [](const ImageAction& value) {
-        return value.id == L"nskry-ocr" || value.label == L"Text recognition";
-    });
-    if (action == m_imageActions.end() || !action->invoke) return;
+void PinWindow::RunQuickImageAction() {
+    const auto index = ChooseImageAction(m_hwnd, m_imageActions);
+    if (!index) return;
+    const auto& action = m_imageActions[*index];
     RECT region{};
     ::GetWindowRect(m_hwnd, &region);
-    action->invoke(m_bitmap, m_width, m_height, region, m_hwnd);
+    action.invoke(m_bitmap, m_width, m_height, region, m_hwnd);
 }
 
 // ============================================================================
@@ -488,6 +497,7 @@ void PinWindow::ShowContextMenu(int screenX, int screenY) {
     ::InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, 201, L"\x270E \x6807\x6CE8\x7F16\x8F91 (Edit)");     // ✎ 标注编辑
     ::InsertMenuW(hMenu, 1, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
     int position = 2;
+    if (m_editor) ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING, 205, L"Crop / cut strips (static image)");
     for (size_t index = 0; index < m_imageActions.size() && index < 100; ++index) {
         const std::wstring item = L"T  " + m_imageActions[index].label;
         ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING, 220 + static_cast<UINT>(index), item.c_str());
@@ -507,6 +517,7 @@ void PinWindow::ShowContextMenu(int screenX, int screenY) {
     case 202: CopyToClipboard(); break;
     case 203: SaveToFile(); break;
     case 204: ::DestroyWindow(m_hwnd); break;
+    case 205: OpenStructureEditor(); break;
     default:
         if (cmd >= 220 && cmd < 220 + static_cast<int>(m_imageActions.size())) {
             const ImageAction& action = m_imageActions[cmd - 220];
@@ -516,6 +527,19 @@ void PinWindow::ShowContextMenu(int screenX, int screenY) {
         }
         break;
     }
+}
+
+void PinWindow::OpenStructureEditor() {
+    if (!m_editor) return;
+    CommitTextEdit();
+    HBITMAP copy = m_annotationEngine.IsEmpty()
+        ? static_cast<HBITMAP>(::CopyImage(m_bitmap, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION)) : BakeEditedBitmap();
+    if (copy) m_editor(copy, m_width, m_height);
+}
+bool PinWindow::SetVisualSettings(WindowVisualSettings settings) {
+    if (!m_hwnd) return false;
+    if (!m_visualStyle) m_visualStyle = std::make_unique<WindowVisualStyle>(m_hwnd);
+    return m_visualStyle->SetSettings(settings);
 }
 
 bool PinWindow::CopyToClipboard(HBITMAP bitmap) {

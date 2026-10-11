@@ -37,6 +37,15 @@ bool PluginManifest::LoadFromFile(const std::wstring& path, PluginManifest& mani
         return false;
     }
     result.manifestVersion = static_cast<int>(manifestVersion);
+    // API 2 has no cross-plugin service/dependency resolver. Do not silently
+    // accept a declared prerequisite that the host cannot satisfy.
+    if (const auto* required = root.Find(L"requires_plugins")) {
+        const auto* array = required->AsArray();
+        if (!array || !array->empty()) {
+            SetError(error, L"Cross-plugin prerequisites are not supported by API 2. Use core host services or private packaged libraries.");
+            return false;
+        }
+    }
     if (!OptionalString(root, L"author", result.author) ||
         !OptionalString(root, L"description", result.description) ||
         !OptionalString(root, L"homepage", result.homepage) ||
@@ -79,7 +88,9 @@ bool PluginManifest::LoadFromFile(const std::wstring& path, PluginManifest& mani
         }
     }
     if (const json::Value* update = root.Find(L"update")) {
-        if (!update->IsObject() || !OptionalString(*update, L"url", result.updateUrl)) {
+        std::wstring type;
+        if (!update->IsObject() || !OptionalString(*update, L"url", result.updateUrl) ||
+            !OptionalString(*update, L"type", type) || (!type.empty() && type != L"manifest")) {
             SetError(error, L"Manifest update metadata is invalid.");
             return false;
         }

@@ -10,6 +10,9 @@
 - **固定截图** — 将截图钉在桌面最上层；支持拖动、缩放、复制、保存，以及二次标注
 - **PiP 实时监控** — 框选任意窗口区域，生成画中画实时镜像
 - **窗口缩放** — 固定截图和 PiP 窗口拖四角保持原始比例，拖四边自由缩放
+- **区段切除** — 共享图片编辑器可删除整行/整列中段并拼合，支持撤销/重做；普通截图也可使用，无需长截图插件
+- **监控聚焦隐藏** — 可设置聚焦源窗口时暂时隐藏监控，右键可为本窗单独开关
+- **可选窗口效果** — 固定图与监控支持阴影/圆角，提供 Win11、近似 macOS 与自定义参数；默认关闭
 - **长截图** — 手动或自动滚动采集页面，带实时预览；可调整裁剪范围并编辑结果
 - **OCR 文字识别** — 默认使用按需启动的 PP-OCRv4 离线 CPU 引擎；保留 Windows OCR 快速选项，可查看或在图片上选择文字
 - **截图标注** — 矩形、椭圆、箭头、画笔、马赛克和文字工具，支持撤销/重做
@@ -57,11 +60,25 @@ C++20 · Win32 API · D3D11 · Windows.Graphics.Capture · Windows OCR · ONNX R
 
 - [项目交接文档](docs/HANDOFF.md) — 完整架构、决策、构建说明
 - [插件 SDK](sdk/nskry_plugin.h) — 插件开发接口
+- [基础能力与插件边界](docs/architecture/core_plugin_contract.md) — Core/可选插件归属、共享编辑器与动作入口
+- [插件开发规范](docs/plugins/development_standard.md) — 官方/第三方交付、依赖、生命周期与测试门禁
+- [第三方插件政策](docs/plugins/third_party_policy.md) — 身份、权限、责任与更新说明
+- [GPL 发行与防冒充规划](docs/governance/distribution_and_brand_protection.md) — 合规、签名、品牌及举报路线
+- [前置插件与图片区段删除规划](docs/Proposal/plugin_prerequisites_and_image_splice.md) — 允许独立前置、通用编辑功能边界
+- [独立开源插件许可例外](PLUGIN_EXCEPTION) — 自定义附加许可；[范围及授权记录](docs/governance/plugin_license_exception.md)
 - [安装器构建说明](installer/README.md) — per-user Setup 与可选官方插件打包
 - [插件与发行计划](docs/nskry_distribution_plugin_plan.md) — 插件生命周期、包格式和发行规划
 
 ## License
 
 Nskry is licensed under the GNU General Public License, version 3 or later
-(GPL-3.0-or-later). See [LICENSE](LICENSE) for the license notice and the
-official license text.
+(GPL-3.0-or-later). See [LICENSE](LICENSE) for the notice and [COPYING](COPYING)
+for the full license. The Covered Host additionally carries the custom
+[Nskry Independent Open-Source Plugin Exception 1.0](PLUGIN_EXCEPTION).
+GPL permits compliant paid redistribution; it does not
+grant official certification or imply Nskry endorsement.
+
+允许合规地销售 fork、收费分发及提供安装服务；请明确
+[Nskry 原项目来源](https://github.com/GuanT0u/Nskry)，保留适用版权/许可声明，区分第三方服务与官方。
+独立开源插件可以自行选择开源许可证，通过公开 SDK 结合宿主无需仅因结合而改用 GPL。
+例外不覆盖闭源插件、不改变 Core 修改和第三方依赖许可，也不追溯适用于未附例外的旧发行物。

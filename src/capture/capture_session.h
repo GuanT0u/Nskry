@@ -1,6 +1,7 @@
 #pragma once
 
 #include "capture/d3d_device.h"
+#include "capture/callback_gate.h"
 #include <winrt/Windows.Graphics.Capture.h>
 #include <functional>
 #include <mutex>
@@ -25,6 +26,7 @@ struct CropRegion {
 ///   - FrameArrived fires on a thread-pool thread (CreateFreeThreaded).
 ///   - The callback is invoked under m_callbackMutex.
 ///   - The cropped texture is valid only for the duration of the callback.
+///   - Stop/destruction must be requested outside capture callbacks (post to UI).
 class CaptureSession {
 public:
     /// Callback receives the cropped ID3D11Texture2D and its pixel dimensions.
@@ -43,9 +45,13 @@ public:
     void Stop();
 
     void SetFrameCallback(FrameCallback cb);
+    void SetClosedCallback(std::function<void()> cb);
     void SetCropRegion(CropRegion crop);
+    void SetProcessingEnabled(bool enabled) { m_processingEnabled.store(enabled); }
 
     [[nodiscard]] bool IsCapturing() const { return m_capturing.load(); }
+    struct FrameStats { unsigned long long acquired{}, processed{}; };
+    FrameStats Stats() const { return {m_acquired.load(), m_processed.load()}; }
 
 private:
     // WGC event handlers
@@ -73,15 +79,17 @@ private:
 
     FrameCallback      m_callback;
     std::mutex         m_callbackMutex;
+    std::mutex         m_processingMutex;
+    std::function<void()> m_closedCallback;
+    std::atomic<unsigned long long> m_acquired{0}, m_processed{0};
+    int m_poolWidth{}, m_poolHeight{};
     std::atomic<bool>  m_capturing{ false };
+    std::atomic<bool>  m_processingEnabled{ true };
     std::atomic<bool>  m_stopped{ false };
 
-    // Event revocation prevents new callbacks, while this counter drains any
-    // FrameArrived handler that was already in flight before Stop().  The
-    // CaptureSession and its consumer may only be destroyed after it reaches 0.
-    std::atomic<unsigned int> m_activeFrameCallbacks{ 0 };
-    std::mutex                m_frameDrainMutex;
-    std::condition_variable   m_frameDrainCv;
+    // Shared by event delegates so even already queued calls remain safe
+    // after the capture owner is destroyed. Stop is called outside callbacks.
+    std::shared_ptr<CallbackGate<CaptureSession>> m_eventGate;
 
     winrt::event_token m_frameToken{};
     winrt::event_token m_closedToken{};

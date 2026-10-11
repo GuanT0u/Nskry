@@ -37,10 +37,11 @@ void PluginManager::Shutdown() {
 
 bool PluginManager::EnsureLoaded(const std::wstring& pluginId) {
     if (!m_initialized || !m_registry || pluginId.empty()) return false;
-    if (m_plugins.contains(pluginId)) return true;
-
     const PluginRecord* record = m_registry->Find(pluginId);
     if (!record || !record->enabled || !record->manifest.IsCompatibleWithHost()) return false;
+    // Existing windows may still hold an action snapshot after disable. A
+    // loaded DLL is retained for safe shutdown, not permission to execute it.
+    if (m_plugins.contains(pluginId)) return true;
     return LoadPlugin(*record);
 }
 
@@ -63,16 +64,24 @@ bool PluginManager::LoadPlugin(const PluginRecord& record) {
     // displayed before load still comes exclusively from manifest.json.
     const NskryPluginInfo* runtimeInfo = nullptr;
     bool initialized = false;
+    bool initAttempted = false;
     try {
         runtimeInfo = fnInfo();
         initialized = runtimeInfo && runtimeInfo->structSize >= sizeof(NskryPluginInfo) &&
             runtimeInfo->apiVersion == NSKRY_PLUGIN_API_VERSION && runtimeInfo->id && runtimeInfo->version &&
             record.manifest.apiVersion == runtimeInfo->apiVersion && record.manifest.id == runtimeInfo->id &&
-            record.manifest.version == runtimeInfo->version && fnInit(&m_hostContext) != 0;
+            record.manifest.version == runtimeInfo->version;
+        if (initialized) {
+            initAttempted = true;
+            initialized = fnInit(&m_hostContext) != 0;
+        }
     } catch (...) {
         initialized = false;
     }
     if (!initialized) {
+        // A partially initialized plugin may already own windows/threads.
+        // Give it its cleanup contract before releasing the DLL reference.
+        if (initAttempted) { try { fnShutdown(); } catch (...) {} }
         ::FreeLibrary(module);
         return false;
     }

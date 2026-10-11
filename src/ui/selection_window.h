@@ -17,6 +17,7 @@ namespace nskry {
 enum class SelectionAction {
     Copy,       // Copy screenshot to clipboard
     Save,       // Save screenshot to file
+    Edit,       // Core structural image editor (no plugin required)
     Pin,        // Pin static screenshot on top of desktop
     PiP,        // Start WGC live capture PiP
     Plugin,     // Execute a lazy-loaded toolbar plugin

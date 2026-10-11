@@ -26,3 +26,7 @@ installer/bundled/*.nskryplugin
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Local-only documentation artifacts (keep on disk, exclude from Git)
+/docs/DebugSamples/
+/docs/**/*.lnk

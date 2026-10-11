@@ -14,8 +14,9 @@ set_target_properties(nskry_scroll PROPERTIES OUTPUT_NAME "nskry-scroll" RUNTIME
 add_custom_command(OUTPUT "${NSKRY_SCROLL_BUNDLE}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${NSKRY_SCROLL_STAGE}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/manifest.json" "${NSKRY_SCROLL_STAGE}/manifest.json"
-    COMMAND ${CMAKE_COMMAND} -E tar cf "${NSKRY_SCROLL_BUNDLE}" --format=zip manifest.json nskry-scroll.dll
-    DEPENDS nskry_scroll "$<TARGET_FILE:nskry_scroll>" "${CMAKE_CURRENT_SOURCE_DIR}/manifest.json"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/LICENSE" "${CMAKE_SOURCE_DIR}/COPYING" "${CMAKE_SOURCE_DIR}/PLUGIN_EXCEPTION" "${NSKRY_SCROLL_STAGE}"
+    COMMAND ${CMAKE_COMMAND} -E tar cf "${NSKRY_SCROLL_BUNDLE}" --format=zip manifest.json nskry-scroll.dll LICENSE COPYING PLUGIN_EXCEPTION
+    DEPENDS nskry_scroll "$<TARGET_FILE:nskry_scroll>" "${CMAKE_CURRENT_SOURCE_DIR}/manifest.json" "${CMAKE_SOURCE_DIR}/LICENSE" "${CMAKE_SOURCE_DIR}/COPYING" "${CMAKE_SOURCE_DIR}/PLUGIN_EXCEPTION"
     WORKING_DIRECTORY "${NSKRY_SCROLL_STAGE}"
     COMMENT "Packaging nskry-scroll.nskryplugin"
     VERBATIM)

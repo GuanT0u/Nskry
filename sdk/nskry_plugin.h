@@ -1,6 +1,11 @@
 // ============================================================================
 // Nskry Plugin SDK — Public Header
 // ============================================================================
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Additional permission: Nskry Independent Open-Source Plugin Exception 1.0.
+// See LICENSE, COPYING and PLUGIN_EXCEPTION in the Nskry source distribution.
+// Independent open-source plugins may choose their own open-source license;
+// incorporating this public SDK material alone does not impose GPL on them.
 //
 // Include this file in your plugin project to develop Nskry plugins.
 // A plugin package is installed under %LOCALAPPDATA%\Nskry\plugins\<id>.
@@ -44,8 +49,8 @@
 
 enum NskryPluginCaps : uint32_t {
     NSKRY_CAP_TOOLBAR_ACTION  = 1 << 0,   // Adds a button to the screenshot toolbar
-    NSKRY_CAP_POST_CAPTURE    = 1 << 1,   // Post-processing after capture (e.g. OCR)
-    NSKRY_CAP_STANDALONE      = 1 << 2,   // Independent global feature (e.g. screen recording)
+    NSKRY_CAP_POST_CAPTURE    = 1 << 1,   // Image actions: pin, monitor frame and host editor selection
+    NSKRY_CAP_STANDALONE      = 1 << 2,   // Reserved: standalone command surfaces aren't implemented yet
 };
 
 // ---- Plugin metadata ----
@@ -75,16 +80,20 @@ struct NskryHostContext {
     // Screenshot result (valid during nskry_plugin_execute)
     // Borrowed from the host. Plugins must not delete or transfer this handle.
     HBITMAP              capturedBitmap;     // GDI bitmap of the captured region
-    RECT                 capturedRegion;     // Screen coordinates of the capture
-    HWND                 sourceHwnd;         // Window that was captured
+    RECT                 capturedRegion;     // Screen capture bounds; synthetic images may use a UI placement anchor
+    HWND                 sourceHwnd;         // Captured window, or nullptr when no live source is available
 
-    // Host utility callbacks
+    // Host utility callbacks. UI callbacks must run on the host UI thread.
+    // API 2 provides these core services without any other plugin installed.
+    // Plugins contribute metadata-driven actions; they must not mutate host
+    // HWND controls or depend on another plugin's private window/class/DLL.
     void (*showNotification)(const wchar_t* msg, int durationMs);
     // Copies bitmap data; ownership remains with the caller.
     // Returns non-zero when at least one standard bitmap format was published.
     int32_t (*copyBitmapToClipboard)(HBITMAP hbmp);
 
-    // Opens the host crop/annotation workflow. Ownership of the bitmap is
+    // Opens the CORE image crop/annotation workflow (not nskry-scroll).
+    // Ownership of the bitmap is
     // transferred to the host; plugins must not use or delete it afterwards.
     void (*openBitmapEditor)(HBITMAP hbmp, int width, int height);
 
@@ -103,6 +112,7 @@ extern "C" {
     /// Execute the plugin's primary action (toolbar button clicked).
     NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext* ctx);
 
-    /// Clean up before unloading.
+    /// Clean up before unloading, also after init was entered but failed.
+    /// Must tolerate partial initialization; release threads/windows/callbacks.
     NSKRY_API void NSKRY_CALL nskry_plugin_shutdown();
 }

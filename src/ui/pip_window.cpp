@@ -9,9 +9,10 @@ namespace nskry {
 namespace {
 constexpr UINT_PTR kPipQuickHideTimer = 0x51B;
 constexpr int kPipQuickEditId = 7201;
-constexpr int kPipQuickOcrId = 7202;
+constexpr int kPipQuickImageActionId = 7202;
 constexpr int kPipQuickMinimizeId = 7203;
 constexpr int kPipQuickCloseId = 7204;
+constexpr UINT kFreshFrameMessage = WM_APP + 52;
 }
 
 static const char kPipShaderSource[] = R"(
@@ -42,13 +43,13 @@ PipWindow::PipWindow(
     std::function<void()> onCloseRequest,
     AnnotationEngine initialEngine,
     ImageActions imageActions,
-    RECT initialScreenRect)
+    RECT initialScreenRect, ImageEditorCallback editor)
     : m_device(std::move(device))
     , m_contentW(contentWidth)
     , m_contentH(contentHeight)
     , m_onClose(std::move(onCloseRequest))
     , m_annotationEngine(std::move(initialEngine))
-    , m_imageActions(std::move(imageActions))
+    , m_imageActions(std::move(imageActions)), m_editor(std::move(editor))
 {
     // --- Register main window class (once) ---------------------------------
     std::call_once(s_classOnce, [&] {
@@ -122,6 +123,7 @@ PipWindow::PipWindow(
 }
 
 PipWindow::~PipWindow() {
+    m_visualStyle.reset();
     CommitTextEdit();
     if (m_font) {
         ::DeleteObject(m_font);
@@ -209,11 +211,13 @@ PipWindow::FrameHdcGuard PipWindow::GetLastFrameHdc() {
 
     std::lock_guard lk(m_renderMutex);
     if (!m_lastFrameTex) return guard;
+    D3D11_TEXTURE2D_DESC frameDesc{};
+    m_lastFrameTex->GetDesc(&frameDesc);
 
     if (m_stagingTex) {
         D3D11_TEXTURE2D_DESC sd{};
         m_stagingTex->GetDesc(&sd);
-        if (sd.Width != m_contentW || sd.Height != m_contentH) {
+        if (sd.Width != frameDesc.Width || sd.Height != frameDesc.Height) {
             m_stagingTex = nullptr;
         }
     }
@@ -246,13 +250,17 @@ PipWindow::FrameHdcGuard PipWindow::GetLastFrameHdc() {
         guard.hbmp = ::CreateDIBSection(guard.hdc, &bmi, DIB_RGB_COLORS, &guard.bits, nullptr, 0);
         ::ReleaseDC(nullptr, hdcScreen);
 
-        if (guard.hbmp && guard.bits) {
+        if (guard.hdc && guard.hbmp && guard.bits) {
             guard.oldBmp = ::SelectObject(guard.hdc, guard.hbmp);
             const BYTE* src = static_cast<const BYTE*>(mapped.pData);
             BYTE* dst = static_cast<BYTE*>(guard.bits);
-            size_t rowBytes = m_contentW * 4;
-            for (UINT r = 0; r < m_contentH; ++r) {
-                memcpy(dst + r * rowBytes, src + r * mapped.RowPitch, rowBytes);
+            const size_t rowBytes = static_cast<size_t>(m_contentW) * 4;
+            const size_t copyBytes = static_cast<size_t>((std::min)(m_contentW, frameDesc.Width)) * 4;
+            // The source may have shrunk while hidden. Keep the requested
+            // monitor canvas size without reading past the latest GPU frame.
+            memset(dst, 0, rowBytes * m_contentH);
+            for (UINT r = 0; r < (std::min)(m_contentH, frameDesc.Height); ++r) {
+                memcpy(dst + r * rowBytes, src + r * mapped.RowPitch, copyBytes);
             }
         }
         ctx->Unmap(m_stagingTex.get(), 0);
@@ -316,10 +324,22 @@ void PipWindow::BlitAndPresent(ID3D11Texture2D* frameTex, UINT w, UINT h) {
 
     D3D11_TEXTURE2D_DESC bbDesc{};
     backBuf->GetDesc(&bbDesc);
+    D3D11_TEXTURE2D_DESC sourceDesc{};
+    frameTex->GetDesc(&sourceDesc);
+    w = (std::min)(w, sourceDesc.Width);
+    h = (std::min)(h, sourceDesc.Height);
+    if (!w || !h) return;
 
-    if (bbDesc.Width == w && bbDesc.Height == h) {
+    if (bbDesc.Width == sourceDesc.Width && bbDesc.Height == sourceDesc.Height &&
+        bbDesc.Width == w && bbDesc.Height == h) {
         m_device->Context()->CopyResource(backBuf.get(), frameTex);
     } else {
+        if (w < bbDesc.Width || h < bbDesc.Height) {
+            winrt::com_ptr<ID3D11RenderTargetView> clearView;
+            if (FAILED(m_device->Device()->CreateRenderTargetView(backBuf.get(), nullptr, clearView.put()))) return;
+            constexpr float black[4] = {0, 0, 0, 1};
+            m_device->Context()->ClearRenderTargetView(clearView.get(), black);
+        }
         D3D11_BOX box{ 0, 0, 0, (std::min)(w, bbDesc.Width), (std::min)(h, bbDesc.Height), 1 };
         m_device->Context()->CopySubresourceRegion(backBuf.get(), 0, 0, 0, 0, frameTex, 0, &box);
     }
@@ -363,9 +383,15 @@ void PipWindow::BlitAndPresent(ID3D11Texture2D* frameTex, UINT w, UINT h) {
 
 void PipWindow::RenderFrame(ID3D11Texture2D* croppedTexture, UINT w, UINT h) {
     std::lock_guard lk(m_renderMutex);
-    if (!m_swapChain) return;
+    if (!m_swapChain || !::IsWindowVisible(m_hwnd) || ::IsIconic(m_hwnd)) return;
+    if (m_waitingFrame.exchange(false)) ::PostMessageW(m_hwnd, kFreshFrameMessage, 0, 0);
 
     // Cache latest frame
+    if (m_lastFrameTex) {
+        D3D11_TEXTURE2D_DESC cached{}, input{};
+        m_lastFrameTex->GetDesc(&cached); croppedTexture->GetDesc(&input);
+        if (cached.Width != input.Width || cached.Height != input.Height) m_lastFrameTex = nullptr;
+    }
     if (!m_lastFrameTex) {
         D3D11_TEXTURE2D_DESC d{};
         croppedTexture->GetDesc(&d);
@@ -436,12 +462,20 @@ LRESULT CALLBACK PipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+    case WM_ENTERSIZEMOVE: if (m_visualStyle) m_visualStyle->BeginSizeMove(); break;
+    case WM_EXITSIZEMOVE: if (m_visualStyle) m_visualStyle->EndSizeMove(); break;
+    case WM_DPICHANGED: if (m_visualStyle) m_visualStyle->Sync(); break;
+    case kFreshFrameMessage:
+        if (!m_waitingFrame.load() && m_captureStatus) ::ShowWindow(m_captureStatus, SW_HIDE);
+        return 0;
     case WM_CREATE:
         {
             const COLORREF noBorder = DWMWA_COLOR_NONE;
             ::DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &noBorder, sizeof(noBorder));
         }
         CreateQuickActions(hwnd);
+        m_captureStatus = ::CreateWindowExW(0, L"STATIC", L"", WS_CHILD | SS_CENTER,
+            0, 0, 120, 22, hwnd, nullptr, ::GetModuleHandleW(nullptr), nullptr);
         return 0;
 
     case WM_NCHITTEST: {
@@ -625,6 +659,8 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         break;
 
     case WM_WINDOWPOSCHANGED: {
+        if (m_visualStyle) m_visualStyle->Sync();
+        if (m_visibilityRefresh) m_visibilityRefresh();
         auto pos = reinterpret_cast<WINDOWPOS*>(lp);
         if (m_isEditing && m_hwndToolbar) {
             if (!(pos->flags & SWP_NOMOVE) || !(pos->flags & SWP_NOSIZE)) {
@@ -682,7 +718,7 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_COMMAND:
         switch (LOWORD(wp)) {
         case kPipQuickEditId: EnterEditMode(); return 0;
-        case kPipQuickOcrId: RunTextRecognition(); return 0;
+        case kPipQuickImageActionId: RunQuickImageAction(); return 0;
         case kPipQuickMinimizeId: ShowQuickActions(false); ::ShowWindow(hwnd, SW_MINIMIZE); return 0;
         case kPipQuickCloseId: if (m_onClose) m_onClose(); return 0;
         default: break;
@@ -719,6 +755,7 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_DESTROY:
+        m_visualStyle.reset();
         m_hwnd = nullptr;
         return 0;
     }
@@ -731,10 +768,19 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 // ---------------------------------------------------------------------------
 
 void PipWindow::ShowContextMenu(int screenX, int screenY) {
+    m_menuActive = true; if (m_visibilityRefresh) m_visibilityRefresh();
     HMENU hMenu = ::CreatePopupMenu();
     ::InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, 301, L"\x270E \x6807\x6CE8\x7F16\x8F91 (Edit)");     // ✎ 标注编辑
     ::InsertMenuW(hMenu, 1, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
     int position = 2;
+    if (m_getHideOverride && m_setHideOverride) {
+        const auto selected = m_getHideOverride();
+        const wchar_t* labels[] = {L"Auto-hide: follow global setting", L"Auto-hide: enabled for this monitor", L"Auto-hide: disabled for this monitor"};
+        for (int i = 0; i < 3; ++i) ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING |
+            (static_cast<int>(selected) == i ? MF_CHECKED : 0), 310 + i, labels[i]);
+        ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
+    }
+    if (m_editor) ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING, 303, L"Crop / cut strips (current frame)");
     for (size_t index = 0; index < m_imageActions.size() && index < 100; ++index) {
         const std::wstring item = L"T  " + m_imageActions[index].label;
         ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING, 320 + static_cast<UINT>(index), item.c_str());
@@ -745,21 +791,53 @@ void PipWindow::ShowContextMenu(int screenX, int screenY) {
     ::SetForegroundWindow(m_hwnd);
     int cmd = ::TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, screenX, screenY, 0, m_hwnd, nullptr);
     ::DestroyMenu(hMenu);
+    m_menuActive = false;
+    if (cmd >= 310 && cmd <= 312 && m_setHideOverride) m_setHideOverride(static_cast<MonitorHideOverride>(cmd - 310));
+    if (m_visibilityRefresh) m_visibilityRefresh();
 
     switch (cmd) {
     case 301: EnterEditMode(); break;
     case 302: if (m_onClose) m_onClose(); break;
+    case 303: OpenStructureEditor(); break;
     default:
         if (cmd >= 320 && cmd < 320 + static_cast<int>(m_imageActions.size())) {
-            FrameHdcGuard frame = GetLastFrameHdc();
-            if (!frame.hbmp) break;
-            RECT region{};
-            ::GetWindowRect(m_hwnd, &region);
-            const ImageAction& action = m_imageActions[cmd - 320];
-            if (action.invoke) action.invoke(frame.hbmp, static_cast<int>(m_contentW), static_cast<int>(m_contentH), region, m_hwnd);
+            RunImageAction(cmd - 320);
         }
         break;
     }
+}
+
+void PipWindow::SetVisibilityServices(std::function<void()> refresh,
+    std::function<MonitorHideOverride()> get, std::function<void(MonitorHideOverride)> set) {
+    m_visibilityRefresh = std::move(refresh); m_getHideOverride = std::move(get); m_setHideOverride = std::move(set);
+}
+void PipWindow::SetAutoHidden(bool hidden) {
+    if (m_autoHidden == hidden) return;
+    m_autoHidden = hidden;
+    if (hidden) { ShowQuickActions(false); if (m_hwndToolbar) ::ShowWindow(m_hwndToolbar, SW_HIDE); }
+    if (!::IsIconic(m_hwnd)) ::ShowWindow(m_hwnd, hidden ? SW_HIDE : SW_SHOWNOACTIVATE);
+}
+void PipWindow::SetCaptureStatus(const wchar_t* text, bool waiting) {
+    m_waitingFrame.store(waiting);
+    if (!m_captureStatus) return;
+    RECT client{}; ::GetClientRect(m_hwnd, &client);
+    ::SetWindowTextW(m_captureStatus, text);
+    ::SetWindowPos(m_captureStatus, HWND_TOP, 0, (std::max)(0L, client.bottom - 24), client.right, 24,
+                   SWP_NOACTIVATE | (text && *text ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+}
+bool PipWindow::SetVisualSettings(WindowVisualSettings settings) {
+    if (!m_hwnd) return false;
+    if (!m_visualStyle) m_visualStyle = std::make_unique<WindowVisualStyle>(m_hwnd);
+    return m_visualStyle->SetSettings(settings);
+}
+
+void PipWindow::OpenStructureEditor() {
+    if (!m_editor) return;
+    FrameHdcGuard frame = GetLastFrameHdc();
+    if (!frame.hbmp) return;
+    if (frame.oldBmp) { ::SelectObject(frame.hdc, frame.oldBmp); frame.oldBmp = nullptr; }
+    HBITMAP bitmap = frame.hbmp; frame.hbmp = nullptr;
+    m_editor(bitmap, static_cast<int>(m_contentW), static_cast<int>(m_contentH));
 }
 
 // ---------------------------------------------------------------------------
@@ -769,6 +847,7 @@ void PipWindow::ShowContextMenu(int screenX, int screenY) {
 void PipWindow::EnterEditMode() {
     ShowQuickActions(false);
     m_isEditing = true;
+    if (m_visibilityRefresh) m_visibilityRefresh();
     m_backupEngine = m_annotationEngine.Clone();
     m_annotationEngine.SetTool(ToolType::Pen);
 
@@ -783,8 +862,8 @@ void PipWindow::CreateQuickActions(HWND parent) {
     m_quickFont = ::CreateFontW(-9, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-    const wchar_t* labels[] = { L"\x270E", L"T", L"\x2212", L"\x00D7" };
-    const int ids[] = { kPipQuickEditId, kPipQuickOcrId, kPipQuickMinimizeId, kPipQuickCloseId };
+    const wchar_t* labels[] = { L"\x270E", L"\x2026", L"\x2212", L"\x00D7" };
+    const int ids[] = { kPipQuickEditId, kPipQuickImageActionId, kPipQuickMinimizeId, kPipQuickCloseId };
     for (size_t index = 0; index < 4; ++index) {
         m_quickButtons[index] = ::CreateWindowExW(WS_EX_LAYERED, L"BUTTON", labels[index],
             WS_CHILD | BS_PUSHBUTTON, 0, 0, 16, 14, parent,
@@ -828,24 +907,29 @@ bool PipWindow::IsQuickActionPoint(POINT clientPoint) const {
 void PipWindow::ShowQuickActions(bool show) {
     if (m_isEditing) show = false;
     bool visibilityMatches = m_quickActionsVisible == show;
-    for (HWND button : m_quickButtons)
-        if (button && (::IsWindowVisible(button) != FALSE) != show) visibilityMatches = false;
+    for (size_t i = 0; i < std::size(m_quickButtons); ++i)
+        if (m_quickButtons[i] && (::IsWindowVisible(m_quickButtons[i]) != FALSE) !=
+            (show && (i != 1 || !m_imageActions.empty()))) visibilityMatches = false;
     if (visibilityMatches) return;
     m_quickActionsVisible = show;
-    for (HWND button : m_quickButtons) if (button) ::ShowWindow(button, show ? SW_SHOWNOACTIVATE : SW_HIDE);
+    for (size_t i = 0; i < std::size(m_quickButtons); ++i) if (m_quickButtons[i])
+        ::ShowWindow(m_quickButtons[i], show && (i != 1 || !m_imageActions.empty()) ? SW_SHOWNOACTIVATE : SW_HIDE);
     if (show) ::SetTimer(m_hwnd, kPipQuickHideTimer, 120, nullptr);
     else if (m_hwnd) ::KillTimer(m_hwnd, kPipQuickHideTimer);
 }
 
-void PipWindow::RunTextRecognition() {
-    const auto action = std::find_if(m_imageActions.begin(), m_imageActions.end(), [](const ImageAction& value) {
-        return value.id == L"nskry-ocr" || value.label == L"Text recognition";
-    });
-    if (action == m_imageActions.end() || !action->invoke) return;
+void PipWindow::RunQuickImageAction() {
+    const auto index = ChooseImageAction(m_hwnd, m_imageActions);
+    if (index) RunImageAction(*index);
+}
+
+void PipWindow::RunImageAction(size_t index) {
+    if (index >= m_imageActions.size() || !m_imageActions[index].invoke) return;
+    const auto& action = m_imageActions[index];
     FrameHdcGuard frame = GetLastFrameHdc();
     if (!frame.hbmp) {
         ::MessageBoxW(m_hwnd, L"The monitor has no captured frame yet. Please try again shortly.",
-                      L"Nskry — Text recognition", MB_OK | MB_ICONINFORMATION);
+                      L"Nskry — Image action", MB_OK | MB_ICONINFORMATION);
         return;
     }
     // Other callers need the selected frame DC for annotation rendering, but
@@ -856,7 +940,7 @@ void PipWindow::RunTextRecognition() {
     }
     RECT region{};
     ::GetWindowRect(m_hwnd, &region);
-    action->invoke(frame.hbmp, static_cast<int>(m_contentW), static_cast<int>(m_contentH), region, m_hwnd);
+    action.invoke(frame.hbmp, static_cast<int>(m_contentW), static_cast<int>(m_contentH), region, m_hwnd);
 }
 
 void PipWindow::FinishEdit(bool apply) {
@@ -868,6 +952,7 @@ void PipWindow::FinishEdit(bool apply) {
 
     m_annotationEngine.SetTool(ToolType::None);
     m_isEditing = false;
+    if (m_visibilityRefresh) m_visibilityRefresh();
     if (m_hwndToolbar) {
         ::ShowWindow(m_hwndToolbar, SW_HIDE);
     }

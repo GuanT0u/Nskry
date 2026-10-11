@@ -1,0 +1,89 @@
+Nskry Independent Open-Source Plugin Exception
+Version 1.0, 11 October 2026
+
+Additional permission under GNU GPL version 3 section 7
+
+1. Scope and definitions
+
+This exception applies to the Nskry Core implementation in src/, the
+public SDK header sdk/nskry_plugin.h, and Nskry-owned Core build scripts,
+to the extent their copyright holders make them available under the GNU
+General Public License, version 3 or later, with a notice referring to
+this exception. These materials are called the Covered Host.
+
+This exception does not cover third-party code, libraries, models, assets,
+or separately licensed materials. It does not change the license of
+official or third-party plugins merely because they are packaged with,
+loaded by, or distributed alongside Nskry.
+
+An Independent Plugin is a separately developed module that communicates
+with the Covered Host only through its documented public plugin interfaces
+and does not incorporate or derive from the Covered Host implementation,
+except for the permitted SDK material described in section 3 below.
+Moving Covered Host implementation code into a DLL or another process
+does not make that code an Independent Plugin.
+
+An Open-Source Plugin is an Independent Plugin distributed under a license
+satisfying the Open Source Definition, version 1.9, published by the Open
+Source Initiative (https://opensource.org/osd).
+
+2. Permission to combine and convey
+
+The licensors of the Covered Host grant you additional permission to
+link or otherwise combine it with an Open-Source Plugin and to convey the
+resulting combination. You may distribute the plugin under its developer's
+chosen open-source license without relicensing the plugin under the GPL
+solely because of that combination or its use of the public plugin API.
+
+You must comply with the GPL for the Covered Host and its modifications,
+and with the respective licenses for the plugin and other materials.
+For this permitted combination, the GPL Corresponding Source requirement
+for the Covered Host does not require inclusion of the Independent
+Plugin's implementation source solely because the plugin is linked to or
+uses the Covered Host. The plugin's own source-distribution obligations
+remain governed by its own license. Corresponding Source for the Covered
+Host must still include its public interface definitions and the material
+otherwise required to build, install, run, and modify the Covered Host.
+
+3. SDK material
+
+To build and distribute an Open-Source Plugin, you may include, compile,
+copy, and adapt the public SDK header sdk/nskry_plugin.h, including its
+interface declarations, constants, macros, inline definitions, and example
+snippets. Incorporating this SDK material alone does not require the
+plugin to be licensed under the GPL. Preserve the applicable copyright,
+license, and exception notices when distributing SDK material in source
+form. This permission does not extend to copying Core implementation
+code, internal headers, or other materials not expressly covered here.
+
+4. Boundaries
+
+This exception does not grant permission to distribute a proprietary or
+otherwise non-open-source plugin in combination with the Covered Host.
+It does not waive obligations imposed by other copyright holders, the
+licenses of dependencies or models, or the GPL on the Covered Host itself.
+It does not grant trademark rights, official status, endorsement, warranty,
+or a right to misrepresent the origin of Nskry or a modified distribution.
+
+Compliant paid redistribution, fork sales, and installation or support
+services are not prohibited by this exception. No mandatory watermark,
+advertising display, online activation, or prohibition of commercial use
+is imposed by this exception.
+
+5. Modified versions and removal
+
+As permitted by GPL version 3 section 7, a recipient may remove this
+additional permission from their copy or from a part of it. If you modify
+the Covered Host, you may retain this exception for your changes only to
+the extent you have the necessary copyright permissions; you are not
+required to grant it for your own additions. Clearly identify any part
+for which the exception has been removed or is not granted. A recipient
+must not assume that an independently modified fork carries this exception.
+
+6. License notice
+
+The GPL remains the underlying license. This exception is a custom Nskry
+additional permission, not an exception with a registered SPDX identifier.
+Distributions relying on it should supply GPL COPYING, this text, and a
+notice identifying which materials carry the exception. Earlier copies
+without such a notice must not be assumed to carry this permission.

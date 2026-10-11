@@ -1,0 +1,49 @@
+#include "core/plugin_manager.h"
+#include <filesystem>
+#include <iostream>
+
+int wmain(int argc, wchar_t** argv) {
+    if (argc != 3) return 2;
+    // LOCALAPPDATA changes only in this test process. Never touch user plugins.
+    const auto root = std::filesystem::path(argv[2]) /
+        (L"plugin-runtime-test-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+    if (!std::filesystem::create_directory(root) || !SetEnvironmentVariableW(L"LOCALAPPDATA", root.c_str())) return 3;
+    nskry::PluginRegistry registry;
+    if (!registry.Initialize()) return 4;
+    const auto dll = std::filesystem::absolute(argv[1]);
+    nskry::PluginManifest manifest;
+    manifest.manifestVersion = 1; manifest.id = L"org.test.runtime"; manifest.name = L"Runtime fixture";
+    manifest.version = L"1.0.0"; manifest.entry = dll.filename().wstring(); manifest.architecture = L"x64";
+    manifest.apiVersion = NSKRY_PLUGIN_API_VERSION; manifest.toolbarAction = manifest.postCapture = true;
+    if (!registry.UpsertInstalled(manifest, dll.parent_path().wstring(), nskry::PluginSource::ThirdParty)) return 5;
+    auto& runtime = nskry::PluginManager::Instance();
+    NskryHostContext context{}; context.structSize = sizeof(context); context.apiVersion = NSKRY_PLUGIN_API_VERSION;
+    runtime.Initialize(registry, context);
+    struct ShutdownGuard { nskry::PluginManager& runtime; ~ShutdownGuard() { runtime.Shutdown(); } } guard{runtime};
+    if (runtime.IsLoaded(manifest.id) || runtime.GetEnabledImageActions().size() != 1) return 6;
+    if (GetModuleHandleW(dll.filename().c_str())) return 14;
+    HMODULE probe = LoadLibraryW(dll.c_str());
+    struct ModuleGuard { HMODULE value; ~ModuleGuard() { if (value) FreeLibrary(value); } } probeGuard{probe};
+    const auto shutdownCount = probe ? reinterpret_cast<int (NSKRY_CALL*)()>(GetProcAddress(probe, "nskry_test_shutdown_count")) : nullptr;
+    if (!shutdownCount || !SetEnvironmentVariableW(L"NSKRY_TEST_FAIL_INIT", L"1")) return 15;
+    const bool initFailureCleaned = !runtime.EnsureLoaded(manifest.id) && shutdownCount() == 1 && !runtime.IsLoaded(manifest.id);
+    SetEnvironmentVariableW(L"NSKRY_TEST_FAIL_INIT", nullptr);
+    if (!initFailureCleaned) return 16;
+    if (!runtime.ExecutePlugin(manifest.id, context)) return 7;
+    HMODULE module = GetModuleHandleW(dll.filename().c_str());
+    const auto count = reinterpret_cast<int (NSKRY_CALL*)()>(GetProcAddress(module, "nskry_test_execute_count"));
+    if (!count || count() != 1) return 8;
+    const auto attributes = GetFileAttributesW(registry.RegistryPath().c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES || !SetFileAttributesW(registry.RegistryPath().c_str(), attributes | FILE_ATTRIBUTE_READONLY)) return 12;
+    const bool saveFailureRetainsState = !registry.SetEnabled(manifest.id, false) && registry.Find(manifest.id)->enabled;
+    if (!SetFileAttributesW(registry.RegistryPath().c_str(), attributes) || !saveFailureRetainsState) return 13;
+    if (!registry.SetEnabled(manifest.id, false) || runtime.EnsureLoaded(manifest.id) ||
+        runtime.ExecutePlugin(manifest.id, context) || count() != 1 || !runtime.GetEnabledImageActions().empty()) return 9;
+    if (!registry.SetEnabled(manifest.id, true) || !runtime.ExecutePlugin(manifest.id, context) || count() != 2) return 10;
+    runtime.Shutdown();
+    if (runtime.IsLoaded(manifest.id) || registry.Find(manifest.id)->loaded || shutdownCount() != 2) return 11;
+    FreeLibrary(probeGuard.value); probeGuard.value = nullptr;
+    if (GetModuleHandleW(dll.filename().c_str())) return 17;
+    std::cout << "Lazy loading, disabled-loaded rejection and re-enable passed.\n";
+    return 0;
+}

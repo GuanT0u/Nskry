@@ -18,7 +18,7 @@ struct PluginToolbarAction { std::wstring id; std::wstring label; };
 struct PluginImageAction { std::wstring id; std::wstring label; };
 
 /// Runtime-only plugin service. Installation metadata and enablement belong to
-/// PluginRegistry; packages and updates will belong to later services.
+/// PluginRegistry; package/update lifecycle belongs to separate services.
 class PluginManager {
 public:
     static PluginManager& Instance();

@@ -2,6 +2,7 @@
 
 #include <string>
 #include <unordered_map>
+#include "core/window_visual_settings.h"
 
 namespace nskry {
 
@@ -9,6 +10,8 @@ struct UserSettings {
     bool runAtStartup = false;
     bool notifications = true;
     bool showStartupHint = true;
+    bool hideMonitorOnSourceFocus = false;
+    WindowVisualSettings visuals;
     std::wstring theme = L"system";
     std::wstring captureShortcut = L"Ctrl+Alt+A";
     std::wstring exitShortcut = L"Ctrl+Alt+Q";
@@ -28,6 +31,7 @@ public:
     UserSettings GetUserSettings() const;
     void SetUserSettings(const UserSettings& settings);
     const std::wstring& GetOfficialPluginCatalogUrl() const { return m_officialPluginCatalogUrl; }
+    const std::wstring& GetOfficialPluginsPageUrl() const { return m_officialPluginsPageUrl; }
     const std::wstring& SettingsPath() const { return m_settingsPath; }
 
 private:
@@ -42,10 +46,13 @@ private:
     bool m_runAtStartup = false;
     bool m_notifications = true;
     bool m_showStartupHint = true;
+    bool m_hideMonitorOnSourceFocus = false;
+    WindowVisualSettings m_visuals;
     std::wstring m_theme = L"system";
-    // Empty by default: distributors may configure a signed HTTPS catalog without
-    // baking a mutable endpoint into the executable.
+    // Empty until the official site goes live. HTTPS/hash aren't publisher
+    // signatures; catalog authentication is a separate planned release gate.
     std::wstring m_officialPluginCatalogUrl;
+    std::wstring m_officialPluginsPageUrl;
 };
 
 } // namespace nskry

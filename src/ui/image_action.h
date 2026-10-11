@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 #include <windows.h>
@@ -17,5 +18,11 @@ struct ImageAction {
 };
 
 using ImageActions = std::vector<ImageAction>;
+// Core-only structural editor service. Transfers ownership of the bitmap.
+using ImageEditorCallback = std::function<void(HBITMAP, int, int)>;
+
+// Host-owned surface: one action runs directly, several use a bounded menu.
+// No publisher id or translated display name is privileged.
+std::optional<size_t> ChooseImageAction(HWND owner, const ImageActions& actions);
 
 } // namespace nskry

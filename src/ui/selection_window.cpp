@@ -592,6 +592,7 @@ void SelectionWindow::BuildToolbar(RECT selRect) {
         // Actions
         { ToolbarItemType::Action,     L"⎘ 复制", ToolType::None,    SelectionAction::Copy, 56, false },
         { ToolbarItemType::Action,     L"↓ 保存", ToolType::None,    SelectionAction::Save, 56, false },
+        { ToolbarItemType::Action,     L"✂ 编辑", ToolType::None,    SelectionAction::Edit, 56, false },
         { ToolbarItemType::Action,     L"↗ 固定", ToolType::None,    SelectionAction::Pin,  56, false },
         { ToolbarItemType::Action,     L"▶ 监控", ToolType::None,    SelectionAction::PiP,  56, false },
     };

@@ -6,6 +6,8 @@
 #include <vector>
 #include "ui/annotation/annotation_engine.h"
 #include "ui/image_action.h"
+#include "ui/window_visual_style.h"
+#include <memory>
 
 namespace nskry {
 
@@ -18,7 +20,7 @@ public:
 
     /// Takes ownership of the HBITMAP.
     PinWindow(HBITMAP bitmap, int width, int height, CloseCallback closed = {},
-              ImageActions imageActions = {}, RECT initialScreenRect = {});
+              ImageActions imageActions = {}, RECT initialScreenRect = {}, ImageEditorCallback editor = {});
     ~PinWindow();
 
     PinWindow(const PinWindow&)            = delete;
@@ -29,6 +31,7 @@ public:
     // capture has been cropped in its pre-edit view).
     [[nodiscard]] bool ShowInEditMode(bool requirePinDecision = false);
     [[nodiscard]] HWND Hwnd() const { return m_hwnd; }
+    bool SetVisualSettings(WindowVisualSettings settings);
 
 private:
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -44,13 +47,14 @@ private:
     bool SaveToFile(HBITMAP bitmap = nullptr);
     HBITMAP BakeEditedBitmap();
     void ExportEditedBitmap(bool save);
+    void OpenStructureEditor();
     void EnterEditMode();
     void FinishEdit(bool apply);
     void CommitTextEdit();
     void CreateQuickActions(HWND parent);
     void LayoutQuickActions();
     void ShowQuickActions(bool show);
-    void RunTextRecognition();
+    void RunQuickImageAction();
     bool IsQuickActionPoint(POINT clientPoint) const;
 
     // Pin Toolbar
@@ -95,6 +99,8 @@ private:
     POINT            m_textEditPos{};
     CloseCallback    m_closed;
     ImageActions     m_imageActions;
+    ImageEditorCallback m_editor;
+    std::unique_ptr<WindowVisualStyle> m_visualStyle;
     bool             m_destroying = false;
 
     static constexpr wchar_t kClassName[] = L"NskryPinWindow";

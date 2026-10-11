@@ -9,4 +9,17 @@ later version, as published by the Free Software Foundation.
 The complete license text is available at:
 https://www.gnu.org/licenses/gpl-3.0.html
 
+A verbatim copy of the full GNU GPLv3 license is included in COPYING.
+
+The Nskry-owned Core implementation in src/, public plugin SDK header
+sdk/nskry_plugin.h, and Core build scripts additionally carry the Nskry
+Independent Open-Source Plugin Exception, version 1.0, in PLUGIN_EXCEPTION.
+This permits independently developed open-source plugins to use their
+developer's chosen open-source license when combined through the public
+plugin API. It does not relicense Core modifications, official plugins,
+or third-party code, libraries, models, or assets. Separately licensed
+materials retain their own notices and terms.
+
 SPDX-License-Identifier: GPL-3.0-or-later
+Additional permission: Nskry Independent Open-Source Plugin Exception 1.0
+(custom exception; no registered SPDX exception identifier).

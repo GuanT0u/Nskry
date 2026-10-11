@@ -1,5 +1,7 @@
 # OCR 引擎与瞬时资源取舍实测
 
+> 公开归档说明（2026-10-12）：以下实测属于报告标注的历史版本与原始样本。Explorer 样本现已脱敏，验收 ROI 像素与尺寸保留；旧耗时/完整输出不作为脱敏后样本的结果。trace/JSON 留在本地构建目录，复测方法见 [OCR 测试说明](../../../tests/ocr/README.md)。
+
 > 2026-10-08：本报告保留原型阶段结果。原生按需引擎现已接入正式插件代码，
 > 后续构建、准确性、资源和已知限制见 [实施报告](ocr_native_worker_implementation_report.md)。
 
@@ -82,12 +84,12 @@ Windows 独立裁剪实验针对上方路径、工具栏、列名及合并区域
 
 完整模型输出与逐轮 timing：
 
-- [Explorer](../../../build/verify/ocr_rapidocr_explorer_arena_10runs_20261004.json)
-- [段落](../../../build/verify/ocr_rapidocr_paragraph_arena_10runs_20261004.json)
-- [Explorer 空间验收](../../../build/verify/ocr_rapidocr_explorer_arena_quality_20261004.json)
-- [段落验收](../../../build/verify/ocr_rapidocr_paragraph_arena_quality_20261004.json)
-- [原生段落 A/B/C + 仲裁 trace](../../../build/verify/ocr_native_paragraph_10runs_20261004.trace)
-- [原生段落验收](../../../build/verify/ocr_native_paragraph_quality_20261004.json)
+- Explorer（本地生成文件：`build/verify/ocr_rapidocr_explorer_arena_10runs_20261004.json`）
+- 段落（本地生成文件：`build/verify/ocr_rapidocr_paragraph_arena_10runs_20261004.json`）
+- Explorer 空间验收（本地生成文件：`build/verify/ocr_rapidocr_explorer_arena_quality_20261004.json`）
+- 段落验收（本地生成文件：`build/verify/ocr_rapidocr_paragraph_arena_quality_20261004.json`）
+- 原生段落 A/B/C + 仲裁 trace（本地生成文件：`build/verify/ocr_native_paragraph_10runs_20261004.trace`）
+- 原生段落验收（本地生成文件：`build/verify/ocr_native_paragraph_quality_20261004.json`）
 
 这些完整日志在忽略提交的 `build/verify` 中，重建/清理时需要自行保留。本报告保存关键结果，不将用户 OCR 大量日志默认写入运行中的产品。
 

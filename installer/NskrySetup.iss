@@ -6,6 +6,9 @@
 #define AppVersion "0.5.0"
 #define AppPublisher "Nskry"
 #define AppExeName "Nskry.exe"
+#ifndef CoreExePath
+#define CoreExePath "..\build\Nskry.exe"
+#endif
 
 [Setup]
 AppId={{40ECBBFC-9FA7-4244-A481-0BDEA535E373}
@@ -47,7 +50,11 @@ Name: "startup"; Description: "Start Nskry when I sign in"; GroupDescription: "O
 Name: "launch"; Description: "Launch Nskry after installation"; GroupDescription: "Options:"; Flags: checkedonce
 
 [Files]
-Source: "..\build\Nskry.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#CoreExePath}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\COPYING"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\PLUGIN_EXCEPTION"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\docs\plugins\third_party_policy.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 ; A component is shown only when its package exists at installer compile time.
 #ifexist "bundled\nskry-scroll.nskryplugin"
 Source: "bundled\nskry-scroll.nskryplugin"; DestDir: "{app}\bundled"; Components: plugin_scroll; Flags: ignoreversion skipifsourcedoesntexist

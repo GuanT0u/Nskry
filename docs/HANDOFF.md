@@ -1,216 +1,81 @@
-# Nskry — 项目交接文档
+# Nskry 项目概况与维护指南
 
-> **最后更新**：2026-09-17
-> **项目状态**：Stage A-G 已完成；Phase 4 截长图已实现为独立插件并可构建运行；OCR 已进入首个可交付实现，翻译/录屏尚未开发。
-> **项目路径**：`d:\codes\Nskry`
+更新日期：2026-10-12。本文描述当前源码状态；性能数据的测量日期和限制见对应报告。
 
----
+## 当前功能与边界
 
-## 1. 项目概述
+Core 提供框选、范围调整、放大镜和 Alt 精调、截图标注、复制/PNG 保存、固定图、
+WGC/PiP 监控、窗口管理、设置和插件基础设施。通用 Image Editor 支持裁剪、缩放/平移、
+整行/整列区段切除并拼合，以及后续标注入口，普通截图也可使用。
 
-Nskry 是一款轻量级 Windows 工具，融合了"QQ截图式的流畅框选交互"与"实时画中画（PiP）局部窗口动态监视"功能，并配备完整的矢量截图标注编辑器与置顶二次批注功能。
+长截图采集由 `plugins/nskry-scroll/` 提供；OCR 推理和结果页由 `plugins/nskry-ocr/` 提供。
+OCR Edit 调用 Core 编辑器，无需安装长截图插件。翻译和录屏尚未交付。
+插件动作由 manifest 元数据声明，宿主决定工具栏、悬浮按钮和菜单布局。
 
-**核心卖点**：
-- 极致轻量：完整包含标注引擎、实时 GPU PiP、插件系统的可执行文件仅 ~135KB，运行时 RAM < 20MB
-- GPU 零拷贝：WGC 捕获 → `CopySubresourceRegion` 裁剪 → SwapChain 直出，全程不经过 CPU 内存
-- 穿透遮挡：基于 Windows.Graphics.Capture (WGC)，即使目标窗口被遮挡也能实时捕获
-- 完整标注系统：矩形、椭圆、箭头、自由画笔、马赛克、文字标注，带色板与粗细选择，支持撤销/重做
-- 置顶截图二次批注：PinWindow 支持右键菜单随时进入编辑模式追加标注并烘焙保存
-- 可组装架构：核心 + 插件 DLL 的模块化设计（PluginManager 已就绪，扫描 `plugins/` 动态挂载）
+PiP 可在源窗口获得焦点时隐藏，并在稳定隐藏后回收采集会话；设置和右键可调整策略。
+Pin/PiP 支持可选阴影与圆角，初始关闭，效果不进入复制、保存或 OCR 的图像像素。
+这两项已有自动回归测试，低资源机器、多屏和真实监控恢复延迟仍待实机验收。
 
----
+## 架构与资源生命周期
 
-## 2. 已完成功能
+- `src/main.cpp` 绑定宿主服务、设置和窗口/采集生命周期。
+- `src/core/` 包含设置、插件注册/安装/更新、图片区段模型及监控可见性策略。
+- `src/capture/` 管理 D3D11/WGC，会话关闭通过回调门禁排空在途操作。
+- `src/ui/` 提供选择、Pin/PiP、共享编辑器、标注、设置和窗口视觉适配。
+- `sdk/nskry_plugin.h` 是 API 2 的公开 ABI，内部 C++ 类型不是插件接口。
+- `plugins/` 是插件源码；已安装包和配置在 `%LOCALAPPDATA%/Nskry/`。
+- `tests/` 保存纯逻辑、插件运行时、UI、GPU 帧和 OCR 回归测试。
 
-| 功能 | 状态 | 说明 |
-|------|------|------|
-| 快捷键唤醒 (Ctrl+Alt+A) | ✅ | 全屏蒙版 + 智能吸附 |
-| 手动拖拽框选 | ✅ | 自由矩形选区 |
-| 框选后调整大小/位置 | ✅ | 8方向边角+内部拖拽移动 |
-| 截图标注工具栏 | ✅ | 矩形/椭圆/箭头/画笔/马赛克/文字/撤销/重做 |
-| 二级属性面板 | ✅ | 3档线宽 (2/4/8px) + 8色快捷色板 |
-| 即时文字标注 | ✅ | 原地编辑框输入，支持阴影与平滑渲染 |
-| 局部马赛克 | ✅ | 实时像素化隐私脱敏处理 |
-| 编辑历史 | ✅ | Ctrl+Z 撤销，Ctrl+Y 重做 |
-| 复制截图到剪贴板 | ✅ | Win32 Clipboard API (自动烘焙标注) |
-| 保存截图为 PNG | ✅ | GDI+ 编码 + GetSaveFileNameW (自动烘焙标注) |
-| 固定截图 (PinWindow) | ✅ | 置顶 GDI 窗口，可拖拽/缩放 (自动烘焙标注) |
-| 固定截图二次批注 | ✅ | PinWindow 右键菜单「✎ 标注编辑」/双击，支持粗细(2/4/8)、8色色盘选择并烘焙保存 |
-| PiP 实时监控 | ✅ | WGC + D3D11 SwapChain (支持标注浮动叠加) |
-| PiP 动态二次批注 | ✅ | PipWindow 右键菜单「✎ 标注编辑」/双击，子窗口工具栏 + D3D11 动态 GPU 纹理叠加，支持在60FPS动态流上实时重批注/撤销/重做 |
-| 窗口缩放锁定比例 | ✅ | 拖四角锁比例，拖边缘自由缩放 |
-| 系统托盘图标 | ✅ | 右键菜单 + 双击截图 |
-| 双屏适配 | ✅ | 虚拟屏幕坐标系 |
-| 插件系统 (PluginManager) | ✅ | 动态扫描 `plugins/*.dll` 挂载扩展功能 |
-| 快捷键退出 (Ctrl+Alt+Q) | ✅ | 完整资源清理 |
+启动读取 Registry/manifest，不通过扫描 DLL 执行信息函数来发现插件。
+`installed != loaded`：普通插件按需加载；已加载 DLL 的更新、卸载通过重启应用。
+设置窗口按需创建，关闭即释放。更新检查由用户点击触发，官网地址尚未配置时明确提示。
+`standalone` 命令界面、跨插件依赖解析和服务协商仍是后续协议，不能当作现有能力使用。
 
----
+实时监控的采集/裁剪/呈现主要在 GPU 上完成；OCR、静态帧导出和部分标注取样会读回像素。
+不对整个程序宣称“零拷贝”或固定 RAM 上限。旧原型的约 135 KB/20 MB 数据不代表当前版本。
+区段编辑历史保存元数据，导出时物化图像；阴影缓存不随每帧采集重新生成。
 
-## 3. 技术栈
+## OCR
 
-| 层面 | 选型 | 说明 |
-|------|------|------|
-| 语言 | C++20 | 极致性能，最低 RAM |
-| WinRT 绑定 | C++/WinRT (SDK 内置 `cppwinrt`) | 用于 WGC API |
-| GPU 渲染 | D3D11 (native `d3d11.h`) | 设备创建 + 纹理操作 |
-| 屏幕捕获 | Windows.Graphics.Capture (WGC) | 事件驱动帧捕获 |
-| 2D 绘图与标注 | GDI+ (`gdiplus.h`) | 矢量标注抗锯齿渲染 + PNG 编码 |
-| UI 框架 | 纯 Win32 API | 零依赖 |
-| 构建系统 | CMake 3.24+ | Ninja 生成器 + MSVC 编译器 |
-| COM 管理 | `winrt::com_ptr<T>` | 统一管理 WinRT 和 native COM |
-| 最低 OS | Windows 10 2004 (build 19041) | WGC 编程式捕获最低要求 |
+默认精确模式启动一次性 PP-OCRv4 CPU worker，任务完成、取消或关闭时退出。
+插件本体不常驻推理模型。Windows OCR 保留为 Fast 选项，最多三轮、按质量条件追加增强。
+两种引擎不合并结果，不做词典或语义强制纠错。显示、复制和编辑始终使用原图，识别框映射回原图。
 
----
+结果页提供原图/文本、文本选择、缩放、平移、旋转重识别和 Core 编辑入口。
+监控入口按用户操作截取当前一帧；长图可在共享编辑器选择区域识别。
+低配 1–2 秒目标及所有漏字场景尚未验收；历史实测见 [原生 worker 报告](report/devProgress/ocr_native_worker_implementation_report.md)。
 
-## 4. 文件结构
+## 构建与验证
 
-```
-d:\codes\Nskry\
-├── CMakeLists.txt                          # CMake 构建配置
-├── docs/
-│   ├── HANDOFF.md                          # 本文档
-│   └── implementation_plan.md              # 架构与规划文档
-├── sdk/
-│   └── nskry_plugin.h                      # 插件 SDK 公开头文件
-├── build/
-│   └── Nskry.exe                           # 已编译可执行文件 (Release)
-└── src/
-    ├── pch.h                               # 预编译头 (Windows/D3D/WinRT/STL)
-    ├── main.cpp                            # WinMain + 热键 + 托盘 + 插件生命周期
-    ├── core/
-    │   ├── plugin_manager.h                # 插件管理器声明
-    │   └── plugin_manager.cpp              # 扫描 plugins/*.dll 动态装载
-    ├── interop/
-    │   ├── window_info.h                   # WindowInfo 结构体 (HWND + bounds)
-    │   ├── window_enumerator.h             # WindowEnumerator 类声明
-    │   └── window_enumerator.cpp           # EnumWindows + DWM 精确边界
-    ├── capture/
-    │   ├── d3d_device.h                    # D3DDevice 类 (native + WinRT 双接口)
-    │   ├── d3d_device.cpp                  # D3D11CreateDevice + WinRT 桥接
-    │   ├── capture_session.h               # CaptureSession + CropRegion
-    │   └── capture_session.cpp             # WGC 完整生命周期 + GPU 裁剪
-    └── ui/
-        ├── annotation/
-        │   ├── annotation_shape.h          # 各矢量图元定义 (Rect/Ellipse/Arrow/Pen/Mosaic/Text)
-        │   ├── annotation_engine.h         # 标注引擎声明 (Tool/Style/Undo/Redo/Bake)
-        │   └── annotation_engine.cpp       # 标注引擎实现
-        ├── selection_window.h              # 全屏蒙版 + 工具栏与标注状态
-        ├── selection_window.cpp            # 智能吸附 + 框选 + 调整 + 标注与烘焙
-        ├── pip_window.h                    # PiP 实时渲染窗口
-        ├── pip_window.cpp                  # DXGI SwapChain + 比例锁定
-        ├── pin_window.h                    # 固定截图置顶窗口
-        └── pin_window.cpp                  # GDI StretchBlt + 右键菜单 + 二次标注编辑
-```
-
----
-
-## 5. 关键架构决策
-
-### 5.1 标注系统设计 (AnnotationEngine)
-- 矢量化图元设计（`AnnotationShape` 基类）：支持撤销重做历史栈。
-- 坐标归一化：图元统一采用相对坐标系（`0` 到 `width`, `0` 到 `height`），在 `SelectionWindow` 中通过 `Graphics::TranslateTransform` 偏移，在 `PinWindow` 中通过 `Graphics::ScaleTransform` 缩放，保证缩放窗口时标注与底图绝对同步。
-- 烘焙机制（Baking）：调用 `BakeToBitmap()` 时将底图与全部标注图层高品质合并成一张纯净的 `HBITMAP`，直接交由系统剪贴板、文件写入或新 Pin 窗口使用。
-
-### 5.2 插件管理器 (PluginManager)
-- 启动时自动扫描 `<exe_dir>/plugins/*.dll`。
-- 按 C-ABI 标准校验 `nskry_plugin_info`, `nskry_plugin_init`, `nskry_plugin_execute`, `nskry_plugin_shutdown` 四个函数接口。
-- 支持 `NSKRY_CAP_TOOLBAR_ACTION`、`NSKRY_CAP_POST_CAPTURE`、`NSKRY_CAP_STANDALONE`。
-
----
-
-## 6. 构建方法
+从项目根目录按 [README 构建说明](../README.md#构建) 准备依赖并构建 Release。
+Windows-only OCR 可使用 `-DNSKRY_OCR_MODEL_ENGINE=OFF`。完整 OCR 包包含 engine/models，不能只复制 DLL。
+插件包生成到 `installer/bundled/`，随后可按 [安装器说明](../installer/README.md) 构建 Setup。
 
 ```powershell
-# 1. 激活 MSVC 环境
-$vsPath = "C:\Program Files\Microsoft Visual Studio\18\Community"
-$vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvars64.bat"
-
-# 2. 配置并构建（同时生成 installer/bundled/nskry-scroll.nskryplugin）
-cmd /c "`"$vcvars`" > nul 2>&1 && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build"
+ctest --test-dir build --output-on-failure
 ```
 
-构建安装器（需要 Inno Setup 6）：
+`build/verify/` 是独立验证构建目录，不是安装目录。发布程序和测试程序必须来自同一套已验证源码。
+运行时资源目标与实机验收方法见 [资源优先方案](Proposal/resource_first_features_20261011.md)。
 
-```powershell
-iscc installer/NskrySetup.iss
-```
+## 维护约束
 
----
+图像句柄所有权、线程回调、structSize/version/reserved、按需加载和重启更新契约必须保留。
+新增插件优先使用宿主已公开服务，不依赖其它插件私有窗口或 DLL；前置服务须职责独立、显式协商。
+插件开发以 [Core 契约](architecture/core_plugin_contract.md) 和 [交付规范](plugins/development_standard.md) 为准。
 
-## 7. 常用快捷操作
+渲染回归需关注 Flip Model 与浮动工具栏层级、透明标注的 alpha、移动消息对文字输入框的影响、
+隐藏/最小化门禁及源尺寸变化。不能只因代码历史类名为 `LongImageCropWindow` 就把编辑器归入 Scroll。
 
-| 场景 | 操作 | 说明 |
-|------|------|------|
-| 全局 | `Ctrl+Alt+A` | 唤醒截图 |
-| 全局 | `Ctrl+Alt+Q` | 退出程序 |
-| 截图时 | 点击标注工具 | 展开二级颜色/粗细面板并可绘制 |
-| 截图时 | `Ctrl+Z` / `Ctrl+Y` | 撤销 / 重做上一步标注 |
-| 截图时 | `Ctrl+C` | 快速复制当前截图（含标注） |
-| 截图时 | `Ctrl+S` | 快速保存当前截图（含标注） |
-| 截图时 | `ESC` / 右键 | 退出当前标注工具；若无工具则取消截图 |
-| 固定置顶截图 | 右键点击 Pin 窗口 | 弹出菜单：标注编辑 / 复制 / 保存 / 关闭 |
-| 固定置顶截图 | 双击 Pin 窗口 | 快速进入二次标注编辑模式 |
-| Pin 编辑模式 | 切换工具/粗细/色盘 | 展开二级工具栏调整 3 档线宽 (2/4/8) 与 8 种高对比色 |
-| Pin 编辑模式 | 点击 `✓` 完成 | 烘焙标注为新底图，恢复置顶查看 |
-| Pin 编辑模式 | 点击 `✕` 取消 | 放弃本次追加的标注 |
-| PiP 实时监控 | 右键点击 PiP 窗口 | 弹出菜单：标注编辑 / 关闭 |
-| PiP 实时监控 | 双击 PiP 窗口 | 快速进入/退出二次批注编辑模式 |
-| PiP 编辑模式 | 鼠标拖拽绘制 | 实时 GPU Alpha-Blend 在 60FPS 视频上叠加标注 |
-| PiP 编辑模式 | `Ctrl+Z` / `Ctrl+Y` | 撤销 / 重做监控图层标注 |
-| PiP 编辑模式 | 点击 `✓` / `✕` | 确认保留标注或撤销本次批注并返回拖拽模式 |
+Core 使用 GPL-3.0-or-later，并附 [独立开源插件例外](../PLUGIN_EXCEPTION)。第三方插件依其开发者许可，
+正式范围见 [许可说明](governance/plugin_license_exception.md)；官方插件身份与第三方风险见 [政策](plugins/third_party_policy.md)。
+发行对应源码、第三方依赖/模型授权、签名和官方目录上线均有独立审核要求。
 
----
+## 后续工作与历史设计
 
-## 8. 核心踩坑与技术攻坚记录 (新 Agent 必读)
+Stage A–G、长截图、OCR 和本轮 Core 编辑/监控/视觉首版已实现；不代表所有实机性能门禁已通过。
+翻译、录屏、API 3 多动作/服务协商、官方签名与撤销、持久化事务及更广设备验收仍待开发。
 
-在开发与实测过程中解决过若干极为隐蔽的底层图形学与 Win32 机制陷阱，切勿回退或破坏以下机制：
-
-### 8.1 DXGI Flip-Model SwapChain 遮挡子窗口陷阱
-- **现象**：`PipWindow` 使用 `DXGI_SWAP_EFFECT_FLIP_DISCARD` 模式。DWM 会将 SwapChain 的呈现表面直接绑定至 HWND 客户区，**导致该 HWND 的任何 `WS_CHILD` 子窗口（如工具栏、文字输入框）全部被翻转链画面遮挡在最底层**。
-- **解决方案**：二级工具栏 `m_hwndToolbar` 与文字输入框 `m_hTextEdit` 必须创建为 **Owned `WS_POPUP` 顶级窗口**（`WS_POPUP`, `WS_EX_TOPMOST | WS_EX_TOOLWINDOW`，其 Owner 为 `m_hwnd`）。在 DWM 桌面合成层中，Owned Popup 窗口天生位于 Owner 窗口之上，浮动在 DirectX 表面之上。
-
-### 8.2 Win32 `CreateWindowExW` Popup 窗口的 `hMenu` 陷阱
-- **现象**：对于 `WS_CHILD` 窗口，第 10 个参数 `hMenu` 用于传递子控件 ID（如 `(HMENU)104`）。但对于 `WS_POPUP` 窗口，Windows 严格将其解析为真正的菜单句柄指针！传入 `(HMENU)104` 会导致 `CreateWindowExW` 直接失败报错 `ERROR_INVALID_MENU_HANDLE` (1401) 并返回 NULL。
-- **解决方案**：为 `WS_POPUP` 样式的工具栏或编辑框创建窗口时，第 10 个参数 `hMenu` 必须传 `nullptr`。
-
-### 8.3 GDI+ 在透明 32位 ARGB 表面的文字 Alpha 通道丢失陷阱
-- **现象**：在透明的 32bpp 标注缓存表面上绘制文字时，GDI+ 默认的 ClearType 亚像素抗锯齿只针对底色计算 RGB，**但在完全透明的画板上会将目标 Alpha 通道强制写为 0**！在 D3D11 使用 `SrcAlpha` 进行 Alpha 混合时，`Color * Alpha = 0`，导致文字标注 100% 隐形。
-- **解决方案**：在 `AnnotationEngine::Draw` 绘制文字前，必须显式调用 `g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit)`。这强制 GDI+ 使用灰度抗锯齿并写入完整的 Alpha 通道（Alpha = 255），配合文字描边/投影即可清晰可见。
-
-### 8.4 动态画中画的实时马赛克取样机制
-- **现象**：马赛克图元 `MosaicShape::Draw` 需要从底图取样均值颜色。静态截图有固定 `HBITMAP`，而 PiP 监控每秒 60 帧由 GPU 渲染，没有常驻的 CPU 底图位图。
-- **解决方案**：通过 `PipWindow::GetLastFrameHdc()` 利用缓存的 `D3D11_USAGE_STAGING` 纹理将最新捕获帧的显存映射至 Top-down GDI DIBSection (`guard.hdc`)，提供给标注引擎取样。所有 D3D Context 访问均受 `m_renderMutex` 线程锁保护。若取样失败，则回退为磨砂渐变色块保底。
-
-### 8.5 `WM_WINDOWPOSCHANGED` 意外销毁文本框
-- **现象**：当 Owned Popup 创建显示时，Windows 会向其父窗口分发 `WM_WINDOWPOSCHANGED`。若在此处无条件调用 `CommitTextEdit()`，会导致输入框刚被创建就立刻被销毁。
-- **解决方案**：在 `WM_WINDOWPOSCHANGED` 中必须检查 `!(pos->flags & SWP_NOMOVE)`，仅当窗口真实发生移动时才提交文字，防止误杀。
-
----
-
-## 9. 后续开发路线图 (Incoming Roadmap)
-
-### Phase 4: 截长图 (Scrolling Screenshot) — 已实现
-- **状态**：由 `plugins/nskry-scroll` 提供，打包为 `installer/bundled/nskry-scroll.nskryplugin`，通过统一插件包安装/加载链路接入。
-- **当前能力**：框选目标区域、手动/自动滚动采集、连续帧位移匹配与增量拼接、实时预览、暂停/取消、长图裁剪及后续标注入口。
-- **目标**：支持在滚动页面（长网页、终端、代码编辑器、聊天记录）中一键滚动合成超长截图。
-- **关键设计**：
-  1. 框选目标滚动区域，识别滚动条或目标 HWND。
-  2. 向目标窗口发送滚轮或滚动指令（`WM_MOUSEWHEEL` / `WM_VSCROLL`）。
-  3. 利用 WGC 连续提取每屏竖向图像切片。
-  4. 基于特征行哈希匹配（Normalized Cross Correlation / Row Hash Matching）自动计算竖向位移 $\Delta y$。
-  5. 拼接缝合为单一超高分辨率 PNG 画布并弹出标准标注/保存面板。
-
-插件源码、manifest 与 CMake 打包配置位于 `plugins/nskry-scroll/`；发布时先构建插件包，再构建 Inno Setup 安装器。
-
-### Phase 5: OCR 文字识别插件 (OCR Plugin)
-- **状态**：首个实现位于 `plugins/nskry-ocr/`，并打包为 `installer/bundled/nskry-ocr.nskryplugin`。
-- **运行时边界**：插件采用 `on_demand`；只有用户触发文字识别时才加载 DLL、复制当前位图并启动一个 OCR 工作线程。使用 Windows 10/11 内置的 `Windows.Media.Ocr.OcrEngine`，不携带 Tesseract 或语言模型；输入会缩放到系统 OCR 上限（同时限制到 3200 px）以控制峰值内存。
-- **当前入口**：框选截图工具栏、固定截图右键菜单、监控窗口右键菜单（识别当前一帧）、长截图裁剪窗口（先拖出 OCR 矩形，再识别该区域）。核心通过 manifest 的 `post_capture` 能力提供这些入口，未将 OCR 专用逻辑耦合到截图 UI。
-- **结果窗**：默认文本视图保留 OCR 行结构并支持常规文本选择/复制；Highlights 视图显示缩放后的原图和词级半透明框，可点击单词或拖选多个单词复制。
-
-### Phase 6: 屏幕录制插件 (Screen Recording Plugin)
-- **目标**：实现为独立扩展 `plugins/nskry_recorder.dll`。
-- **关键设计**：
-  1. 复用核心的 WGC + D3D11 零拷贝捕获管线。
-  2. 使用 Windows Media Foundation (`IMFSinkWriter`) 支持 GPU 硬件编码输出标准 H.264 `.mp4`。
-  3. 支持轻量级局部 GIF 动图导出（内置 NeuQuant / Octree 调色板量化算法）。
+[原规划](implementation_plan.md) 与 [二次规划](nskry_distribution_plugin_plan.md) 保留设计演进，
+旧 SDK、目录和原型示例不作为当前交付要求。实测报告按日期保留，不把历史数字改写成新版本结论。
+原始调试截图和本机快捷方式保留在忽略目录，不进入公开提交。

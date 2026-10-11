@@ -1,5 +1,7 @@
 # OCR Candidate Arbitration Implementation Report
 
+> 公开归档说明（2026-10-12）：以下实测属于报告标注的历史版本与原始样本。Explorer 样本现已脱敏，验收 ROI 像素与尺寸保留；旧耗时/完整输出不作为脱敏后样本的结果。trace/JSON 留在本地构建目录，复测方法见 [OCR 测试说明](../../../tests/ocr/README.md)。
+
 > 2026-10-04 样例校正：Explorer 原图列名是“类型”，不是“类别”。下面保留 2026-10-01 当时的验收记录；其中“类别”不应作为真实漏字证据。预期文件现已纠正。新的局部坐标验收、原生裁剪实验与离线模型对照见 [引擎实测报告](ocr_engine_evaluation_20261004.md)。
 
 验证日期：2026-10-01。依据 `docs/Proposal/nskry_ocr_candidate_arbitration_proposal.md` 的 Step 1→9 顺序开发；每步接入后均构建 OCR plugin。测试环境为当前 Windows 主机与已安装的 Windows OCR 中文语言包。
@@ -12,7 +14,7 @@
 - `tests/ocr_arbitration_tests.cpp`：不依赖 Windows OCR 引擎的仲裁测试。
 - `tests/ocr_plugin_smoke.cpp`：增加 PNG fixture/连续运行入口，保留原有双请求烟雾测试。
 - `plugins/nskry-ocr/manifest.json`：插件版本升至 0.5.4；导出信息同步。
-- 本报告。用户提供的 fixture、expected 文本及失败截图原样保留。
+- 本报告。当时使用原始 fixture 和 expected 文本；公开测试样本现已脱敏，失败截图留在本地。
 
 ## 2. Architecture changes
 
@@ -39,7 +41,7 @@ Expected：`此电脑`、`类别`、`build`、`查看`、`文件夹`，来源于
 
 最终版本默认缩放时，A/B/C 各自均能在某处识别到 `此电脑`、`build`、`文件夹`；最终结果也有这三项。但 `类别` 与 `查看` 在三轮中都没有正确候选，最终也缺失。需要区别位置：左侧导航的 `此电脑` 被识别到；上方路径位置 A 为 `比申，月囟`，B/C 为 `比申，脑`，因此该位置仍然错误。全图 token 命中是 3/5，不能据此声称路径位置已修复。
 
-本轮没有把三轮都不存在的文字硬编码进结果。失败归类为 Windows OCR / 当前 preprocessing 的候选生成问题，而不是候选仲裁能够自行解决的问题。完整逐词 bbox、A/B/C 文本与每个 group 的决策保存在 [最终 10 次 trace](../../../build/verify/ocr_explorer_final_v2_10runs_20261001.trace)；[1x 对照 trace](../../../build/verify/ocr_explorer_1x_final_10runs_20261001.trace)。
+本轮没有把三轮都不存在的文字硬编码进结果。失败归类为 Windows OCR / 当前 preprocessing 的候选生成问题，而不是候选仲裁能够自行解决的问题。完整逐词 bbox、A/B/C 文本与每个 group 的决策保存在 最终 10 次 trace（本地生成文件：`build/verify/ocr_explorer_final_v2_10runs_20261001.trace`）；1x 对照 trace（本地生成文件：`build/verify/ocr_explorer_1x_final_10runs_20261001.trace`）。
 
 ## 6. 10-run stability result
 

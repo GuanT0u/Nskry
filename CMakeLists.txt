@@ -20,13 +20,18 @@ add_executable(Nskry WIN32
     src/core/plugin_manager.cpp
     src/core/plugin_package_manager.cpp
     src/core/plugin_update_manager.cpp
+    src/core/plugin_update_policy.cpp
     src/core/plugin_registry.cpp
     src/core/settings_manager.cpp
+    src/core/image_edit_model.cpp
+    src/core/monitor_visibility_controller.cpp
     src/interop/window_enumerator.cpp
     src/capture/d3d_device.cpp
     src/capture/capture_session.cpp
     src/ui/annotation/annotation_engine.cpp
     src/ui/pip_window.cpp
+    src/ui/image_action.cpp
+    src/ui/window_visual_style.cpp
     src/ui/pin_window.cpp
     src/ui/long_image_crop_window.cpp
     src/ui/precision_loupe.cpp
@@ -75,6 +80,21 @@ add_subdirectory(plugins/nskry-scroll)
 add_subdirectory(plugins/nskry-ocr)
 
 if (BUILD_TESTING)
+    add_executable(NskryMonitorFrameTests tests/monitor_frame_tests.cpp
+        src/capture/d3d_device.cpp src/ui/pip_window.cpp src/ui/window_visual_style.cpp
+        src/ui/image_action.cpp src/ui/annotation/annotation_engine.cpp)
+    target_include_directories(NskryMonitorFrameTests PRIVATE src sdk)
+    target_compile_definitions(NskryMonitorFrameTests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX WINRT_LEAN_AND_MEAN)
+    if (MSVC)
+        target_compile_options(NskryMonitorFrameTests PRIVATE /utf-8)
+    endif()
+    target_link_libraries(NskryMonitorFrameTests PRIVATE d3d11 dxgi windowsapp dwmapi d3dcompiler user32 gdi32
+        msimg32 gdiplus comctl32 comdlg32 shell32)
+    add_test(NAME NskryMonitorFrameTests COMMAND NskryMonitorFrameTests)
+    set_tests_properties(NskryMonitorFrameTests PROPERTIES TIMEOUT 15)
+    add_executable(NskryResourceFeatureTests tests/resource_feature_tests.cpp src/core/image_edit_model.cpp)
+    target_include_directories(NskryResourceFeatureTests PRIVATE src)
+    add_test(NAME NskryResourceFeatureTests COMMAND NskryResourceFeatureTests)
     add_executable(NskryOcrWireTests tests/ocr_wire_ctc_tests.cpp)
     target_link_libraries(NskryOcrWireTests PRIVATE nskry_ocr_wire)
     if (MSVC)
@@ -115,6 +135,7 @@ if (BUILD_TESTING)
         tests/json_manifest_tests.cpp
         src/core/json.cpp
         src/core/plugin_manifest.cpp
+        src/core/plugin_update_policy.cpp
         src/update/semver.cpp
     )
     target_include_directories(NskryCoreTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} src sdk)
@@ -129,6 +150,37 @@ if (BUILD_TESTING)
         target_compile_options(NskryCoreTests PRIVATE /utf-8)
     endif()
     add_test(NAME NskryCoreTests COMMAND NskryCoreTests)
+    target_link_libraries(NskryCoreTests PRIVATE winhttp)
+    add_executable(NskryHostPluginUiTests tests/host_plugin_ui_tests.cpp
+        src/ui/settings/settings_window.cpp src/ui/long_image_crop_window.cpp
+        src/core/image_edit_model.cpp
+        src/ui/window_visual_style.cpp src/core/monitor_visibility_controller.cpp src/core/settings_manager.cpp
+        src/ui/precision_loupe.cpp src/ui/image_action.cpp src/core/plugin_update_policy.cpp
+        src/ui/selection_window.cpp src/ui/annotation/annotation_engine.cpp src/interop/window_enumerator.cpp
+        src/core/plugin_manifest.cpp src/core/json.cpp src/update/semver.cpp)
+    target_include_directories(NskryHostPluginUiTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} src sdk)
+    target_compile_definitions(NskryHostPluginUiTests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX WINRT_LEAN_AND_MEAN)
+    if (MSVC)
+        target_compile_options(NskryHostPluginUiTests PRIVATE /utf-8)
+    endif()
+    target_link_libraries(NskryHostPluginUiTests PRIVATE user32 gdi32 msimg32 comctl32 comdlg32 shell32 winhttp gdiplus dwmapi)
+    add_test(NAME NskryHostPluginUiTests COMMAND NskryHostPluginUiTests)
+    set_tests_properties(NskryHostPluginUiTests PROPERTIES TIMEOUT 15)
+    add_library(NskryPluginRuntimeFixture SHARED tests/plugin_runtime_fixture.cpp)
+    target_include_directories(NskryPluginRuntimeFixture PRIVATE sdk)
+    if (MSVC)
+        target_compile_options(NskryPluginRuntimeFixture PRIVATE /utf-8)
+    endif()
+    add_executable(NskryPluginRuntimeTests tests/plugin_runtime_tests.cpp
+        src/core/plugin_manager.cpp src/core/plugin_registry.cpp src/core/plugin_manifest.cpp
+        src/core/json.cpp src/update/semver.cpp)
+    target_include_directories(NskryPluginRuntimeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} src sdk)
+    target_compile_definitions(NskryPluginRuntimeTests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN WINRT_LEAN_AND_MEAN)
+    if (MSVC)
+        target_compile_options(NskryPluginRuntimeTests PRIVATE /utf-8)
+    endif()
+    add_dependencies(NskryPluginRuntimeTests NskryPluginRuntimeFixture)
+    add_test(NAME NskryPluginRuntimeTests COMMAND NskryPluginRuntimeTests $<TARGET_FILE:NskryPluginRuntimeFixture> "${CMAKE_BINARY_DIR}")
 
     add_executable(NskryOcrSmokeTests tests/ocr_plugin_smoke.cpp)
     target_include_directories(NskryOcrSmokeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/sdk)

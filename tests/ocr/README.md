@@ -3,7 +3,13 @@
 These are opt-in development tools, not runtime dependencies of Nskry. They do
 not install anything into the user's plugin registry. Native-model tests exercise
 the production on-demand worker; Python probes remain optional comparison tools.
-Fixtures contain user-provided screenshots. Outputs stay on the local machine.
+Fixtures contain sanitized regression images. Outputs stay on the local machine.
+Explorer's sidebar, breadcrumb stem, timestamps and sizes are masked; the five
+acceptance regions and image dimensions are unchanged. Run
+`powershell -File tools/sanitize_ocr_fixture.ps1` for reproducible masks and
+pixel-by-pixel acceptance-region verification. Original captures stay in the
+ignored `docs/DebugSamples/` directory. Historical measurements before
+2026-10-12 used the original image; masked-image timings may differ.
 
 ## Production native worker
 

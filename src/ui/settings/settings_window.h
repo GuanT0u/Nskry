@@ -4,6 +4,7 @@
 #include "core/plugin_update_manager.h"
 #include "core/settings_manager.h"
 #include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -11,6 +12,8 @@ namespace nskry {
 
 struct SettingsPluginItem {
     std::wstring id, name, version, author, status;
+    std::wstring description, homepage, repository, updateUrl, loadPolicy, minVersion, maxVersion;
+    PluginSource source = PluginSource::Local;
     bool enabled = true;
 };
 
@@ -25,6 +28,7 @@ struct SettingsWindowServices {
     std::function<PluginPackageResult(const std::wstring&)> installThirdPartyPlugin;
     std::function<std::vector<PluginUpdate>(std::wstring&)> checkPluginUpdates;
     std::function<PluginPackageResult(const PluginUpdate&)> downloadPluginUpdate;
+    std::function<std::wstring()> getOfficialPluginsPageUrl;
 };
 
 class SettingsWindow {
@@ -40,12 +44,18 @@ private:
     void SelectPage(int page);
     void RefreshFromServices();
     void RefreshPluginList();
+    void RefreshPluginDetails();
+    void LayoutControls();
+    void OpenOfficialPluginsPage();
+    void ShowThirdPartyPolicy();
     void ApplySettings();
     void ToggleSelectedPlugin();
     void UninstallSelectedPlugin();
     void BrowseAndInstallPlugin();
     void InstallThirdPartyPackage(const std::wstring& packagePath);
     void CheckForPluginUpdates();
+    void RefreshVisualControls();
+    void OnVisualControl(int id);
     void Close();
 
     SettingsWindowServices m_services;
@@ -53,8 +63,14 @@ private:
     HWND m_hwnd{};
     HWND m_tab{};
     HWND m_runAtStartup{}, m_notifications{}, m_theme{};
+    HWND m_hideMonitor{};
+    HWND m_shadowEnabled{}, m_shadowPreset{}, m_cornersEnabled{}, m_cornerPreset{}, m_cornerMode{};
+    HWND m_visualSliders[6]{}, m_visualValues[6]{};
+    std::vector<HWND> m_visualControls;
+    WindowVisualSettings m_visualDraft;
     HWND m_captureHotkey{}, m_exitHotkey{};
     HWND m_pluginList{}, m_pluginToggle{}, m_pluginUninstall{}, m_pluginInstall{}, m_pluginCheckUpdates{};
+    HWND m_pluginDetails{}, m_officialPlugins{}, m_thirdPartyPolicy{};
     HWND m_aboutText{};
     HWND m_apply{};
     int m_page = 0;

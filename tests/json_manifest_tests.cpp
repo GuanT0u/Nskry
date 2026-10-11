@@ -2,6 +2,7 @@
 
 #include "core/json.h"
 #include "core/plugin_manifest.h"
+#include "core/plugin_update_policy.h"
 #include "update/semver.h"
 
 #include <fstream>
@@ -79,9 +80,73 @@ bool TestSemVerDoesNotOverflow() {
 
 } // namespace
 
+bool TestManifestDependencyContract() {
+    wchar_t directory[MAX_PATH]{}, path[MAX_PATH]{};
+    if (!GetTempPathW(MAX_PATH, directory) || !GetTempFileNameW(directory, L"nsk", 0, path)) return false;
+    const auto load = [&](const std::string& extra) {
+        const std::string text = R"({"manifest_version":1,"id":"org.test","name":"Test","version":"1.0.0","runtime":{"entry":"test.dll","architecture":"x64","api_version":2})" + extra + "}";
+        { std::ofstream file(path, std::ios::binary | std::ios::trunc); file << text; }
+        nskry::PluginManifest manifest;
+        return nskry::PluginManifest::LoadFromFile(path, manifest);
+    };
+    bool ok = Expect(load(""), "minimal API 2 manifest accepted");
+    ok &= Expect(load(",\"requires_plugins\":[]"), "empty prerequisites accepted");
+    ok &= Expect(!load(",\"requires_plugins\":[\"nskry-scroll\"]"), "unsupported cross-plugin dependency rejected");
+    ok &= Expect(!load(",\"requires_plugins\":true"), "malformed dependency field rejected");
+    ok &= Expect(load(",\"update\":{\"type\":\"manifest\",\"url\":\"https://publisher.test/update.json\"}"), "manifest feed supported");
+    ok &= Expect(!load(",\"update\":{\"type\":\"future-provider\"}"), "unsupported provider does not silently pretend to work");
+    DeleteFileW(path);
+    return ok;
+}
+
+bool TestUpdatePolicy() {
+    using namespace nskry;
+    PluginRecord official, third, other;
+    official.manifest.id = L"nskry-ocr"; official.manifest.version = L"1.0.0"; official.source = PluginSource::Official;
+    third.manifest.id = L"org.test.plugin"; third.manifest.version = L"1.0.0"; third.source = PluginSource::ThirdParty;
+    other.manifest.id = L"org.test.other"; other.manifest.version = L"1.0.0"; other.source = PluginSource::Local;
+    const std::vector<const PluginRecord*> installed{&official, &third, &other};
+    const auto entry = [](const wchar_t* id, const wchar_t* version = L"1.1.0") {
+        return L"{\"id\":\"" + std::wstring(id) + L"\",\"latest_version\":\"" + version +
+            L"\",\"package_url\":\"https://publisher.test/p.nskryplugin\",\"sha256\":\"" + std::wstring(64, L'a') + L"\"}";
+    };
+    const std::wstring catalog = L"{\"plugins\":[" + entry(L"nskry-ocr") + L"," + entry(L"org.test.plugin") + L"," + entry(L"org.test.other") + L"]}";
+    std::vector<PluginUpdate> updates;
+    std::wstring error;
+    bool ok = Expect(ParsePluginUpdateFeed(catalog, installed, PluginSource::Official, L"", updates, &error) &&
+        updates.size() == 1 && updates[0].pluginId == L"nskry-ocr", "official catalog cannot promote/update third-party IDs");
+    updates.clear();
+    ok &= Expect(ParsePluginUpdateFeed(catalog, installed, PluginSource::ThirdParty, L"org.test.plugin", updates, &error) &&
+        updates.size() == 1 && updates[0].pluginId == L"org.test.plugin", "publisher feed must be restricted to its own ID");
+    updates.clear();
+    ok &= Expect(ParsePluginUpdateFeed(entry(L"nskry-ocr"), installed, PluginSource::ThirdParty, L"nskry-ocr", updates, &error) &&
+        updates.empty(), "publisher feed cannot update official records");
+    ok &= Expect(!ParsePluginUpdateFeed(L"{\"plugins\":[" + entry(L"org.test.plugin") + L"," + entry(L"org.test.plugin") + L"]}",
+        installed, PluginSource::ThirdParty, L"org.test.plugin", updates, &error) && updates.empty(), "ambiguous duplicate updates rejected atomically");
+    ok &= Expect(ParsePluginUpdateFeed(entry(L"org.test.plugin", L"0.9.0"), installed, PluginSource::ThirdParty, L"org.test.plugin", updates, &error) &&
+        updates.empty(), "downgrades do not become updates");
+    auto invalid = entry(L"org.test.plugin"); invalid.replace(invalid.find(L"https://"), 8, L"http://");
+    ok &= Expect(!ParsePluginUpdateFeed(invalid, installed, PluginSource::ThirdParty, L"org.test.plugin", updates, &error), "HTTP packages rejected before download");
+    invalid = entry(L"org.test.plugin"); invalid.replace(invalid.find(std::wstring(64, L'a')), 64, L"bad");
+    ok &= Expect(!ParsePluginUpdateFeed(invalid, installed, PluginSource::ThirdParty, L"org.test.plugin", updates, &error), "invalid SHA rejected before download");
+    ok &= Expect(IsPluginHttpsUrl(L"https://publisher.test/plugins") && !IsPluginHttpsUrl(L"file:///C:/x") &&
+        !IsPluginHttpsUrl(L"https://user:secret@publisher.test/plugins") && !IsPluginHttpsUrl(L"https://"), "browser/feed URL policy excludes non-HTTPS and credentials");
+    PluginUpdate selected; selected.pluginId = L"org.test.plugin"; selected.version = L"1.1.0";
+    PluginManifest package;
+    package.id = selected.pluginId; package.version = selected.version; package.architecture = L"x64"; package.apiVersion = 2;
+    ok &= Expect(MatchesPluginUpdate(package, selected, &error), "matching package accepted");
+    package.id = L"nskry-ocr";
+    ok &= Expect(!MatchesPluginUpdate(package, selected, &error), "different downloaded package ID rejected");
+    package.id = selected.pluginId; package.version = L"1.2.0";
+    ok &= Expect(!MatchesPluginUpdate(package, selected, &error), "different downloaded package version rejected");
+    package.version = selected.version; package.apiVersion = 999;
+    ok &= Expect(!MatchesPluginUpdate(package, selected, &error), "incompatible downloaded package rejected");
+    return ok;
+}
+
 int wmain() {
     const bool ok = TestJsonParser() && TestManifestCompatibilityIsSeparateFromParsing() &&
-        TestSemVerDoesNotOverflow();
+        TestSemVerDoesNotOverflow() && TestManifestDependencyContract() && TestUpdatePolicy();
     if (ok) std::cout << "All core tests passed.\n";
     return ok ? 0 : 1;
 }

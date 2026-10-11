@@ -1,9 +1,20 @@
 # Nskry 二次规划：Distribution / Settings / Plugin Ecosystem
 
-> 面向后续 Work 区实现与重构使用。  
+> 2026-10-12：本文是 Stage A–G 的历史设计依据。当前安装、Settings、Registry、Runtime 和更新首版已实现；
+> 当前 schema/ABI 以 [SDK](../sdk/nskry_plugin.h) 和 [交付规范](plugins/development_standard.md) 为准。
+> 下方方案示例不表示签名验证、后台自动更新、跨插件依赖或独立命令界面已经实现。
+
+> 保留架构演进与后续重构依据。
 > 本文基于当前 Nskry 的原生 C++ / Win32、托盘常驻、插件 DLL ABI 架构进行扩展。
 >
 > 核心目标：在不明显增加 idle RAM 的前提下，补齐安装器、设置中心、官方/第三方插件安装、更新、卸载与插件元数据体系。
+
+> 2026-10-08 补充规范：[Core/插件边界](architecture/core_plugin_contract.md)、
+> [插件开发标准](plugins/development_standard.md)、[第三方政策](plugins/third_party_policy.md)、
+> [GPL 发行与品牌保护](governance/distribution_and_brand_protection.md)。
+> 当前实际 SDK 为 API 2；下方 API 1 JSON 与安装器 Annotation 可选项是历史方案示例，
+> 不是当前交付要求。裁剪/标注属于 Core；官方身份不由 manifest 自称或包文件名证明。
+> 官网未上线，浏览页面及 catalog URL 保持未配置，不伪造可用目录。
 
 ---
 

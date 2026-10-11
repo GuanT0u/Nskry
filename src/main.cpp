@@ -14,6 +14,7 @@
 #include "core/plugin_update_manager.h"
 #include "core/plugin_registry.h"
 #include "core/settings_manager.h"
+#include "core/monitor_visibility_controller.h"
 
 // GDI+ for PNG saving (needs min/max workaround with NOMINMAX)
 #include <algorithm>
@@ -33,6 +34,8 @@ static HWND                                      g_mainHwnd = nullptr;
 static std::shared_ptr<nskry::D3DDevice>         g_device;
 static std::unique_ptr<nskry::CaptureSession>    g_capture;
 static std::unique_ptr<nskry::PipWindow>         g_pip;
+static std::unique_ptr<nskry::MonitorVisibilityController> g_monitorVisibility;
+static WPARAM g_monitorGeneration = 0;
 static std::unique_ptr<nskry::SelectionWindow>   g_selectionWindow;
 static std::unique_ptr<nskry::SettingsWindow>    g_settingsWindow;
 static std::unique_ptr<nskry::LongImageCropWindow> g_longImageEditor;
@@ -248,17 +251,40 @@ int WINAPI wWinMain(
             error = L"Unable to update the Windows startup setting."; return false;
         }
         settings.SetUserSettings(next);
-        if (!settings.Save()) { error = L"Unable to save settings.json."; return false; }
+        if (!settings.Save()) {
+            settings.SetUserSettings(previous);
+            if (next.captureShortcut != previous.captureShortcut) hotkeys.Rebind(L"core.capture", previous.captureShortcut);
+            if (next.exitShortcut != previous.exitShortcut) hotkeys.Rebind(L"core.exit", previous.exitShortcut);
+            if (next.runAtStartup != previous.runAtStartup) SetRunAtStartup(previous.runAtStartup);
+            error = L"Unable to save settings.json. Previous runtime settings restored."; return false;
+        }
+        if (g_monitorVisibility) {
+            g_monitorVisibility->SetGlobal(next.hideMonitorOnSourceFocus);
+            if (nskry::MonitorHideEnabled(next.hideMonitorOnSourceFocus, g_monitorVisibility->Override()) &&
+                !g_monitorVisibility->EventsAvailable())
+                ShowPluginNotification(L"Source-focus hiding has limited event support. Polling may be used; capture recycling requires source-destruction tracking.", 4500);
+        }
+        bool effectsReady = true;
+        if (g_pip) effectsReady = g_pip->SetVisualSettings(next.visuals);
+        for (auto& pin : g_pins) effectsReady = pin->SetVisualSettings(next.visuals) && effectsReady;
+        if (!effectsReady) ShowPluginNotification(L"Some optional window effects are unavailable; image content is unchanged.", 3500);
         return true;
     };
-    settingsServices.getPlugins = [&pluginRegistry]() {
+    settingsServices.getPlugins = [&pluginRegistry, &settings]() {
         std::vector<nskry::SettingsPluginItem> items;
         for (const nskry::PluginRecord* record : pluginRegistry.GetAll()) {
             nskry::SettingsPluginItem item;
             item.id = record->manifest.id; item.name = record->manifest.name; item.version = record->manifest.version;
             item.author = record->manifest.author; item.enabled = record->enabled;
+            item.description = record->manifest.description;
+            item.homepage = record->manifest.homepage; item.repository = record->manifest.repository;
+            item.updateUrl = record->source == nskry::PluginSource::Official ? settings.GetOfficialPluginCatalogUrl() : record->manifest.updateUrl;
+            item.source = record->source;
+            item.loadPolicy = record->manifest.loadPolicy == nskry::PluginLoadPolicy::Startup ? L"startup" : L"on_demand";
+            item.minVersion = record->manifest.nskryMinVersion; item.maxVersion = record->manifest.nskryMaxVersion;
             if (!record->manifest.IsCompatibleWithHost()) item.status = L"Incompatible with this Nskry version";
-            else item.status = record->enabled ? (record->loaded ? L"Enabled · Loaded" : L"Enabled · Not loaded") : L"Disabled";
+            else item.status = record->enabled ? (record->loaded ? L"Enabled · Loaded" : L"Enabled · Not loaded") :
+                (record->loaded ? L"Disabled · Loaded (restart to stop)" : L"Disabled · Not loaded");
             items.push_back(std::move(item));
         }
         return items;
@@ -279,6 +305,7 @@ int WINAPI wWinMain(
     settingsServices.downloadPluginUpdate = [&pluginUpdateManager](const nskry::PluginUpdate& update) {
         return pluginUpdateManager.DownloadAndStage(update);
     };
+    settingsServices.getOfficialPluginsPageUrl = [&settings]() { return settings.GetOfficialPluginsPageUrl(); };
     g_settingsServices = &settingsServices;
 
     // System Tray Icon
@@ -402,6 +429,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             nskry::HotkeyManager::Instance().CommandForHotkeyId(static_cast<int>(wp)));
         return 0;
     case WM_CLEANUP:
+        if (wp && wp != g_monitorGeneration) return 0;
         CleanupPip();
         return 0;
     case WM_SETTINGS_CLOSED:
@@ -453,6 +481,8 @@ static void ShowSettings() {
 }
 
 static void CleanupPip() {
+    ++g_monitorGeneration; // Invalidate queued notifications from an older monitor.
+    g_monitorVisibility.reset();
     g_capture.reset();
     g_pip.reset();
 }
@@ -471,7 +501,8 @@ static void OpenBitmapEditor(HBITMAP hbmp, int width, int height) {
     g_longImageEditor = std::make_unique<nskry::LongImageCropWindow>(hbmp, width, height,
         [](HBITMAP cropped, int croppedWidth, int croppedHeight) {
             auto pin = std::make_unique<nskry::PinWindow>(cropped, croppedWidth, croppedHeight,
-                                                          NotifyPinClosed, GetEnabledImageActions());
+                                                          NotifyPinClosed, GetEnabledImageActions(), RECT{}, OpenBitmapEditor);
+            pin->SetVisualSettings(nskry::SettingsManager::Instance().GetUserSettings().visuals);
             if (pin->ShowInEditMode(true)) g_pins.push_back(std::move(pin));
             else ShowPluginNotification(L"The annotation window could not be created.", 3500);
         },
@@ -529,11 +560,16 @@ static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionR
         }
         break;
 
+    case nskry::SelectionAction::Edit:
+        OpenBitmapEditor(result.bitmap, result.bitmapWidth, result.bitmapHeight);
+        break;
+
     case nskry::SelectionAction::Pin:
         if (result.bitmap) {
             auto pin = std::make_unique<nskry::PinWindow>(
                 result.bitmap, result.bitmapWidth, result.bitmapHeight, NotifyPinClosed,
-                GetEnabledImageActions(), result.screenRegion);
+                GetEnabledImageActions(), result.screenRegion, OpenBitmapEditor);
+            pin->SetVisualSettings(nskry::SettingsManager::Instance().GetUserSettings().visuals);
             if (pin->Show()) g_pins.push_back(std::move(pin));
             else ShowPluginNotification(L"The pin window could not be created.", 3500);
             // PinWindow takes ownership of bitmap
@@ -611,15 +647,16 @@ static nskry::ImageActions GetEnabledImageActions() {
 
 static void StartPiP(HWND targetHwnd, nskry::CropRegion crop, RECT screenRegion, nskry::AnnotationEngine engine) {
     CleanupPip();
+    const WPARAM generation = g_monitorGeneration;
 
     try {
         g_pip = std::make_unique<nskry::PipWindow>(
             g_device,
             static_cast<UINT>(crop.width),
             static_cast<UINT>(crop.height),
-            []() { ::PostMessageW(g_mainHwnd, WM_CLEANUP, 0, 0); },
+            [generation]() { ::PostMessageW(g_mainHwnd, WM_CLEANUP, generation, 0); },
             std::move(engine),
-            GetEnabledImageActions(), screenRegion);
+            GetEnabledImageActions(), screenRegion, OpenBitmapEditor);
 
         g_capture = std::make_unique<nskry::CaptureSession>(
             g_device, targetHwnd, crop);
@@ -628,9 +665,46 @@ static void StartPiP(HWND targetHwnd, nskry::CropRegion crop, RECT screenRegion,
             [](ID3D11Texture2D* tex, UINT w, UINT h) {
                 if (g_pip) g_pip->RenderFrame(tex, w, h);
             });
+        g_capture->SetClosedCallback([generation] { ::PostMessageW(g_mainHwnd, WM_CLEANUP, generation, 0); });
 
         g_capture->Start();
         g_pip->Show();
+        g_pip->SetVisualSettings(nskry::SettingsManager::Instance().GetUserSettings().visuals);
+        g_monitorVisibility = std::make_unique<nskry::MonitorVisibilityController>(targetHwnd, g_pip->Hwnd(),
+            [] { return g_pip && g_pip->IsProtectedInteraction(); },
+            [targetHwnd, crop, generation](bool hidden, bool paused, bool release) {
+                if (!g_pip) return;
+                if (release) { g_capture.reset(); return; }
+                if (!paused && !g_capture) {
+                    g_pip->SetCaptureStatus(L"Waiting for a fresh live frame...", true);
+                    try {
+                        auto capture = std::make_unique<nskry::CaptureSession>(g_device, targetHwnd, crop);
+                        capture->SetFrameCallback([](ID3D11Texture2D* tex, UINT w, UINT h) {
+                            if (g_pip) g_pip->RenderFrame(tex, w, h);
+                        });
+                        capture->SetClosedCallback([generation] { ::PostMessageW(g_mainHwnd, WM_CLEANUP, generation, 0); });
+                        capture->Start(); g_capture = std::move(capture);
+                    } catch (...) {
+                        g_pip->SetCaptureStatus(L"Capture paused: reopen this monitor to retry.");
+                        ShowPluginNotification(L"Unable to resume capture. Reopen the monitor to retry.", 3500);
+                    }
+                }
+                if (g_capture) g_capture->SetProcessingEnabled(!paused);
+                g_pip->SetAutoHidden(hidden);
+            }, [generation] { ::PostMessageW(g_mainHwnd, WM_CLEANUP, generation, 0); });
+        g_pip->SetVisibilityServices([] { if (g_monitorVisibility) g_monitorVisibility->Refresh(); },
+            [] { return g_monitorVisibility ? g_monitorVisibility->Override() : nskry::MonitorHideOverride::FollowGlobal; },
+            [](nskry::MonitorHideOverride choice) {
+                if (!g_monitorVisibility) return;
+                g_monitorVisibility->SetOverride(choice);
+                if (nskry::MonitorHideEnabled(nskry::SettingsManager::Instance().GetUserSettings().hideMonitorOnSourceFocus, choice) &&
+                    !g_monitorVisibility->EventsAvailable())
+                    ShowPluginNotification(L"Source-focus hiding has limited event support. Polling may be used; capture recycling requires source-destruction tracking.", 4500);
+            });
+        g_monitorVisibility->SetGlobal(nskry::SettingsManager::Instance().GetUserSettings().hideMonitorOnSourceFocus);
+        if (nskry::SettingsManager::Instance().GetUserSettings().hideMonitorOnSourceFocus && !g_monitorVisibility->EventsAvailable())
+            ShowPluginNotification(L"Source-focus hiding has limited event support. Polling may be used; capture recycling requires source-destruction tracking.", 4500);
+        g_monitorVisibility->Refresh();
 
     } catch (const winrt::hresult_error& e) {
         CleanupPip();

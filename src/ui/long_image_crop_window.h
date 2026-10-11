@@ -4,11 +4,14 @@
 #include <mutex>
 #include <windows.h>
 #include "ui/image_action.h"
+#include "core/image_edit_model.h"
 
 namespace nskry {
 
-// A small pre-annotation editor for long captures.  It keeps the original
-// bitmap intact until the user confirms the vertical crop.
+// Core image crop/annotation workflow, available without nskry-scroll or OCR.
+// LongImageCropWindow is a historical name, not a plugin dependency. It keeps
+// the original bitmap intact until a crop is confirmed; plugins use the public
+// host callback rather than depending on this private C++ class.
 class LongImageCropWindow {
 public:
     using ApplyCallback = std::function<void(HBITMAP, int, int)>;
@@ -28,7 +31,8 @@ public:
     [[nodiscard]] bool Show(HWND owner);
 
 private:
-    enum class DragHandle { None, Top, Bottom, Left, Right, Pan, OcrArea };
+    friend struct ImageEditorTestAccess;
+    enum class DragHandle { None, Top, Bottom, Left, Right, Pan, OcrArea, Cut };
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleMessage(HWND, UINT, WPARAM, LPARAM);
@@ -47,6 +51,10 @@ private:
     void ApplyCrop();
     void ExportCrop(bool save);
     void RunImageAction(size_t actionIndex);
+    void SetCutMode(int mode);
+    void ConfirmCut();
+    void SyncModel();
+    void DrawMappedImage(HDC target, HDC source, RECT destination, nskry::ImageRect region) const;
 
     HWND m_hwnd{};
     HWND m_applyButton{};
@@ -57,6 +65,15 @@ private:
     HWND m_copyButton{};
     HWND m_saveButton{};
     HBITMAP m_bitmap{};
+    ImageEditModel m_model;
+    int m_originalWidth{}, m_originalHeight{};
+    int m_cutMode{}, m_cutFirst{}, m_cutSecond{}; // 1 rows, 2 columns; pending only
+    bool m_hasCut{};
+    bool m_cutMovingFirst{};
+    HDC m_backDc{};
+    HBITMAP m_backBitmap{};
+    HGDIOBJ m_backOriginal{};
+    SIZE m_backSize{};
     int m_width{};
     int m_height{};
     int m_cropTop{};

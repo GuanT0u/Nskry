@@ -3,6 +3,9 @@
 #include "capture/d3d_device.h"
 #include "ui/annotation/annotation_engine.h"
 #include "ui/image_action.h"
+#include "core/monitor_visibility_policy.h"
+#include <atomic>
+#include "ui/window_visual_style.h"
 #include <functional>
 #include <mutex>
 #include <vector>
@@ -23,7 +26,7 @@ public:
               UINT contentWidth, UINT contentHeight,
               std::function<void()> onCloseRequest,
               AnnotationEngine initialEngine = {},
-              ImageActions imageActions = {}, RECT initialScreenRect = {});
+              ImageActions imageActions = {}, RECT initialScreenRect = {}, ImageEditorCallback editor = {});
     ~PipWindow();
 
     PipWindow(const PipWindow&)            = delete;
@@ -36,8 +39,16 @@ public:
     void RenderFrame(ID3D11Texture2D* croppedTexture, UINT w, UINT h);
 
     [[nodiscard]] HWND Hwnd() const { return m_hwnd; }
+    void SetVisibilityServices(std::function<void()> refresh,
+                               std::function<MonitorHideOverride()> get,
+                               std::function<void(MonitorHideOverride)> set);
+    bool IsProtectedInteraction() const { return m_isEditing || m_menuActive; }
+    void SetAutoHidden(bool hidden);
+    void SetCaptureStatus(const wchar_t* text, bool waiting = false);
+    bool SetVisualSettings(WindowVisualSettings settings);
 
 private:
+    friend struct MonitorFrameTestAccess;
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
@@ -93,7 +104,9 @@ private:
     void CreateQuickActions(HWND parent);
     void LayoutQuickActions();
     void ShowQuickActions(bool show);
-    void RunTextRecognition();
+    void RunQuickImageAction();
+    void RunImageAction(size_t index);
+    void OpenStructureEditor();
     bool IsQuickActionPoint(POINT clientPoint) const;
 
     void CreateToolbarWindow();
@@ -112,6 +125,14 @@ private:
     UINT                            m_contentH{};
     std::function<void()>           m_onClose;
     ImageActions                    m_imageActions;
+    ImageEditorCallback             m_editor;
+    std::function<void()> m_visibilityRefresh;
+    std::function<MonitorHideOverride()> m_getHideOverride;
+    std::function<void(MonitorHideOverride)> m_setHideOverride;
+    bool m_autoHidden{}, m_menuActive{};
+    std::atomic<bool> m_waitingFrame{false};
+    HWND m_captureStatus{};
+    std::unique_ptr<WindowVisualStyle> m_visualStyle;
 
     // GPU annotation overlay resources
     winrt::com_ptr<ID3D11Texture2D>          m_overlayTex;
