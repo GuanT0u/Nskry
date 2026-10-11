@@ -298,6 +298,7 @@ void SelectionWindow::OnMouseMove(int x, int y) {
         }
         if (!found && m_targetHwnd) {
             m_targetHwnd   = nullptr;
+            m_targetBounds = {};
             m_hoveredRect  = {};
             ::InvalidateRect(m_hwnd, nullptr, FALSE);
         }
@@ -387,7 +388,10 @@ void SelectionWindow::OnMouseMove(int x, int y) {
 }
 
 void SelectionWindow::OnLButtonDown(int x, int y) {
-    if (m_state == State::Hovering && m_targetHwnd) {
+    if (m_state == State::Hovering) {
+        // Snapping is optional; desktop/empty space must also accept a drag.
+        // Refresh the target at mouse-down, even if no mouse-move arrived first.
+        OnMouseMove(x, y);
         m_state     = State::Dragging;
         m_dragStart = { x, y };
         m_dragRect  = { x, y, x, y };
@@ -498,6 +502,8 @@ void SelectionWindow::OnLButtonDown(int x, int y) {
 
 void SelectionWindow::OnLButtonUp(int x, int y) {
     if (m_state == State::Dragging) {
+        // The release position can arrive without a final WM_MOUSEMOVE.
+        OnMouseMove(x, y);
         ::ReleaseCapture();
 
         RECT activeRect = m_dragRect;
@@ -506,6 +512,7 @@ void SelectionWindow::OnLButtonUp(int x, int y) {
 
         if (activeRect.right <= activeRect.left || activeRect.bottom <= activeRect.top) {
             m_state = State::Hovering;
+            ::InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
 

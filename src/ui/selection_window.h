@@ -83,6 +83,7 @@ public:
     void Close();
 
 private:
+    friend struct SelectionWindowTestAccess; // Internal regression tests; not plugin API.
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
