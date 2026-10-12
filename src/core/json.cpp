@@ -406,4 +406,60 @@ bool ToUtf8(std::wstring_view value, std::string& result) {
                                  result.data(), required, nullptr, nullptr) == required;
 }
 
+Value MergeObjects(const Value& base, const Value& updates) {
+    const auto* original = base.AsObject();
+    const auto* changed = updates.AsObject();
+    if (!original || !changed) return updates;
+    auto merged = *original;
+    for (const auto& [key, value] : *changed) {
+        const auto it = merged.find(key);
+        merged[key] = it == merged.end() ? value : MergeObjects(it->second, value);
+    }
+    return Value(std::move(merged));
+}
+
+namespace {
+bool SerializeValue(const Value& value, size_t depth, std::wstring& out) {
+    if (depth > kMaximumDepth) return false;
+    if (value.IsNull()) out += L"null";
+    else if (const auto* boolean = value.AsBool()) out += *boolean ? L"true" : L"false";
+    else if (const auto* number = value.AsNumber()) {
+        if (!std::isfinite(*number)) return false;
+        char digits[64];
+        const auto result = std::to_chars(digits, digits + sizeof(digits), *number,
+                                         std::chars_format::general, std::numeric_limits<double>::max_digits10);
+        if (result.ec != std::errc{}) return false;
+        for (auto p = digits; p != result.ptr; ++p) out += wchar_t(*p);
+    } else if (const auto* text = value.AsString()) out += L"\"" + EscapeString(*text) + L"\"";
+    else if (const auto* array = value.AsArray()) {
+        out += L"[";
+        bool first = true;
+        for (const auto& item : *array) {
+            if (!first) out += L",";
+            first = false;
+            if (!SerializeValue(item, depth + 1, out)) return false;
+        }
+        out += L"]";
+    } else if (const auto* object = value.AsObject()) {
+        out += L"{";
+        bool first = true;
+        for (const auto& [key, member] : *object) {
+            if (!first) out += L",";
+            first = false;
+            out += L"\n" + std::wstring((depth + 1) * 2, L' ') + L"\"" + EscapeString(key) + L"\": ";
+            if (!SerializeValue(member, depth + 1, out)) return false;
+        }
+        if (!object->empty()) out += L"\n" + std::wstring(depth * 2, L' ');
+        out += L"}";
+    }
+    return true;
+}
+} // namespace
+bool Serialize(const Value& value, std::wstring& result) {
+    result.clear();
+    if (SerializeValue(value, 0, result)) return true;
+    result.clear();
+    return false;
+}
+
 } // namespace nskry::json

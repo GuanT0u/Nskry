@@ -8,7 +8,7 @@
 namespace nskry {
 namespace {
 constexpr int IDC_TAB = 100, IDC_RUN = 101, IDC_NOTIFY = 102, IDC_THEME = 103;
-constexpr int IDC_CAPTURE = 110, IDC_EXIT = 111, IDC_PLUGIN_LIST = 120, IDC_PLUGIN_TOGGLE = 121;
+constexpr int IDC_PLUGIN_LIST = 120, IDC_PLUGIN_TOGGLE = 121;
 constexpr int IDC_PLUGIN_UNINSTALL = 122, IDC_PLUGIN_INSTALL = 123, IDC_PLUGIN_CHECK_UPDATES = 124, IDC_APPLY = 130;
 constexpr int IDC_PLUGIN_DETAILS = 125, IDC_OFFICIAL_PLUGINS = 126, IDC_PLUGIN_POLICY = 127;
 constexpr const wchar_t* kThirdPartyPolicy =
@@ -21,13 +21,12 @@ constexpr const wchar_t* kThirdPartyPolicy =
     L"An 'Official source' label currently records installation provenance, not a cryptographically verified publisher identity.";
 
 void SetText(HWND hwnd, const std::wstring& text) { ::SetWindowTextW(hwnd, text.c_str()); }
-std::wstring GetText(HWND hwnd) { wchar_t buf[256]{}; ::GetWindowTextW(hwnd, buf, 256); return buf; }
 void ShowControl(HWND hwnd, bool show) { if (hwnd) ::ShowWindow(hwnd, show ? SW_SHOW : SW_HIDE); }
 }
 
 SettingsWindow::SettingsWindow(SettingsWindowServices services, std::function<void()> onClosed)
     : m_services(std::move(services)), m_onClosed(std::move(onClosed)) {}
-SettingsWindow::~SettingsWindow() { if (m_hwnd) ::DestroyWindow(m_hwnd); }
+SettingsWindow::~SettingsWindow() { m_inputPage.reset();m_jumpPage.reset();m_interactionPage.reset();if (m_hwnd) ::DestroyWindow(m_hwnd); }
 
 void SettingsWindow::Show(HWND owner) {
     std::call_once(s_classOnce, [] {
@@ -56,6 +55,7 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
 
 LRESULT SettingsWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+    case WM_ACTIVATEAPP:if(!wp && m_inputPage)m_inputPage->StopRecording();break;
     case WM_CREATE: CreateControls(); ::DragAcceptFiles(m_hwnd, TRUE); RefreshFromServices(); return 0;
     case WM_NOTIFY: if (reinterpret_cast<NMHDR*>(lp)->idFrom == IDC_TAB && reinterpret_cast<NMHDR*>(lp)->code == TCN_SELCHANGE) SelectPage(TabCtrl_GetCurSel(m_tab)); return 0;
     case WM_COMMAND:
@@ -97,7 +97,7 @@ LRESULT SettingsWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
 void SettingsWindow::CreateControls() {
     m_tab = ::CreateWindowExW(0, WC_TABCONTROLW, nullptr, WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
         12, 12, 680, 390, m_hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_TAB)), nullptr, nullptr);
-    const wchar_t* tabs[] = { L"General", L"Hotkeys", L"Plugins", L"About", L"Window effects" };
+    const wchar_t* tabs[] = { L"General", L"Hotkeys", L"Plugins", L"About", L"Window effects", L"Input appearance" };
     for (const auto* tab : tabs) { TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = const_cast<wchar_t*>(tab); TabCtrl_InsertItem(m_tab, TabCtrl_GetItemCount(m_tab), &item); }
     auto control = [&](DWORD style, const wchar_t* text, int id, int x, int y, int w, int h) {
         return ::CreateWindowExW(0, L"BUTTON", text, WS_CHILD | style, x, y, w, h, m_hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), nullptr, nullptr); };
@@ -108,10 +108,13 @@ void SettingsWindow::CreateControls() {
     m_generalDecor.push_back(::CreateWindowExW(0, L"STATIC", L"Theme:", WS_CHILD | WS_VISIBLE, 52, 158, 90, 22, m_hwnd, nullptr, nullptr, nullptr));
     m_theme = ::CreateWindowExW(0, WC_COMBOBOXW, nullptr, WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 145, 154, 150, 150, m_hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_THEME)), nullptr, nullptr);
     ::SendMessageW(m_theme, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"System")); ::SendMessageW(m_theme, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Light")); ::SendMessageW(m_theme, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Dark"));
-    m_hotkeyDecor.push_back(::CreateWindowExW(0, L"STATIC", L"Capture shortcut:", WS_CHILD, 52, 80, 140, 22, m_hwnd, nullptr, nullptr, nullptr));
-    m_captureHotkey = ::CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", nullptr, WS_CHILD | ES_AUTOHSCROLL, 205, 76, 210, 25, m_hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CAPTURE)), nullptr, nullptr);
-    m_hotkeyDecor.push_back(::CreateWindowExW(0, L"STATIC", L"Exit shortcut:", WS_CHILD, 52, 122, 140, 22, m_hwnd, nullptr, nullptr, nullptr));
-    m_exitHotkey = ::CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", nullptr, WS_CHILD | ES_AUTOHSCROLL, 205, 118, 210, 25, m_hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_EXIT)), nullptr, nullptr);
+    auto definitions=m_services.getShortcuts?m_services.getShortcuts():CoreShortcuts();
+    m_hotkeyDecor.push_back(::CreateWindowExW(0,L"STATIC",
+        L"Record until all keys are released; Type uses names such as Ctrl+Alt+A. Hold rows accept Alt/Space; wheel rows accept Shift+Wheel. Windows-reserved combinations are not intercepted.",
+        WS_CHILD,32,58,630,44,m_hwnd,nullptr,nullptr,nullptr));
+    m_inputPage=std::make_unique<InputPage>(m_hwnd,definitions,false,m_services.setRecording,nullptr);
+    m_jumpPage=std::make_unique<InputPage>(m_hwnd,definitions,true,nullptr,[this](const std::wstring& id){SelectPage(1);m_inputPage->Jump(id);});
+    m_interactionPage=std::make_unique<InteractionPage>(m_hwnd);
     m_pluginList = ::CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", nullptr, WS_CHILD | LBS_NOTIFY | WS_VSCROLL, 32, 58, 630, 240, m_hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PLUGIN_LIST)), nullptr, nullptr);
     m_pluginToggle = control(BS_PUSHBUTTON, L"Enable / Disable", IDC_PLUGIN_TOGGLE, 32, 315, 130, 28);
     m_pluginUninstall = control(BS_PUSHBUTTON, L"Uninstall", IDC_PLUGIN_UNINSTALL, 175, 315, 100, 28);
@@ -178,6 +181,9 @@ void SettingsWindow::LayoutControls() {
     move(m_officialPlugins, 32, buttonsY + 38, 210, 28);
     move(m_thirdPartyPolicy, 255, buttonsY + 38, 220, 28);
     move(m_apply, client.right - 134, client.bottom - 54, 110, 30);
+    if(m_inputPage)move(m_inputPage->Hwnd(),32,108,width,client.bottom-178);
+    if(m_jumpPage)move(m_jumpPage->Hwnd(),32,258,width,client.bottom-328);
+    if(m_interactionPage)move(m_interactionPage->Hwnd(),32,58,width,client.bottom-128);
 }
 
 void SettingsWindow::SelectPage(int page) {
@@ -185,9 +191,11 @@ void SettingsWindow::SelectPage(int page) {
     const bool general = page == 0, hotkeys = page == 1, plugins = page == 2, about = page == 3;
     ShowControl(m_runAtStartup, general); ShowControl(m_notifications, general); ShowControl(m_theme, general);
     ShowControl(m_hideMonitor, general);
-    ShowControl(m_captureHotkey, hotkeys); ShowControl(m_exitHotkey, hotkeys);
+    if(m_inputPage)ShowControl(m_inputPage->Hwnd(),hotkeys);
+    if(m_jumpPage)ShowControl(m_jumpPage->Hwnd(),general);
+    if(m_interactionPage)ShowControl(m_interactionPage->Hwnd(),page==5);
     ShowControl(m_pluginList, plugins); ShowControl(m_pluginToggle, plugins); ShowControl(m_pluginUninstall, plugins); ShowControl(m_pluginInstall, plugins); ShowControl(m_pluginCheckUpdates, plugins);
-    ShowControl(m_apply, general || hotkeys || page == 4); if (plugins) RefreshPluginList();
+    ShowControl(m_apply, general || hotkeys || page == 4 || page==5); if (plugins) RefreshPluginList();
     for (auto control : m_visualControls) ShowControl(control, page == 4);
     ShowControl(m_pluginDetails, plugins); ShowControl(m_officialPlugins, plugins); ShowControl(m_thirdPartyPolicy, plugins);
     for (HWND hwnd : m_generalDecor) ShowControl(hwnd, general);
@@ -200,7 +208,9 @@ void SettingsWindow::RefreshFromServices() {
     ::SendMessageW(m_runAtStartup, BM_SETCHECK, settings.runAtStartup ? BST_CHECKED : BST_UNCHECKED, 0);
     ::SendMessageW(m_notifications, BM_SETCHECK, settings.notifications ? BST_CHECKED : BST_UNCHECKED, 0);
     ::SendMessageW(m_hideMonitor, BM_SETCHECK, settings.hideMonitorOnSourceFocus ? BST_CHECKED : BST_UNCHECKED, 0);
-    SetText(m_captureHotkey, settings.captureShortcut); SetText(m_exitHotkey, settings.exitShortcut);
+    if(m_inputPage)m_inputPage->Load(settings);
+    if(m_jumpPage)m_jumpPage->Load(settings);
+    if(m_interactionPage)m_interactionPage->Load(settings.interaction);
     const int selection = settings.theme == L"light" ? 1 : settings.theme == L"dark" ? 2 : 0; ::SendMessageW(m_theme, CB_SETCURSEL, selection, 0);
     m_visualDraft = settings.visuals; RefreshVisualControls();
 }
@@ -255,10 +265,15 @@ void SettingsWindow::ApplySettings() {
     settings.notifications = ::SendMessageW(m_notifications, BM_GETCHECK, 0, 0) == BST_CHECKED;
     settings.hideMonitorOnSourceFocus = ::SendMessageW(m_hideMonitor, BM_GETCHECK, 0, 0) == BST_CHECKED;
     settings.visuals = m_visualDraft;
-    settings.captureShortcut = GetText(m_captureHotkey); settings.exitShortcut = GetText(m_exitHotkey);
+    if(m_inputPage)m_inputPage->Store(settings);
+    if(m_interactionPage)settings.interaction=m_interactionPage->Value();
     const int theme = static_cast<int>(::SendMessageW(m_theme, CB_GETCURSEL, 0, 0)); settings.theme = theme == 1 ? L"light" : theme == 2 ? L"dark" : L"system";
     std::wstring error; if (!m_services.applySettings(settings, error)) ::MessageBoxW(m_hwnd, error.c_str(), L"Nskry Settings", MB_ICONERROR);
-    else { RefreshFromServices(); ::MessageBoxW(m_hwnd, L"Settings applied.", L"Nskry Settings", MB_ICONINFORMATION); }
+    else {
+        RefreshFromServices();
+        const auto message=L"Settings applied."+error;
+        ::MessageBoxW(m_hwnd, message.c_str(), L"Nskry Settings", error.empty()?MB_ICONINFORMATION:MB_ICONWARNING);
+    }
 }
 
 void SettingsWindow::RefreshVisualControls() {

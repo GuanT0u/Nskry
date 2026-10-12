@@ -21,7 +21,7 @@ endif()
 target_compile_definitions(nskry_ocr PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX WINRT_LEAN_AND_MEAN NSKRY_PLUGIN_EXPORTS
     NSKRY_OCR_MODEL_ENGINE=$<BOOL:${NSKRY_OCR_MODEL_ENGINE}>)
 target_include_directories(nskry_ocr PRIVATE ${CMAKE_SOURCE_DIR}/sdk)
-target_link_libraries(nskry_ocr PRIVATE nskry_ocr_wire gdi32 user32 ole32 windowsapp msimg32 comdlg32 windowscodecs)
+target_link_libraries(nskry_ocr PRIVATE nskry_ocr_wire gdi32 user32 ole32 windowsapp msimg32 comdlg32 comctl32 windowscodecs)
 set_target_properties(nskry_ocr PROPERTIES OUTPUT_NAME "nskry-ocr" RUNTIME_OUTPUT_DIRECTORY "${NSKRY_OCR_STAGE}")
 
 set(NSKRY_OCR_PACKAGE_FILES manifest.json nskry-ocr.dll LICENSE COPYING PLUGIN_EXCEPTION)

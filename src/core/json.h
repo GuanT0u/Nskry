@@ -56,4 +56,10 @@ std::wstring EscapeString(std::wstring_view value);
 /// Strict UTF-16/UTF-32 to UTF-8 conversion for JSON writers.
 bool ToUtf8(std::wstring_view value, std::string& result);
 
+/// Recursively overlay object members; arrays/scalars are replaced, not appended.
+Value MergeObjects(const Value& base, const Value& updates);
+
+/// Serialize with the parser's nesting bound and finite, locale-independent numbers.
+bool Serialize(const Value& value, std::wstring& result);
+
 } // namespace nskry::json

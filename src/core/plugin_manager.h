@@ -2,47 +2,65 @@
 
 #include "core/plugin_registry.h"
 #include "sdk/nskry_plugin.h"
+#include <functional>
 #include <string>
 #include <unordered_map>
 
 namespace nskry {
 
 struct PluginEntry {
-    HMODULE         hModule = nullptr;
-    std::wstring    id;
-    decltype(&nskry_plugin_execute)  fnExecute = nullptr;
+    HMODULE hModule = nullptr;
+    std::wstring id;
+    decltype(&nskry_plugin_execute) fnExecute = nullptr;
     decltype(&nskry_plugin_shutdown) fnShutdown = nullptr;
+    NskryConfigureInputV1 fnConfigureInput = nullptr;
 };
 
-struct PluginToolbarAction { std::wstring id; std::wstring label; };
-struct PluginImageAction { std::wstring id; std::wstring label; };
+struct PluginToolbarAction {
+    std::wstring id;
+    std::wstring label;
+};
+struct PluginImageAction {
+    std::wstring id;
+    std::wstring label;
+};
 
 /// Runtime-only plugin service. Installation metadata and enablement belong to
 /// PluginRegistry; package/update lifecycle belongs to separate services.
 class PluginManager {
-public:
-    static PluginManager& Instance();
+  public:
+    static PluginManager &Instance();
 
-    void Initialize(PluginRegistry& registry, const NskryHostContext& hostContext);
+    void Initialize(PluginRegistry &registry, const NskryHostContext &hostContext);
     void Shutdown();
 
-    bool EnsureLoaded(const std::wstring& pluginId);
-    bool Unload(const std::wstring& pluginId);
-    bool ExecutePlugin(const std::wstring& pluginId, const NskryHostContext& hostContext);
-    bool IsLoaded(const std::wstring& pluginId) const;
+    bool EnsureLoaded(const std::wstring &pluginId);
+    bool Unload(const std::wstring &pluginId);
+    bool ExecutePlugin(const std::wstring &pluginId, const NskryHostContext &hostContext);
+    bool IsLoaded(const std::wstring &pluginId) const;
     std::vector<PluginToolbarAction> GetEnabledToolbarActions() const;
     std::vector<PluginImageAction> GetEnabledImageActions() const;
+    std::vector<ShortcutDefinition> GetShortcutDefinitions() const;
+    void SetShortcutProvider(std::function<std::wstring(const ShortcutDefinition &)> provider) {
+        m_shortcutProvider = std::move(provider);
+    }
+    // Failed IDs are reported to the user; configuration cannot force a native DLL to comply.
+    std::vector<std::wstring> RefreshInputConfiguration();
 
-private:
+  private:
     PluginManager() = default;
-    ~PluginManager() { Shutdown(); }
+    ~PluginManager() {
+        Shutdown();
+    }
 
-    bool LoadPlugin(const PluginRecord& record);
+    bool LoadPlugin(const PluginRecord &record);
+    void ConfigureInput(PluginEntry &entry, const PluginRecord &record);
 
-    PluginRegistry* m_registry = nullptr;
+    PluginRegistry *m_registry = nullptr;
     NskryHostContext m_hostContext{};
     std::unordered_map<std::wstring, PluginEntry> m_plugins;
     bool m_initialized = false;
+    std::function<std::wstring(const ShortcutDefinition &)> m_shortcutProvider;
 };
 
 } // namespace nskry

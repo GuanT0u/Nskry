@@ -74,7 +74,8 @@ class SelectionWindow {
 public:
     using CompletionCallback = std::function<void(SelectionAction action, SelectionResult result)>;
 
-    explicit SelectionWindow(CompletionCallback onComplete, std::vector<PluginToolbarAction> pluginActions = {});
+    explicit SelectionWindow(CompletionCallback onComplete, std::vector<PluginToolbarAction> pluginActions = {},
+        SelectionAction direct=SelectionAction::Cancel,std::wstring directPlugin={});
     ~SelectionWindow();
 
     SelectionWindow(const SelectionWindow&)            = delete;
@@ -84,6 +85,8 @@ public:
     void Close();
 
 private:
+    SelectionAction m_directAction=SelectionAction::Cancel;
+    std::wstring m_directPlugin;
     friend struct SelectionWindowTestAccess; // Internal regression tests; not plugin API.
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);

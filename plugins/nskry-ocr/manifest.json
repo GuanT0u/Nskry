@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "nskry-ocr",
   "name": "Text recognition",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "author": "Nskry Team",
   "description": "On-demand offline Chinese and English text recognition, with a lightweight Windows OCR option.",
   "runtime": {
@@ -12,6 +12,15 @@
     "load_policy": "on_demand"
   },
   "capabilities": ["toolbar_action", "post_capture"],
+  "shortcuts": [
+    {"id":"launch","label":"Recognize a selected region","scope":"capture","default":"","general_jump":true},
+    {"id":"copy","label":"Copy selected text","scope":"key","default":"Ctrl+C"},
+    {"id":"copy_alt","label":"Copy text (alternate)","scope":"key","default":"Ctrl+Insert"},
+    {"id":"cancel","label":"Cancel OCR task","scope":"key","default":"Esc"},
+    {"id":"zoom","label":"OCR image zoom","scope":"wheel","default":"Wheel"},
+    {"id":"pan_x","label":"OCR horizontal pan","scope":"wheel","default":"Shift+Wheel"},
+    {"id":"pan_y","label":"OCR vertical pan","scope":"wheel","default":"Alt+Wheel"}
+  ],
   "compatibility": { "nskry_min": "0.5.0", "nskry_max": null },
   "source": { "homepage": "https://github.com/GuanT0u/Nskry", "repository": "https://github.com/GuanT0u/Nskry" }
 }

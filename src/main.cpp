@@ -60,7 +60,7 @@ static constexpr UINT WM_PIN_CLOSED = WM_APP + 44;
 // ============================================================================
 
 static LRESULT CALLBACK MainWndProc(HWND, UINT, WPARAM, LPARAM);
-static void ShowSelectionOverlay();
+static void ShowSelectionOverlay(nskry::SelectionAction direct=nskry::SelectionAction::Cancel,std::wstring pluginId={});
 static void ShowSettings();
 static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionResult result);
 static void StartPiP(HWND targetHwnd, nskry::CropRegion crop, RECT screenRegion, nskry::AnnotationEngine engine = {});
@@ -76,6 +76,20 @@ static bool SaveBitmapToFile(HBITMAP hbmp, int w, int h, HWND owner = nullptr);
 static int  GetPngEncoderClsid(CLSID* pClsid);
 static bool RunPluginPackageCli(int& exitCode);
 static bool SetRunAtStartup(bool enabled);
+static std::vector<nskry::ShortcutDefinition> AllShortcuts() {
+    auto rows=nskry::CoreShortcuts();auto plugins=nskry::PluginManager::Instance().GetShortcutDefinitions();
+    for(auto& row:plugins) rows.push_back(std::move(row));
+    nskry::AddBuiltinCapturePlaceholders(rows);
+    return rows;
+}
+static std::wstring ShortcutValue(const nskry::UserSettings& settings,const nskry::ShortcutDefinition& row) {
+    const auto it=settings.shortcuts.find(row.id);return it==settings.shortcuts.end()?row.defaultShortcut:it->second;
+}
+static std::vector<std::pair<std::wstring,std::wstring>> GlobalBindings(const nskry::UserSettings& settings) {
+    std::vector<std::pair<std::wstring,std::wstring>> bindings;
+    for(const auto& row:AllShortcuts())if(row.kind==nskry::input::Kind::Global)bindings.emplace_back(row.id,ShortcutValue(settings,row));
+    return bindings;
+}
 
 struct StartupHintState {
     std::wstring text;
@@ -196,19 +210,8 @@ int WINAPI wWinMain(
 
     auto& hotkeys = nskry::HotkeyManager::Instance();
     hotkeys.Initialize(g_mainHwnd);
-    if (!hotkeys.Register(L"core.capture", settings.GetHotkey(L"core.capture"))) {
-        ::MessageBoxW(nullptr,
-            (L"Failed to register capture shortcut: " + settings.GetHotkey(L"core.capture") +
-             L".\nAnother program may be using it.").c_str(),
-            L"Nskry", MB_ICONERROR);
-        return 1;
-    }
-    if (!hotkeys.Register(L"core.exit", settings.GetHotkey(L"core.exit"))) {
-        ::MessageBoxW(nullptr,
-            (L"Failed to register exit shortcut: " + settings.GetHotkey(L"core.exit") +
-             L".\nYou can still quit from the tray menu.").c_str(),
-            L"Nskry", MB_ICONWARNING);
-    }
+    commands.Register(L"core.monitor",[]{ShowSelectionOverlay(nskry::SelectionAction::PiP);});
+    nskry::PluginManager::Instance().SetShortcutProvider([&settings](const nskry::ShortcutDefinition& row){return settings.GetShortcutValue(row);});
 
     // Plugin Manager initialization
     NskryHostContext hostCtx{};
@@ -233,31 +236,44 @@ int WINAPI wWinMain(
         nskry::PluginManager::Instance().Initialize(pluginRegistry, hostCtx);
     }
 
+    for(const auto& row:AllShortcuts())if(!row.pluginId.empty() && row.kind==nskry::input::Kind::Global)
+        commands.Register(row.id,[id=row.pluginId]{
+            bool enabled=false;for(const auto& action:nskry::PluginManager::Instance().GetEnabledToolbarActions())if(action.id==id)enabled=true;
+            if(enabled)ShowSelectionOverlay(nskry::SelectionAction::Plugin,id);
+            else ShowPluginNotification(L"This capture plugin is not installed or enabled.",3000);
+        });
+    for(const auto& [id,shortcut]:GlobalBindings(settings.GetUserSettings()))if(!shortcut.empty() && !hotkeys.Register(id,shortcut))
+        ShowPluginNotification((L"Shortcut unavailable: "+shortcut+L". Use Settings or the tray menu.").c_str(),4000);
     nskry::SettingsWindowServices settingsServices;
+    settingsServices.getShortcuts=AllShortcuts;
+    settingsServices.setRecording=[&hotkeys](bool active){if(!hotkeys.Suspend(active))ShowPluginNotification(L"Some global shortcuts could not be restored. Apply settings to retry.",3500);};
     settingsServices.getSettings = [&settings]() { return settings.GetUserSettings(); };
     settingsServices.applySettings = [&settings, &hotkeys](const nskry::UserSettings& next, std::wstring& error) {
+        error.clear();
         const nskry::UserSettings previous = settings.GetUserSettings();
-        if (next.captureShortcut.empty() || next.exitShortcut.empty()) { error = L"Shortcuts cannot be empty."; return false; }
-        if (next.captureShortcut != previous.captureShortcut && !hotkeys.Rebind(L"core.capture", next.captureShortcut)) {
-            error = L"The capture shortcut is invalid or already in use."; return false;
-        }
-        if (next.exitShortcut != previous.exitShortcut && !hotkeys.Rebind(L"core.exit", next.exitShortcut)) {
-            if (next.captureShortcut != previous.captureShortcut) hotkeys.Rebind(L"core.capture", previous.captureShortcut);
-            error = L"The exit shortcut is invalid or already in use."; return false;
-        }
+        if(!nskry::ValidateShortcuts(AllShortcuts(),next.shortcuts,error))return false;
+        if(!hotkeys.ApplyBindings(GlobalBindings(next),error))return false;
         if (next.runAtStartup != previous.runAtStartup && !SetRunAtStartup(next.runAtStartup)) {
-            if (next.captureShortcut != previous.captureShortcut) hotkeys.Rebind(L"core.capture", previous.captureShortcut);
-            if (next.exitShortcut != previous.exitShortcut) hotkeys.Rebind(L"core.exit", previous.exitShortcut);
-            error = L"Unable to update the Windows startup setting."; return false;
+            std::wstring rollback;
+            const bool restored=hotkeys.ApplyBindings(GlobalBindings(previous),rollback);
+            error = L"Unable to update the Windows startup setting.";
+            if(!restored)error+=L"\nShortcut rollback also failed: "+rollback;
+            return false;
         }
         settings.SetUserSettings(next);
         if (!settings.Save()) {
             settings.SetUserSettings(previous);
-            if (next.captureShortcut != previous.captureShortcut) hotkeys.Rebind(L"core.capture", previous.captureShortcut);
-            if (next.exitShortcut != previous.exitShortcut) hotkeys.Rebind(L"core.exit", previous.exitShortcut);
-            if (next.runAtStartup != previous.runAtStartup) SetRunAtStartup(previous.runAtStartup);
-            error = L"Unable to save settings.json. Previous runtime settings restored."; return false;
+            std::wstring rollback;
+            const bool restored=hotkeys.ApplyBindings(GlobalBindings(previous),rollback);
+            error = L"Unable to save settings.json. In-memory settings restored.";
+            if(!restored)error+=L"\nShortcut rollback failed: "+rollback;
+            if (next.runAtStartup != previous.runAtStartup && !SetRunAtStartup(previous.runAtStartup))
+                error+=L"\nThe Windows startup setting could not be restored.";
+            return false;
         }
+        for(const auto& id:nskry::PluginManager::Instance().RefreshInputConfiguration())
+            error+=L"\nSettings saved, but this plugin failed to update its input configuration: "+id+
+                L". Restart Nskry or contact its publisher.";
         if (g_monitorVisibility) {
             g_monitorVisibility->SetGlobal(next.hideMonitorOnSourceFocus);
             if (nskry::MonitorHideEnabled(next.hideMonitorOnSourceFocus, g_monitorVisibility->Override()) &&
@@ -522,7 +538,7 @@ static void OpenBitmapEditor(HBITMAP hbmp, int width, int height) {
 // Selection overlay
 // ============================================================================
 
-static void ShowSelectionOverlay() {
+static void ShowSelectionOverlay(nskry::SelectionAction direct,std::wstring pluginId) {
     if (g_captureWorkflowActive) {
         ShowPluginNotification(L"A capture or plugin workflow is already active.", 2500);
         return;
@@ -535,7 +551,7 @@ static void ShowSelectionOverlay() {
             g_selectionWindow.reset();
             OnSelectionComplete(action, std::move(result));
             g_captureWorkflowActive = false;
-        }, nskry::PluginManager::Instance().GetEnabledToolbarActions());
+        }, nskry::PluginManager::Instance().GetEnabledToolbarActions(),direct,std::move(pluginId));
     g_selectionWindow->Show();
 }
 
@@ -580,6 +596,7 @@ static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionR
         if (result.bitmap) ::DeleteObject(result.bitmap);
         if (result.targetHwnd)
             StartPiP(result.targetHwnd, result.crop, result.screenRegion, std::move(result.annotationEngine));
+        else ShowPluginNotification(L"Select a region inside a window to start monitoring.",3000);
         break;
 
     case nskry::SelectionAction::Plugin:

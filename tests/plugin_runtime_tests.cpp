@@ -15,8 +15,11 @@ int wmain(int argc, wchar_t** argv) {
     manifest.manifestVersion = 1; manifest.id = L"org.test.runtime"; manifest.name = L"Runtime fixture";
     manifest.version = L"1.0.0"; manifest.entry = dll.filename().wstring(); manifest.architecture = L"x64";
     manifest.apiVersion = NSKRY_PLUGIN_API_VERSION; manifest.toolbarAction = manifest.postCapture = true;
+    manifest.shortcuts.push_back({L"plugin.org.test.runtime.copy",L"Copy",L"Ctrl+C",manifest.id,manifest.name});
+    manifest.shortcuts.push_back({L"plugin.org.test.runtime.launch",L"Launch",L"",manifest.id,manifest.name,nskry::input::Kind::Global});
     if (!registry.UpsertInstalled(manifest, dll.parent_path().wstring(), nskry::PluginSource::ThirdParty)) return 5;
     auto& runtime = nskry::PluginManager::Instance();
+    runtime.SetShortcutProvider([](const nskry::ShortcutDefinition&){return std::wstring(L"Ctrl+Shift+C");});
     NskryHostContext context{}; context.structSize = sizeof(context); context.apiVersion = NSKRY_PLUGIN_API_VERSION;
     runtime.Initialize(registry, context);
     struct ShutdownGuard { nskry::PluginManager& runtime; ~ShutdownGuard() { runtime.Shutdown(); } } guard{runtime};
@@ -33,6 +36,12 @@ int wmain(int argc, wchar_t** argv) {
     HMODULE module = GetModuleHandleW(dll.filename().c_str());
     const auto count = reinterpret_cast<int (NSKRY_CALL*)()>(GetProcAddress(module, "nskry_test_execute_count"));
     if (!count || count() != 1) return 8;
+    const auto configured=reinterpret_cast<int (NSKRY_CALL*)()>(GetProcAddress(module,"nskry_test_configured"));
+    if(!configured || !configured())return 18;
+    if(!SetEnvironmentVariableW(L"NSKRY_TEST_FAIL_INPUT",L"1"))return 19;
+    const auto failures=runtime.RefreshInputConfiguration();
+    SetEnvironmentVariableW(L"NSKRY_TEST_FAIL_INPUT",nullptr);
+    if(failures!=std::vector<std::wstring>{manifest.id} || !runtime.RefreshInputConfiguration().empty())return 20;
     const auto attributes = GetFileAttributesW(registry.RegistryPath().c_str());
     if (attributes == INVALID_FILE_ATTRIBUTES || !SetFileAttributesW(registry.RegistryPath().c_str(), attributes | FILE_ATTRIBUTE_READONLY)) return 12;
     const bool saveFailureRetainsState = !registry.SetEnabled(manifest.id, false) && registry.Find(manifest.id)->enabled;
@@ -40,6 +49,10 @@ int wmain(int argc, wchar_t** argv) {
     if (!registry.SetEnabled(manifest.id, false) || runtime.EnsureLoaded(manifest.id) ||
         runtime.ExecutePlugin(manifest.id, context) || count() != 1 || !runtime.GetEnabledImageActions().empty()) return 9;
     if (!registry.SetEnabled(manifest.id, true) || !runtime.ExecutePlugin(manifest.id, context) || count() != 2) return 10;
+    auto incompatible=manifest;incompatible.apiVersion=NSKRY_PLUGIN_API_VERSION-1;
+    if(!registry.UpsertInstalled(incompatible,dll.parent_path().wstring(),nskry::PluginSource::ThirdParty))return 21;
+    const auto editable=runtime.GetShortcutDefinitions();
+    if(editable.size()!=2 || editable[0].official || runtime.EnsureLoaded(manifest.id))return 22;
     runtime.Shutdown();
     if (runtime.IsLoaded(manifest.id) || registry.Find(manifest.id)->loaded || shutdownCount() != 2) return 11;
     FreeLibrary(probeGuard.value); probeGuard.value = nullptr;

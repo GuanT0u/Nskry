@@ -24,7 +24,7 @@ constexpr size_t kMaxWorkingBytes = 512ull * 1024 * 1024;
 
 struct Frame { int width{}, height{}; std::vector<unsigned int> pixels; };
 NskryPluginInfo kInfo{ sizeof(NskryPluginInfo), NSKRY_PLUGIN_API_VERSION,
-    L"Long Screenshot", L"nskry-scroll", L"0.5.0", L"Nskry Team",
+    L"Long Screenshot", L"nskry-scroll", L"0.5.1", L"Nskry Team",
     L"Interactive scrolling capture with live preview", nullptr, NSKRY_CAP_TOOLBAR_ACTION, {} };
 
 bool PixelCount(int width, int height, size_t& count, size_t maximumBytes = kMaxFrameBytes) noexcept {

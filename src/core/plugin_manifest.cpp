@@ -112,6 +112,34 @@ bool PluginManifest::LoadFromFile(const std::wstring& path, PluginManifest& mani
         }
     }
 
+    if(const auto* shortcuts=root.Find(L"shortcuts")) {
+        const auto* array=shortcuts->AsArray();
+        if(!array || array->size()>32) {SetError(error,L"At most 32 shortcut descriptors are allowed.");return false;}
+        std::vector<std::wstring> seen;
+        for(const auto& value:*array) {
+            ShortcutDefinition row;std::wstring local,scope;
+            if(!value.IsObject() || !value.GetString(L"id",local) || !IsSafePluginId(local) ||
+               !value.GetString(L"label",row.label) || row.label.empty() || row.label.size()>160 ||
+               !value.GetString(L"scope",scope) || !OptionalString(value,L"default",row.defaultShortcut) ||
+               std::find(seen.begin(),seen.end(),local)!=seen.end()) {SetError(error,L"Invalid or duplicate shortcut descriptor.");return false;}
+            seen.push_back(local);
+            if(scope==L"capture" && local==L"launch" && result.toolbarAction) row.kind=input::Kind::Global;
+            else if(scope==L"key")row.kind=input::Kind::Key;
+            else if(scope==L"hold")row.kind=input::Kind::Hold;
+            else if(scope==L"wheel")row.kind=input::Kind::Wheel;
+            else {SetError(error,L"Unsupported shortcut scope; capture is only for launch toolbar actions.");return false;}
+            if(const auto* jump=value.Find(L"general_jump")) {
+                if(!jump->AsBool()) {SetError(error,L"general_jump must be boolean.");return false;}
+                row.generalJump=*jump->AsBool();
+            }
+            input::Chord chord;
+            if(!row.defaultShortcut.empty() && !input::Parse(row.defaultShortcut,row.kind,chord)) {
+                SetError(error,L"Invalid default shortcut.");return false;
+            }
+            row.id=L"plugin."+result.id+L"."+local;row.pluginId=result.id;row.pluginName=result.name;
+            result.shortcuts.push_back(std::move(row));
+        }
+    }
     if (!IsSafePluginId(result.id) || !IsSafeEntryName(result.entry)) {
         SetError(error, L"Plugin id or entry file name is unsafe.");
         return false;

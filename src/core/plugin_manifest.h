@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include "core/input_settings.h"
 
 namespace nskry {
 
@@ -25,6 +26,7 @@ struct PluginManifest {
     std::wstring updateUrl;
     bool toolbarAction = false;
     bool postCapture = false;
+    std::vector<ShortcutDefinition> shortcuts;
 
     static bool LoadFromFile(const std::wstring& path, PluginManifest& manifest, std::wstring* error = nullptr);
     static bool IsSafePluginId(const std::wstring& id);

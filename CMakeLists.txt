@@ -37,6 +37,7 @@ add_executable(Nskry WIN32
     src/ui/precision_loupe.cpp
     src/ui/selection_window.cpp
     src/ui/settings/settings_window.cpp
+    src/ui/settings/input_page.cpp src/ui/settings/interaction_page.cpp
     src/update/package_verifier.cpp
     src/update/downloader.cpp
     src/update/semver.cpp
@@ -80,9 +81,18 @@ add_subdirectory(plugins/nskry-scroll)
 add_subdirectory(plugins/nskry-ocr)
 
 if (BUILD_TESTING)
+    add_executable(NskryInputSettingsTests tests/input_settings_tests.cpp src/core/hotkey_manager.cpp)
+    target_include_directories(NskryInputSettingsTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} src sdk)
+    target_compile_definitions(NskryInputSettingsTests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN WINRT_LEAN_AND_MEAN)
+    target_link_libraries(NskryInputSettingsTests PRIVATE user32)
+    if(MSVC)
+        target_compile_options(NskryInputSettingsTests PRIVATE /utf-8)
+    endif()
+    add_test(NAME NskryInputSettingsTests COMMAND NskryInputSettingsTests)
+    set_tests_properties(NskryInputSettingsTests PROPERTIES TIMEOUT 15)
     add_executable(NskryMonitorFrameTests tests/monitor_frame_tests.cpp
         src/capture/d3d_device.cpp src/ui/pip_window.cpp src/ui/window_visual_style.cpp
-        src/ui/image_action.cpp src/ui/annotation/annotation_engine.cpp)
+        src/ui/image_action.cpp src/ui/annotation/annotation_engine.cpp src/core/settings_manager.cpp src/core/json.cpp)
     target_include_directories(NskryMonitorFrameTests PRIVATE src sdk)
     target_compile_definitions(NskryMonitorFrameTests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX WINRT_LEAN_AND_MEAN)
     if (MSVC)
@@ -94,6 +104,7 @@ if (BUILD_TESTING)
     set_tests_properties(NskryMonitorFrameTests PROPERTIES TIMEOUT 15)
     add_executable(NskryResourceFeatureTests tests/resource_feature_tests.cpp src/core/image_edit_model.cpp)
     target_include_directories(NskryResourceFeatureTests PRIVATE src)
+    target_compile_definitions(NskryResourceFeatureTests PRIVATE NOMINMAX UNICODE _UNICODE)
     add_test(NAME NskryResourceFeatureTests COMMAND NskryResourceFeatureTests)
     add_executable(NskryOcrWireTests tests/ocr_wire_ctc_tests.cpp)
     target_link_libraries(NskryOcrWireTests PRIVATE nskry_ocr_wire)
@@ -153,6 +164,7 @@ if (BUILD_TESTING)
     target_link_libraries(NskryCoreTests PRIVATE winhttp)
     add_executable(NskryHostPluginUiTests tests/host_plugin_ui_tests.cpp
         src/ui/settings/settings_window.cpp src/ui/long_image_crop_window.cpp
+        src/ui/settings/input_page.cpp src/ui/settings/interaction_page.cpp
         src/core/image_edit_model.cpp
         src/ui/window_visual_style.cpp src/core/monitor_visibility_controller.cpp src/core/settings_manager.cpp
         src/ui/precision_loupe.cpp src/ui/image_action.cpp src/core/plugin_update_policy.cpp

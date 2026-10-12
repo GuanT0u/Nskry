@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "ui/selection_window.h"
 #include "ui/precision_loupe.h"
+#include "ui/interaction_visuals.h"
 #include <windowsx.h>
 #pragma comment(lib, "msimg32.lib")
 
@@ -10,8 +11,9 @@ namespace nskry {
 // Construction
 // ============================================================================
 
-SelectionWindow::SelectionWindow(CompletionCallback onComplete, std::vector<PluginToolbarAction> pluginActions)
-    : m_onComplete(std::move(onComplete)), m_pluginActions(std::move(pluginActions))
+SelectionWindow::SelectionWindow(CompletionCallback onComplete, std::vector<PluginToolbarAction> pluginActions,
+    SelectionAction direct,std::wstring directPlugin)
+    : m_directAction(direct),m_directPlugin(std::move(directPlugin)),m_onComplete(std::move(onComplete)), m_pluginActions(std::move(pluginActions))
 {
     m_windows = WindowEnumerator::GetAllVisibleWindows();
 
@@ -145,8 +147,8 @@ LRESULT SelectionWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
         FinishWithAction(SelectionAction::Cancel);
         return 0;
 
-    case WM_KEYDOWN:
-        if (wp == VK_ESCAPE) {
+    case WM_KEYDOWN:case WM_SYSKEYDOWN:
+        if (Shortcut(L"core.cancel",UINT(wp))) {
             if (m_annotationEngine.GetTool() != ToolType::None) {
                 CommitTextEdit();
                 m_annotationEngine.SetTool(ToolType::None);
@@ -157,24 +159,24 @@ LRESULT SelectionWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
             FinishWithAction(SelectionAction::Cancel);
             return 0;
         }
-        if (::GetKeyState(VK_CONTROL) & 0x8000) {
-            if (wp == 'Z') {
+        {
+            if (Shortcut(L"core.undo",UINT(wp))) {
                 CommitTextEdit();
                 m_annotationEngine.Undo();
                 ::InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
             }
-            if (wp == 'Y') {
+            if (Shortcut(L"core.redo",UINT(wp))) {
                 CommitTextEdit();
                 m_annotationEngine.Redo();
                 ::InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
             }
-            if (wp == 'C') {
+            if (m_state==State::Selected && Shortcut(L"core.copy",UINT(wp))) {
                 FinishWithAction(SelectionAction::Copy);
                 return 0;
             }
-            if (wp == 'S') {
+            if (m_state==State::Selected && Shortcut(L"core.save",UINT(wp))) {
                 FinishWithAction(SelectionAction::Save);
                 return 0;
             }
@@ -190,7 +192,7 @@ LRESULT SelectionWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
             UpdateCursor(zone);
             return TRUE;
         }
-        break;
+        ::SetCursor(InteractionCursor(0));return TRUE;
 
     case WM_COMMAND:
         if (HIWORD(wp) == EN_KILLFOCUS && reinterpret_cast<HWND>(lp) == m_hTextEdit) {
@@ -256,6 +258,8 @@ void SelectionWindow::UpdateCursor(HitZone zone) {
         return;
     }
 
+    if(zone==HitZone::Inside){::SetCursor(InteractionCursor(1));return;}
+    if(zone==HitZone::None){::SetCursor(InteractionCursor(0));return;}
     LPCWSTR id = MAKEINTRESOURCEW(32515);
     switch (zone) {
     case HitZone::TopLeft:
@@ -325,7 +329,7 @@ void SelectionWindow::OnMouseMove(int x, int y) {
             ::InvalidateRect(m_hwnd, nullptr, FALSE);
     }
     else if (m_state == State::Adjusting) {
-        const bool precision = (::GetKeyState(VK_MENU) & 0x8000) != 0;
+        const bool precision = Shortcut(L"core.precision",0,input::Kind::Hold);
         const double scale = precision ? 0.125 : 1.0;
         const double scaledX = m_adjustRemainderX + (x - m_adjustLastPt.x) * scale;
         const double scaledY = m_adjustRemainderY + (y - m_adjustLastPt.y) * scale;
@@ -465,6 +469,7 @@ void SelectionWindow::OnLButtonDown(int x, int y) {
                     reinterpret_cast<HMENU>(static_cast<UINT_PTR>(101)),
                     ::GetModuleHandleW(nullptr), nullptr);
                 ::SendMessageW(m_hTextEdit, WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
+                ::SetWindowSubclass(m_hTextEdit,TextKeyRelay,1,DWORD_PTR(m_hwnd));
                 ::SetFocus(m_hTextEdit);
             } else {
                 m_state = State::Annotating;
@@ -518,6 +523,7 @@ void SelectionWindow::OnLButtonUp(int x, int y) {
 
         m_finalRect = activeRect;
         m_state     = State::Selected;
+        if(m_directAction!=SelectionAction::Cancel){FinishWithAction(m_directAction,m_directPlugin);return;}
         BuildToolbar(m_finalRect);
         ::InvalidateRect(m_hwnd, nullptr, FALSE);
     }
@@ -889,10 +895,9 @@ void SelectionWindow::FinishWithAction(SelectionAction action, std::wstring plug
         }
     }
 
+    auto completion=m_onComplete;
     Close();
-
-    if (m_onComplete)
-        m_onComplete(action, std::move(result));
+    if (completion) completion(action, std::move(result));
 }
 
 // ============================================================================
@@ -945,12 +950,7 @@ void SelectionWindow::OnPaint(HWND hwnd) {
         }
 
         // Border (2px blue)
-        HBRUSH borderBrush = ::CreateSolidBrush(RGB(20, 150, 255));
-        ::FrameRect(hdcBack, &activeRect, borderBrush);
-        RECT inner = activeRect;
-        ::InflateRect(&inner, -1, -1);
-        ::FrameRect(hdcBack, &inner, borderBrush);
-        ::DeleteObject(borderBrush);
+        SelectionBorder(hdcBack,activeRect);
 
         // Size info
         DrawInfoBox(hdcBack, activeRect);
@@ -958,7 +958,7 @@ void SelectionWindow::OnPaint(HWND hwnd) {
         if (m_state == State::Adjusting) {
             wchar_t coordinate[80]{};
             swprintf_s(coordinate, L"Screen: %d, %d%s", m_adjustLastPt.x + m_vX, m_adjustLastPt.y + m_vY,
-                       (::GetKeyState(VK_MENU) & 0x8000) ? L"  (Alt precision)" : L"");
+                       Shortcut(L"core.precision",0,input::Kind::Hold) ? L"  (precision)" : L"");
             DrawPrecisionLoupe(hdcBack, m_hdcSnapshot, RECT{ 0, 0, m_vW, m_vH }, m_adjustLastPt,
                                m_adjustLastPt, RECT{ 0, 0, m_vW, m_vH }, coordinate);
         }

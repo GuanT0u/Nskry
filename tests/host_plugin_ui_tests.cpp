@@ -6,11 +6,64 @@
 #include "ui/selection_window.h"
 #include "ui/window_visual_style.h"
 #include "core/monitor_visibility_controller.h"
+#include "ui/interaction_visuals.h"
+#include "core/json.h"
 #include <filesystem>
 #include <chrono>
 #include <iostream>
+#include <fstream>
 
 namespace nskry {
+struct InputPageTestAccess {
+    static bool Verify() {
+        HWND parent=CreateWindowExW(0,L"STATIC",L"input UI test",WS_POPUP,0,0,660,400,nullptr,nullptr,nullptr,nullptr);
+        bool suspended=false;int transitions=0;bool ok=true;
+        {
+            auto definitions=CoreShortcuts();auto official=BuiltinCapturePlaceholders(L"nskry-ocr",L"Text recognition");
+            for(auto& row:official){row.official=true;definitions.push_back(row);}
+            definitions.push_back({L"plugin.org.test.launch",L"Third party test",L"",L"org.test",L"A third-party plugin",input::Kind::Global,false,true});
+            InputPage page(parent,definitions,false,[&](bool state){suspended=state;++transitions;},nullptr);
+            SetWindowPos(page.Hwnd(),nullptr,0,0,630,280,SWP_NOZORDER);page.Load({});
+            auto& row=page.m_rows[0];
+            ok &= row.display && !(GetWindowLongPtrW(row.edit,GWL_STYLE)&WS_VISIBLE);
+            page.BeginRecord(0);SendMessageW(page.Hwnd(),WM_KEYDOWN,VK_CONTROL,0);SendMessageW(page.Hwnd(),WM_SYSKEYDOWN,VK_MENU,0);
+            SendMessageW(page.Hwnd(),WM_KEYDOWN,'A',0);SendMessageW(page.Hwnd(),WM_KEYUP,'A',0);
+            ok &= suspended && page.m_recording==0;
+            SendMessageW(page.Hwnd(),WM_KEYUP,VK_CONTROL,0);SendMessageW(page.Hwnd(),WM_SYSKEYUP,VK_MENU,0);
+            UserSettings settings;page.Store(settings);
+            ok &= !suspended && transitions==2 && settings.captureShortcut==L"Ctrl+Alt+A";
+            SendMessageW(page.Hwnd(),WM_COMMAND,MAKEWPARAM(10001,BN_CLICKED),LPARAM(row.type));
+            SetWindowTextW(row.edit,L"Ctrl+Alt+B");page.Store(settings);ok &= settings.captureShortcut==L"Ctrl+Alt+B";
+            SendMessageW(page.Hwnd(),WM_COMMAND,MAKEWPARAM(10002,BN_CLICKED),LPARAM(row.remove));
+            page.Store(settings);ok &= settings.captureShortcut.empty();
+            page.BeginRecord(0);SendMessageW(page.Hwnd(),WM_KEYDOWN,'X',0);SendMessageW(page.Hwnd(),WM_KILLFOCUS,0,0);
+            page.Store(settings);ok &= !suspended && settings.captureShortcut.empty();
+            page.Jump(L"plugin.org.test.launch");
+            size_t controls=0;for(auto& r:page.m_rows)if(r.display)++controls;
+            ok &= controls<10 && page.m_flashRow>=0;
+            for(int i=0;i<4;++i)SendMessageW(page.Hwnd(),WM_TIMER,1,0);
+            ok &= page.m_flashRow==-1;
+            page.Store(settings);ok &= settings.captureShortcut.empty(); // Scroll must retain earlier edits.
+        }
+        {
+            std::vector<ShortcutDefinition> many;
+            for (size_t i=0;i<=5001;++i)
+                many.push_back({L"core.test."+std::to_wstring(i),L"Catalog row",L"Ctrl+C"});
+            InputPage page(parent,std::move(many),false,nullptr,nullptr);
+            SetWindowPos(page.Hwnd(),nullptr,0,0,630,280,SWP_NOZORDER);
+            page.Jump(L"core.test.5001");
+            auto& row=page.m_rows[5001];
+            SendMessageW(page.Hwnd(),WM_COMMAND,MAKEWPARAM(10001,BN_CLICKED),LPARAM(row.type));
+            SetWindowTextW(row.edit,L"Shift+F24");
+            UserSettings settings;page.Store(settings);
+            ok &= settings.shortcuts[L"core.test.5001"]==L"Shift+F24" &&
+                settings.shortcuts[L"core.test.0"]==L"Ctrl+C";
+            ShowWindow(row.display,SW_HIDE);page.Load(settings);
+            ok &= (GetWindowLongPtrW(row.display,GWL_STYLE)&WS_VISIBLE)!=0;
+        }
+        DestroyWindow(parent);return ok;
+    }
+};
 struct MonitorControllerTestAccess {
     static bool Verify() {
         HWND source = CreateWindowExW(0,L"STATIC",L"source",WS_POPUP,0,0,100,100,nullptr,nullptr,nullptr,nullptr);
@@ -62,6 +115,15 @@ struct ImageEditorTestAccess {
 };
 struct SelectionWindowTestAccess {
     static bool Verify() {
+        bool direct=false;
+        {
+            SelectionWindow window([&](SelectionAction action,SelectionResult result){
+                direct=action==SelectionAction::Plugin && result.pluginId==L"org.test" && result.bitmapWidth==60 && result.bitmapHeight==60;
+                if(result.bitmap)DeleteObject(result.bitmap);
+            },{},SelectionAction::Plugin,L"org.test");
+            window.m_windows.clear();window.OnLButtonDown(30,40);window.OnLButtonUp(90,100);
+        }
+        if(!direct)return false;
         SelectionWindow window([](SelectionAction, SelectionResult) {});
         // Deterministic empty-space target list, regardless of real desktop apps.
         // The overlay stays hidden; no input is sent to other processes.
@@ -125,8 +187,12 @@ bool InClient(HWND parent, HWND child) {
 }
 }
 int wmain() {
+    Gdiplus::GdiplusStartupInput gdiplusInput;ULONG_PTR gdiplusToken{};
+    if(Gdiplus::GdiplusStartup(&gdiplusToken,&gdiplusInput,nullptr)!=Gdiplus::Ok)return 1;
+    struct GdiplusGuard{ULONG_PTR token;~GdiplusGuard(){Gdiplus::GdiplusShutdown(token);}} gdiplusGuard{gdiplusToken};
     using namespace nskry;
     bool ok = true, closed = false;
+    ok &= Expect(InputPageTestAccess::Verify(),"display/record/type/delete, blur cancellation, plugin sections, jump pulse and virtual rows");
     ok &= Expect(SelectionWindowTestAccess::Verify(), "desktop drag, reverse drag, release endpoint, empty click and window snap");
     ok &= Expect(MonitorControllerTestAccess::Verify(), "event controller focus/menu/override/release/resume/source destruction");
     // Redirect persistence to an owned, unique test folder; never touch user settings.
@@ -136,12 +202,42 @@ int wmain() {
     oldLocal.resize(oldLength);
     SetEnvironmentVariableW(L"LOCALAPPDATA", testDirectory.c_str());
     auto& manager = SettingsManager::Instance(); manager.Load();
+    {
+        std::ofstream output(std::filesystem::path(manager.SettingsPath()),std::ios::binary|std::ios::trunc);
+        output << R"({"hotkeys":{},"general":{"future_setting":42},"capture":{"default_save_directory":"future path"},
+            "updates":{"check_automatically":false,"include_prerelease":true},"future":{"items":[true,null,7]}})";
+    }
+    ok &= Expect(manager.Load(),"future configuration fields do not block known settings");
     auto stored = manager.GetUserSettings(); stored.hideMonitorOnSourceFocus = true;
     stored.visuals.shadowEnabled = true; stored.visuals.cornersEnabled = true;
     stored.visuals.cornerMode = CornerMode::Percent; stored.visuals.cornerPercent = 11;
+    stored.interaction.dashed=true;stored.interaction.borderWidth=6;stored.interaction.borderOpacity=42;
+    stored.interaction.cutStyle=1;stored.interaction.cutEdges=true;stored.interaction.cursors[2].style=CursorStyle::Cross;
+    stored.shortcuts[L"core.monitor"]=L"Ctrl+Alt+M";stored.shortcuts[L"plugin.nskry-ocr.launch"]=L"Ctrl+Alt+O";
     manager.SetUserSettings(stored);
     ok &= Expect(manager.Save() && manager.Load() && manager.GetUserSettings().hideMonitorOnSourceFocus &&
-        manager.GetUserSettings().visuals == stored.visuals, "settings round trip including custom visual values");
+        manager.GetUserSettings().visuals == stored.visuals && manager.GetUserSettings().interaction==stored.interaction &&
+        manager.GetHotkey(L"core.monitor")==L"Ctrl+Alt+M" && manager.GetHotkey(L"plugin.nskry-ocr.launch")==L"Ctrl+Alt+O",
+        "atomic settings round trip including all input/custom visual values");
+    {
+        json::Value saved;unsigned future=0;std::wstring path;bool autoCheck=true;
+        ok &= Expect(json::ParseUtf8File(manager.SettingsPath(),saved) && saved.Find(L"general") &&
+            saved.Find(L"general")->GetUnsigned(L"future_setting",future) && future==42 && saved.Find(L"capture") &&
+            saved.Find(L"capture")->GetString(L"default_save_directory",path) && path==L"future path" &&
+            saved.Find(L"updates") && saved.Find(L"updates")->GetBool(L"check_automatically",autoCheck) && !autoCheck &&
+            saved.Find(L"future"),"saving preserves reserved and unknown configuration sections");
+    }
+    {
+        BITMAPINFO image{};image.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);image.bmiHeader.biWidth=32;image.bmiHeader.biHeight=-32;
+        image.bmiHeader.biPlanes=1;image.bmiHeader.biBitCount=32;void* data{};
+        HBITMAP bitmap=CreateDIBSection(nullptr,&image,DIB_RGB_COLORS,&data,nullptr,0);HDC dc=CreateCompatibleDC(nullptr);
+        auto previous=SelectObject(dc,bitmap);std::fill_n(static_cast<unsigned long*>(data),32*32,0xffffffffUL);
+        auto settings=stored;settings.interaction.cutStyle=0;settings.interaction.cutEdges=false;
+        settings.interaction.cutColor=RGB(0,0,0);settings.interaction.cutOpacity=50;manager.SetUserSettings(settings);
+        CutPreview(dc,{8,8,24,24},false);auto sample=GetPixel(dc,16,16);
+        ok &= Expect(GetRValue(sample)>=126 && GetRValue(sample)<=129 && GetGValue(sample)==GetRValue(sample) && GetPixel(dc,2,2)==RGB(255,255,255),"cut mask alpha blends only the chosen strip");
+        SelectObject(dc,previous);DeleteObject(bitmap);DeleteDC(dc);manager.SetUserSettings(stored);
+    }
     SetEnvironmentVariableW(L"LOCALAPPDATA", oldLocal.empty() ? nullptr : oldLocal.c_str());
     std::filesystem::remove(testDirectory / L"Nskry" / L"config" / L"settings.json");
     std::filesystem::remove(testDirectory / L"Nskry" / L"config");

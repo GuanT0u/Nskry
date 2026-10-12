@@ -52,13 +52,13 @@ SettingsManager::SettingsManager() {
 
 void SettingsManager::SetDefaults() {
     m_hotkeys.clear();
-    m_hotkeys.emplace(L"core.capture", L"Ctrl+Alt+A");
-    m_hotkeys.emplace(L"core.exit", L"Ctrl+Alt+Q");
+    for(const auto& row:CoreShortcuts()) m_hotkeys[row.id]=row.defaultShortcut;
     m_runAtStartup = false;
     m_notifications = true;
     m_showStartupHint = true;
     m_hideMonitorOnSourceFocus = false;
     m_visuals = {};
+    m_interaction = {};
     m_theme = L"system";
     m_officialPluginCatalogUrl.clear();
     m_officialPluginsPageUrl.clear();
@@ -123,6 +123,25 @@ bool SettingsManager::Load() {
         m_visuals.shadowPreset = static_cast<VisualPreset>(shadowPreset);
         m_visuals.cornerPreset = static_cast<VisualPreset>(cornerPreset); m_visuals.cornerMode = static_cast<CornerMode>(cornerMode);
     }
+    if(const auto* v=root.Find(L"interaction")) {
+        if(!v->IsObject())return false;
+        int borderColor=int(m_interaction.borderColor), cutColor=int(m_interaction.cutColor);
+        if(!ReadOptionalBool(*v,L"dashed",m_interaction.dashed) || !ReadOptionalBool(*v,L"cut_edges",m_interaction.cutEdges) ||
+            !ReadVisualInt(*v,L"border_width",m_interaction.borderWidth,6) ||
+            !ReadVisualInt(*v,L"border_opacity",m_interaction.borderOpacity,100) ||
+            !ReadVisualInt(*v,L"border_color",borderColor,0xffffff) ||
+            !ReadVisualInt(*v,L"cut_style",m_interaction.cutStyle,3) ||
+            !ReadVisualInt(*v,L"cut_opacity",m_interaction.cutOpacity,100) ||
+            !ReadVisualInt(*v,L"cut_color",cutColor,0xffffff))return false;
+        m_interaction.borderColor=COLORREF(borderColor);m_interaction.cutColor=COLORREF(cutColor);
+        for(size_t i=0;i<m_interaction.cursors.size();++i) {
+            int style=int(m_interaction.cursors[i].style);
+            if(!ReadVisualInt(*v,L"cursor_"+std::to_wstring(i),style,6) ||
+               !ReadOptionalString(*v,L"cursor_file_"+std::to_wstring(i),m_interaction.cursors[i].file))return false;
+            m_interaction.cursors[i].style=CursorStyle(style);
+        }
+        m_interaction=NormalizeInteractionStyle(m_interaction);
+    }
     return true;
 }
 
@@ -138,13 +157,7 @@ bool SettingsManager::Save() const {
            << L"    \"hide_monitor_on_source_focus\": " << (m_hideMonitorOnSourceFocus ? L"true" : L"false") << L",\n"
            << L"    \"theme\": \"" << json::EscapeString(m_theme) << L"\"\n"
            << L"  },\n"
-           << L"  \"capture\": {\n"
-           << L"    \"default_save_directory\": \"\",\n"
-           << L"    \"tray_double_click\": \"capture\"\n"
-           << L"  },\n"
            << L"  \"updates\": {\n"
-           << L"    \"check_automatically\": true,\n"
-           << L"    \"include_prerelease\": false,\n"
            << L"    \"official_plugin_catalog_url\": \"" << json::EscapeString(m_officialPluginCatalogUrl) << L"\",\n"
            << L"    \"official_plugins_page_url\": \"" << json::EscapeString(m_officialPluginsPageUrl) << L"\"\n"
            << L"  },\n"
@@ -160,7 +173,19 @@ bool SettingsManager::Save() const {
            << L"    \"shadow_offset\": " << m_visuals.shadowOffset << L",\n"
            << L"    \"corner_radius\": " << m_visuals.cornerRadius << L",\n"
            << L"    \"corner_percent\": " << m_visuals.cornerPercent << L"\n  },\n"
-           << L"  \"hotkeys\": {\n";
+           << L"  \"interaction\": {\n"
+           << L"    \"dashed\": " << (m_interaction.dashed?L"true":L"false") << L",\n"
+           << L"    \"border_width\": " << m_interaction.borderWidth << L",\n"
+           << L"    \"border_opacity\": " << m_interaction.borderOpacity << L",\n"
+           << L"    \"border_color\": " << m_interaction.borderColor << L",\n"
+           << L"    \"cut_style\": " << m_interaction.cutStyle << L",\n"
+           << L"    \"cut_opacity\": " << m_interaction.cutOpacity << L",\n"
+           << L"    \"cut_color\": " << m_interaction.cutColor << L",\n"
+           << L"    \"cut_edges\": " << (m_interaction.cutEdges?L"true":L"false");
+    for(size_t i=0;i<m_interaction.cursors.size();++i)
+        output<<L",\n    \"cursor_"<<i<<L"\": "<<int(m_interaction.cursors[i].style)
+            <<L",\n    \"cursor_file_"<<i<<L"\": \""<<json::EscapeString(m_interaction.cursors[i].file)<<L"\"";
+    output<<L"\n  },\n  \"hotkeys\": {\n";
 
     bool first = true;
     for (const auto& [commandId, shortcut] : m_hotkeys) {
@@ -169,15 +194,43 @@ bool SettingsManager::Save() const {
         first = false;
     }
     output << L"\n  }\n}\n";
+    // Preserve future/extension fields on demand, without keeping a second JSON
+    // tree resident. Only implemented settings override existing values.
+    json::Value defaults, existing, changes;
+    if (!json::Parse(LR"({"capture":{"default_save_directory":"","tray_double_click":"capture"},
+        "updates":{"check_automatically":true,"include_prerelease":false}})", defaults) ||
+        !json::Parse(output.str(), changes)) return false;
+    const auto attributes = GetFileAttributesW(m_settingsPath.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        const auto error = GetLastError();
+        if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) return false;
+    } else if (!json::ParseUtf8File(m_settingsPath, existing) || !existing.IsObject()) {
+        return false; // Never overwrite an unreadable/corrupt configuration with defaults.
+    }
+    std::wstring merged;
+    if (!json::Serialize(json::MergeObjects(json::MergeObjects(defaults, existing.IsNull() ? defaults : existing), changes), merged))
+        return false;
     std::string bytes;
-    if (!json::ToUtf8(output.str(), bytes)) return false;
-    std::ofstream file(m_settingsPath, std::ios::binary | std::ios::trunc);
-    return file && static_cast<bool>(file.write(bytes.data(), static_cast<std::streamsize>(bytes.size())));
+    if (!json::ToUtf8(merged + L"\n", bytes)) return false;
+    if(bytes.size()>MAXDWORD)return false;
+    const auto temporary=m_settingsPath+L".tmp-"+std::to_wstring(GetCurrentProcessId());
+    HANDLE file=CreateFileW(temporary.c_str(),GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(file==INVALID_HANDLE_VALUE)return false;
+    DWORD written{};const bool complete=WriteFile(file,bytes.data(),DWORD(bytes.size()),&written,nullptr) &&
+        written==bytes.size() && FlushFileBuffers(file);
+    CloseHandle(file);
+    if(complete && MoveFileExW(temporary.c_str(),m_settingsPath.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))return true;
+    DeleteFileW(temporary.c_str());return false;
 }
 
 const std::wstring& SettingsManager::GetHotkey(const std::wstring& commandId) const {
     const auto it = m_hotkeys.find(commandId);
     return it == m_hotkeys.end() ? kEmptyValue : it->second;
+}
+
+const std::wstring& SettingsManager::GetShortcutValue(const ShortcutDefinition& definition) const {
+    const auto it = m_hotkeys.find(definition.id);
+    return it == m_hotkeys.end() ? definition.defaultShortcut : it->second;
 }
 
 void SettingsManager::SetHotkey(const std::wstring& commandId, std::wstring shortcut) {
@@ -192,6 +245,7 @@ UserSettings SettingsManager::GetUserSettings() const {
     result.showStartupHint = m_showStartupHint;
     result.hideMonitorOnSourceFocus = m_hideMonitorOnSourceFocus;
     result.visuals = m_visuals;
+    result.interaction=m_interaction; result.shortcuts=m_hotkeys;
     result.theme = m_theme;
     result.captureShortcut = GetHotkey(L"core.capture");
     result.exitShortcut = GetHotkey(L"core.exit");
@@ -204,6 +258,8 @@ void SettingsManager::SetUserSettings(const UserSettings& settings) {
     m_showStartupHint = settings.showStartupHint;
     m_hideMonitorOnSourceFocus = settings.hideMonitorOnSourceFocus;
     m_visuals = NormalizeVisualSettings(settings.visuals);
+    m_interaction=NormalizeInteractionStyle(settings.interaction);
+    m_hotkeys=settings.shortcuts;
     m_theme = settings.theme;
     SetHotkey(L"core.capture", settings.captureShortcut);
     SetHotkey(L"core.exit", settings.exitShortcut);

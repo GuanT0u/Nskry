@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "ui/interaction_visuals.h"
 #include "ui/pip_window.h"
 #include <algorithm>
 #include <d3dcompiler.h>
@@ -685,9 +686,9 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         break;
     }
 
-    case WM_KEYDOWN:
+    case WM_KEYDOWN:case WM_SYSKEYDOWN:
         if (m_isEditing) {
-            if (wp == VK_ESCAPE) {
+            if (Shortcut(L"core.cancel",UINT(wp))) {
                 if (m_annotationEngine.GetTool() != ToolType::None) {
                     CommitTextEdit();
                     m_annotationEngine.SetTool(ToolType::None);
@@ -698,14 +699,14 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 return 0;
             }
-            if (::GetKeyState(VK_CONTROL) & 0x8000) {
-                if (wp == 'Z') {
+            {
+                if (Shortcut(L"core.undo",UINT(wp))) {
                     CommitTextEdit();
                     m_annotationEngine.Undo();
                     UpdateOverlayFromEngine();
                     return 0;
                 }
-                if (wp == 'Y') {
+                if (Shortcut(L"core.redo",UINT(wp))) {
                     CommitTextEdit();
                     m_annotationEngine.Redo();
                     UpdateOverlayFromEngine();
@@ -826,6 +827,7 @@ void PipWindow::SetCaptureStatus(const wchar_t* text, bool waiting) {
                    SWP_NOACTIVATE | (text && *text ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
 }
 bool PipWindow::SetVisualSettings(WindowVisualSettings settings) {
+    RelayCoreButtons(m_hwnd);
     if (!m_hwnd) return false;
     if (!m_visualStyle) m_visualStyle = std::make_unique<WindowVisualStyle>(m_hwnd);
     return m_visualStyle->SetSettings(settings);
@@ -965,12 +967,12 @@ LRESULT CALLBACK PipWindow::TextEditSubclassProc(HWND hwnd, UINT msg, WPARAM wp,
     if (msg == WM_GETDLGCODE) {
         return DLGC_WANTALLKEYS;
     }
-    if (msg == WM_KEYDOWN) {
-        if (wp == VK_RETURN) {
+    if (msg == WM_KEYDOWN || msg==WM_SYSKEYDOWN) {
+        if (Shortcut(L"core.text.accept",UINT(wp))) {
             if (pip) pip->CommitTextEdit();
             return 0;
         }
-        if (wp == VK_ESCAPE) {
+        if (Shortcut(L"core.text.cancel",UINT(wp))) {
             HWND h = hwnd;
             ::DestroyWindow(h);
             return 0;

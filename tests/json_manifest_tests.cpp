@@ -7,6 +7,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string>
 
 namespace {
@@ -31,6 +32,23 @@ bool TestJsonParser() {
                  "trailing input should be rejected");
     ok &= Expect(!nskry::json::Parse(LR"({"a":"\ud800"})", root, &error),
                  "unpaired surrogates should be rejected");
+    nskry::json::Value existing, changes, roundTrip;
+    ok &= Expect(nskry::json::Parse(LR"({"general":{"notifications":false,"future":42},"future":[true,null,"中文"]})",existing) &&
+                 nskry::json::Parse(LR"({"general":{"notifications":true}})",changes), "merge inputs parse");
+    std::wstring serialized;
+    const auto merged=nskry::json::MergeObjects(existing,changes);
+    ok &= Expect(nskry::json::Serialize(merged,serialized) && nskry::json::Parse(serialized,roundTrip),"merged JSON round trip");
+    bool notifications=false;unsigned future=0;
+    const auto* general=roundTrip.Find(L"general");
+    const auto* extension=roundTrip.Find(L"future");
+    ok &= Expect(general && general->GetBool(L"notifications",notifications) && notifications &&
+                 general->GetUnsigned(L"future",future) && future==42 && extension && extension->AsArray() &&
+                 extension->AsArray()->size()==3,"overlay preserves unknown nested fields and arrays");
+    ok &= Expect(!nskry::json::Serialize(nskry::json::Value(std::numeric_limits<double>::infinity()),serialized),
+                 "non-finite JSON output rejected");
+    nskry::json::Value deep;
+    for(int i=0;i<130;++i)deep=nskry::json::Value(nskry::json::Value::Array{std::move(deep)});
+    ok &= Expect(!nskry::json::Serialize(deep,serialized) && serialized.empty(),"serializer bounds nesting");
     return ok;
 }
 
@@ -93,6 +111,10 @@ bool TestManifestDependencyContract() {
     ok &= Expect(load(",\"requires_plugins\":[]"), "empty prerequisites accepted");
     ok &= Expect(!load(",\"requires_plugins\":[\"nskry-scroll\"]"), "unsupported cross-plugin dependency rejected");
     ok &= Expect(!load(",\"requires_plugins\":true"), "malformed dependency field rejected");
+    ok &= Expect(load(R"(,"shortcuts":[{"id":"copy","label":"Copy text","scope":"key","default":"Ctrl+C","general_jump":true}])"),"plugin shortcut metadata accepted without loading DLL");
+    ok &= Expect(!load(R"(,"shortcuts":[{"id":"copy","label":"Copy","scope":"key","default":"A+B"}])"),"invalid default chord rejected");
+    ok &= Expect(!load(R"(,"shortcuts":[{"id":"core.capture","label":"bad","scope":"global","default":"Ctrl+A"}])"),"plugin cannot declare arbitrary core/global command");
+    ok &= Expect(!load(R"(,"shortcuts":[{"id":"copy","label":"Copy","scope":"key"},{"id":"copy","label":"Copy 2","scope":"key"}])"),"duplicate shortcut descriptors rejected");
     ok &= Expect(load(",\"update\":{\"type\":\"manifest\",\"url\":\"https://publisher.test/update.json\"}"), "manifest feed supported");
     ok &= Expect(!load(",\"update\":{\"type\":\"future-provider\"}"), "unsupported provider does not silently pretend to work");
     DeleteFileW(path);

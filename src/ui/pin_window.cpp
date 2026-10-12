@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "ui/interaction_visuals.h"
 #include "ui/pin_window.h"
 #include <algorithm>
 #include <windowsx.h>
@@ -334,20 +335,20 @@ LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         break;
 
-    case WM_KEYDOWN:
+    case WM_KEYDOWN:case WM_SYSKEYDOWN:
         if (m_isEditing) {
-            if (wp == VK_ESCAPE) {
+            if (Shortcut(L"core.cancel",UINT(wp))) {
                 FinishEdit(false);
                 return 0;
             }
-            if (::GetKeyState(VK_CONTROL) & 0x8000) {
-                if (wp == 'Z') {
+            {
+                if (Shortcut(L"core.undo",UINT(wp))) {
                     CommitTextEdit();
                     m_annotationEngine.Undo();
                     ::InvalidateRect(hwnd, nullptr, FALSE);
                     return 0;
                 }
-                if (wp == 'Y') {
+                if (Shortcut(L"core.redo",UINT(wp))) {
                     CommitTextEdit();
                     m_annotationEngine.Redo();
                     ::InvalidateRect(hwnd, nullptr, FALSE);
@@ -537,6 +538,7 @@ void PinWindow::OpenStructureEditor() {
     if (copy) m_editor(copy, m_width, m_height);
 }
 bool PinWindow::SetVisualSettings(WindowVisualSettings settings) {
+    RelayCoreButtons(m_hwnd);
     if (!m_hwnd) return false;
     if (!m_visualStyle) m_visualStyle = std::make_unique<WindowVisualStyle>(m_hwnd);
     return m_visualStyle->SetSettings(settings);
@@ -1027,6 +1029,7 @@ void PinWindow::OnLButtonDown(int x, int y) {
                 ::GetModuleHandleW(nullptr), nullptr);
             if (m_hTextEdit) {
                 if (m_font) ::SendMessageW(m_hTextEdit, WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
+                ::SetWindowSubclass(m_hTextEdit,TextKeyRelay,1,DWORD_PTR(m_hwnd));
                 ::SetFocus(m_hTextEdit);
             }
         } else {

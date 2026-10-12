@@ -7,6 +7,9 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <memory>
+#include "ui/settings/input_page.h"
+#include "ui/settings/interaction_page.h"
 
 namespace nskry {
 
@@ -20,6 +23,7 @@ struct SettingsPluginItem {
 /// Process-boundary-friendly service contract. The window owns no core state.
 struct SettingsWindowServices {
     std::function<UserSettings()> getSettings;
+    // False: failure text; true with nonempty text: applied with warnings.
     std::function<bool(const UserSettings&, std::wstring&)> applySettings;
     std::function<std::vector<SettingsPluginItem>()> getPlugins;
     std::function<bool(const std::wstring&, bool)> setPluginEnabled;
@@ -29,6 +33,8 @@ struct SettingsWindowServices {
     std::function<std::vector<PluginUpdate>(std::wstring&)> checkPluginUpdates;
     std::function<PluginPackageResult(const PluginUpdate&)> downloadPluginUpdate;
     std::function<std::wstring()> getOfficialPluginsPageUrl;
+    std::function<std::vector<ShortcutDefinition>()> getShortcuts;
+    std::function<void(bool)> setRecording;
 };
 
 class SettingsWindow {
@@ -68,7 +74,8 @@ private:
     HWND m_visualSliders[6]{}, m_visualValues[6]{};
     std::vector<HWND> m_visualControls;
     WindowVisualSettings m_visualDraft;
-    HWND m_captureHotkey{}, m_exitHotkey{};
+    std::unique_ptr<InputPage> m_inputPage,m_jumpPage;
+    std::unique_ptr<InteractionPage> m_interactionPage;
     HWND m_pluginList{}, m_pluginToggle{}, m_pluginUninstall{}, m_pluginInstall{}, m_pluginCheckUpdates{};
     HWND m_pluginDetails{}, m_officialPlugins{}, m_thirdPartyPolicy{};
     HWND m_aboutText{};

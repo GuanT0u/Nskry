@@ -1,11 +1,30 @@
 #include "nskry_plugin.h"
+#include "nskry_input.h"
+
+extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_configure_input_v1(const NskryInputConfigV1* config) {
+    nskry::input::Configure(config);
+}
 #include "ocr_arbitration.h"
 #include "model/ocr_process.h"
 
 #include <windowsx.h>
 #include <commdlg.h>
+#include <commctrl.h>
 #include <wincodec.h>
 #include <wrl/client.h>
+
+static LRESULT CALLBACK OcrInputRelay(HWND window,UINT message,WPARAM key,LPARAM flags,UINT_PTR id,DWORD_PTR parent) {
+    if(message==WM_KEYDOWN || message==WM_SYSKEYDOWN) {
+        const bool copy=nskry::input::PluginMatches(L"copy",L"Ctrl+C",UINT(key)) ||
+            nskry::input::PluginMatches(L"copy_alt",L"Ctrl+Insert",UINT(key));
+        if(id==2 && copy){SendMessageW(window,WM_COPY,0,0);return 0;}
+        if(id==1 && (copy || nskry::input::PluginMatches(L"cancel",L"Esc",UINT(key)))){
+            SendMessageW(HWND(parent),message,key,flags);return 0;
+        }
+    }
+    if(message==WM_NCDESTROY)RemoveWindowSubclass(window,OcrInputRelay,id);
+    return DefSubclassProc(window,message,key,flags);
+}
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Globalization.h>
@@ -316,7 +335,7 @@ struct OcrRequest {
 };
 
 NskryPluginInfo kInfo{ sizeof(NskryPluginInfo), NSKRY_PLUGIN_API_VERSION,
-    L"Text recognition", L"nskry-ocr", L"0.6.0", L"Nskry Team",
+    L"Text recognition", L"nskry-ocr", L"0.6.1", L"Nskry Team",
     L"On-demand offline text recognition", nullptr,
     NSKRY_CAP_TOOLBAR_ACTION | NSKRY_CAP_POST_CAPTURE, {} };
 
@@ -802,10 +821,11 @@ LRESULT CALLBACK ProgressProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             122, 46, 80, 28, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelOcrId)), nullptr, nullptr);
         for (HWND child : {label, button}) if (child)
             ::SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(::GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+        if(button)::SetWindowSubclass(button,OcrInputRelay,1,DWORD_PTR(hwnd));
         return 0;
     }
     if (message == WM_CLOSE || (message == WM_COMMAND && LOWORD(wp) == kCancelOcrId) ||
-        (message == WM_KEYDOWN && wp == VK_ESCAPE)) {
+        ((message == WM_KEYDOWN || message==WM_SYSKEYDOWN) && nskry::input::PluginMatches(L"cancel",L"Esc",UINT(wp)))) {
         uint64_t expected = static_cast<uint64_t>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         const uint64_t canceledGeneration = expected;
         if (s_generation.compare_exchange_strong(expected, expected + 1)) {
@@ -987,6 +1007,9 @@ private:
         for (HWND child : { m_zoomOutButton, m_zoomInButton, m_scaleLabel, m_highlightButton, m_editButton,
                             m_copyButton, m_saveButton, m_rotateButton, m_engineButton, m_textEdit })
             if (child) ::SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
+        for(HWND child:{m_zoomOutButton,m_zoomInButton,m_highlightButton,m_editButton,m_copyButton,m_saveButton,m_rotateButton,m_engineButton})
+            if(child)::SetWindowSubclass(child,OcrInputRelay,1,DWORD_PTR(m_hwnd));
+        if(m_textEdit)::SetWindowSubclass(m_textEdit,OcrInputRelay,2,DWORD_PTR(m_hwnd));
         LayoutControls();
     }
 
@@ -1104,7 +1127,7 @@ private:
             ::DeleteObject(pen);
         }
         ::SetBkMode(dc, TRANSPARENT); ::SetTextColor(dc, RGB(190, 190, 190));
-        const wchar_t* hint = L"Wheel: zoom · Shift+wheel: horizontal pan · Alt+wheel: vertical pan";
+        const wchar_t* hint = L"Zoom / pan shortcuts: Settings → Hotkeys → Text recognition";
         RECT hintArea{canvas.left + 10, canvas.top + 8, canvas.right - (m_engineAtTop ? 120 : 10), canvas.top + 30};
         ::DrawTextW(dc, hint, -1, &hintArea, DT_SINGLELINE | DT_END_ELLIPSIS | DT_VCENTER);
     }
@@ -1237,9 +1260,9 @@ private:
             const RECT image = PreviewRect();
             if (!::PtInRect(&image, point)) break;
             const int delta = GET_WHEEL_DELTA_WPARAM(wp);
-            if (::GetKeyState(VK_SHIFT) < 0) Pan(delta / 3.0, 0);
-            else if (::GetKeyState(VK_MENU) < 0) Pan(0, delta / 3.0);
-            else ZoomAt(point, delta > 0 ? 1.12 : 1.0 / 1.12);
+            if (nskry::input::PluginMatches(L"pan_x",L"Shift+Wheel",0,nskry::input::Kind::Wheel)) Pan(delta / 3.0, 0);
+            else if (nskry::input::PluginMatches(L"pan_y",L"Alt+Wheel",0,nskry::input::Kind::Wheel)) Pan(0, delta / 3.0);
+            else if(nskry::input::PluginMatches(L"zoom",L"Wheel",0,nskry::input::Kind::Wheel)) ZoomAt(point, delta > 0 ? 1.12 : 1.0 / 1.12);
             return 0;
         }
         case WM_LBUTTONDOWN:
@@ -1280,8 +1303,8 @@ private:
         case WM_CAPTURECHANGED:
             m_dragSelecting = false;
             return 0;
-        case WM_KEYDOWN:
-            if ((wp == 'C' || wp == VK_INSERT) && (::GetKeyState(VK_CONTROL) & 0x8000)) { CopySelected(); return 0; }
+        case WM_KEYDOWN:case WM_SYSKEYDOWN:
+            if (nskry::input::PluginMatches(L"copy",L"Ctrl+C",UINT(wp)) || nskry::input::PluginMatches(L"copy_alt",L"Ctrl+Insert",UINT(wp))) { CopySelected(); return 0; }
             break;
         case WM_SETCURSOR: {
             POINT point{}; ::GetCursorPos(&point); ::ScreenToClient(m_hwnd, &point);

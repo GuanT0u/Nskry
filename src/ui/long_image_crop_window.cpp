@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "ui/long_image_crop_window.h"
 #include "ui/precision_loupe.h"
+#include "ui/interaction_visuals.h"
 
 #include <algorithm>
 #include <windowsx.h>
@@ -86,6 +87,7 @@ bool LongImageCropWindow::Show(HWND owner) {
     if (!m_hwnd) return false;
     if (owner) ::SetWindowLongPtrW(m_hwnd, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(owner));
     LayoutControls();
+    RelayCoreButtons(m_hwnd, ButtonKeyContext::ImageEditor);
     ::ShowWindow(m_hwnd, SW_SHOW);
     ::SetForegroundWindow(m_hwnd);
     return true;
@@ -165,6 +167,7 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
         Paint(hwnd);
         return 0;
     case WM_LBUTTONDOWN: {
+        ::SetFocus(hwnd);
         const RECT image = ImageRect();
         const int y = GET_Y_LPARAM(lp);
         if (m_height <= 0 || image.bottom <= image.top) return 0;
@@ -222,7 +225,7 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
                 int coordinate = columns ? static_cast<int>(static_cast<long long>(pointerX - image.left) * m_width / (image.right - image.left))
                                          : static_cast<int>(static_cast<long long>(pointerY - image.top) * m_height / (image.bottom - image.top));
                 coordinate = (std::clamp)(coordinate, 0, columns ? m_width : m_height);
-                if (::GetKeyState(VK_MENU) & 0x8000) {
+                if (Shortcut(L"core.precision",0,input::Kind::Hold)) {
                     const RECT image = ImageRect();
                     const double ratio = columns ? double(m_width) / (image.right - image.left)
                                                  : double(m_height) / (image.bottom - image.top);
@@ -261,7 +264,7 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
                 return 0;
             }
             if (m_drag == DragHandle::Left || m_drag == DragHandle::Right) {
-                const bool precision = (::GetKeyState(VK_MENU) & 0x8000) != 0;
+                const bool precision = Shortcut(L"core.precision",0,input::Kind::Hold);
                 int sourceX = SourcePointFromClient({ pointerX, pointerY }).x;
                 if (precision) {
                     const RECT image = ImageRect();
@@ -290,7 +293,7 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
                 ::InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
             }
-            const bool precision = (::GetKeyState(VK_MENU) & 0x8000) != 0;
+            const bool precision = Shortcut(L"core.precision",0,input::Kind::Hold);
             int sourceY = SourceYFromClientY(pointerY);
             if (precision) {
                 const RECT image = ImageRect();
@@ -333,18 +336,21 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
         return 0;
     case WM_MOUSEWHEEL: {
         POINT point{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) }; ::ScreenToClient(hwnd, &point);
-        if ((::GetKeyState(VK_SHIFT) & 0x8000) != 0) ScrollHorizontal(GET_WHEEL_DELTA_WPARAM(wp));
-        else if ((::GetKeyState(VK_MENU) & 0x8000) != 0) ScrollView(GET_WHEEL_DELTA_WPARAM(wp));
-        else ZoomAt(point, GET_WHEEL_DELTA_WPARAM(wp));
+        if (Shortcut(L"core.editor.pan_x",0,input::Kind::Wheel)) ScrollHorizontal(GET_WHEEL_DELTA_WPARAM(wp));
+        else if (Shortcut(L"core.editor.pan_y",0,input::Kind::Wheel)) ScrollView(GET_WHEEL_DELTA_WPARAM(wp));
+        else if(Shortcut(L"core.editor.zoom",0,input::Kind::Wheel)) ZoomAt(point, GET_WHEEL_DELTA_WPARAM(wp));
         return 0;
     }
     case WM_SETCURSOR: {
         if (LOWORD(lp) != HTCLIENT) break;
-        if (m_cutMode) { ::SetCursor(::LoadCursorW(nullptr, m_cutMode == 2 ? IDC_SIZEWE : IDC_SIZENS)); return TRUE; }
         POINT point{};
         ::GetCursorPos(&point);
         ::ScreenToClient(hwnd, &point);
         const RECT image = ImageRect();
+        RECT client{};GetClientRect(hwnd,&client);RECT canvas{kCanvasMargin,kCanvasMargin,client.right-kCanvasMargin,client.bottom-kControlsHeight};
+        if(m_cutMode){::SetCursor(::PtInRect(&image,point) && ::PtInRect(&canvas,point)?InteractionCursor(m_cutMode==2?3:2):LoadCursorW(nullptr,IDC_ARROW));return TRUE;}
+        if(m_selectingOcr){::SetCursor(::PtInRect(&image,point) && ::PtInRect(&canvas,point)?InteractionCursor(0):LoadCursorW(nullptr,IDC_ARROW));return TRUE;}
+        if(m_drag==DragHandle::Pan){::SetCursor(InteractionCursor(4));return TRUE;}
         const int leftX = image.left + static_cast<int>((static_cast<double>(m_cropLeft) / m_width) * (image.right - image.left));
         const int rightX = image.left + static_cast<int>((static_cast<double>(m_cropRight) / m_width) * (image.right - image.left));
         if (point.y >= image.top - 12 && point.y <= image.bottom + 12 &&
@@ -405,9 +411,11 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
     case WM_CLOSE:
         ::DestroyWindow(hwnd);
         return 0;
-    case WM_KEYDOWN:
-        if (wp == VK_ESCAPE && m_cutMode) { SetCutMode(0); return 0; }
-        if (wp == VK_RETURN && m_cutMode) { ConfirmCut(); return 0; }
+    case WM_KEYDOWN:case WM_SYSKEYDOWN:
+        if (Shortcut(L"core.editor.cancel",UINT(wp))) {
+            if(m_cutMode)SetCutMode(0);else if(m_selectingOcr)SetOcrSelectionMode(false);else ::DestroyWindow(hwnd);return 0;}
+        if (Shortcut(L"core.editor.confirm",UINT(wp))) {
+            if(m_cutMode)ConfirmCut();else if(m_selectingOcr)RunImageAction(0);return 0;}
         break;
     case WM_DESTROY:
         return 0;
@@ -675,9 +683,7 @@ void LongImageCropWindow::Paint(HWND hwnd) {
                 strip.top = image.top + static_cast<int>(static_cast<long long>(first) * (image.bottom - image.top) / m_height);
                 strip.bottom = image.top + static_cast<int>(static_cast<long long>(last) * (image.bottom - image.top) / m_height);
             }
-            HBRUSH marker = ::CreateHatchBrush(HS_DIAGCROSS, RGB(255, 110, 80));
-            const int saved = ::SaveDC(dc); ::SetBkMode(dc, TRANSPARENT);
-            ::FillRect(dc, &strip, marker); ::FrameRect(dc, &strip, marker); ::RestoreDC(dc, saved); ::DeleteObject(marker);
+            CutPreview(dc,strip,m_cutMode==2);
         }
 
         if (m_selectingOcr && m_ocrSelection.right > m_ocrSelection.left && m_ocrSelection.bottom > m_ocrSelection.top) {
@@ -704,7 +710,7 @@ void LongImageCropWindow::Paint(HWND hwnd) {
             const int sourceY = (std::clamp)(SourceYFromClientY(m_dragLastPoint.y), 0, m_height - 1);
             wchar_t coordinate[80]{};
             swprintf_s(coordinate, L"Image: %d, %d%s", sourceX, sourceY,
-                       (::GetKeyState(VK_MENU) & 0x8000) ? L"  (Alt precision)" : L"");
+                       Shortcut(L"core.precision",0,input::Kind::Hold) ? L"  (precision)" : L"");
             // Sample a tiny stitched neighbourhood, not the original bitmap:
             // otherwise a seam's loupe would show pixels already deleted.
             constexpr int half = 6, side = half * 2 + 1;
@@ -734,7 +740,7 @@ void LongImageCropWindow::Paint(HWND hwnd) {
     ::SetBkMode(dc, TRANSPARENT); ::SetTextColor(dc, RGB(235, 235, 235));
     const wchar_t* help = m_cutMode ? L"Choose/drag two cut lines, then Delete strip. Copy/Save use confirmed edits only." : m_selectingOcr
         ? L"Drag a gold rectangle around the target content, then run the selected image action"
-        : L"Drag blue lines to crop · Zoom +/- for detail · Hold Alt for precision";
+        : L"Drag crop lines · Zoom +/- for detail · Configure precision/gestures in Settings";
     ::TextOutW(dc, kCanvasMargin, client.bottom - 142, help, static_cast<int>(wcslen(help)));
     ::BitBlt(paintDc, 0, 0, client.right - client.left, client.bottom - client.top, dc, 0, 0, SRCCOPY);
     ::EndPaint(hwnd, &ps);
