@@ -65,9 +65,11 @@ bool PluginManager::LoadPlugin(const PluginRecord &record) {
         reinterpret_cast<decltype(&nskry_plugin_shutdown)>(::GetProcAddress(module, "nskry_plugin_shutdown"));
     const auto configureInput =
         reinterpret_cast<NskryConfigureInputV1>(::GetProcAddress(module, "nskry_plugin_configure_input_v1"));
+    const auto configureInputV2 =
+        reinterpret_cast<NskryConfigureInputV2>(::GetProcAddress(module, "nskry_plugin_configure_input_v2"));
     const bool localInput = std::any_of(record.manifest.shortcuts.begin(), record.manifest.shortcuts.end(),
                                         [](const ShortcutDefinition &row) { return row.kind != input::Kind::Global; });
-    if (localInput && !configureInput) {
+    if (localInput && !configureInput && !configureInputV2) {
         ::FreeLibrary(module);
         return false;
     }
@@ -113,8 +115,9 @@ bool PluginManager::LoadPlugin(const PluginRecord &record) {
     entry.fnExecute = fnExecute;
     entry.fnShutdown = fnShutdown;
     entry.fnConfigureInput = configureInput;
+    entry.fnConfigureInputV2 = configureInputV2;
     try {
-        ConfigureInput(entry, record);
+        entry.inputReport = ConfigureInput(entry, record);
     } catch (...) {
         try {
             fnShutdown();
@@ -182,9 +185,12 @@ std::vector<ShortcutDefinition> PluginManager::GetShortcutDefinitions() const {
     }
     return out;
 }
-void PluginManager::ConfigureInput(PluginEntry &entry, const PluginRecord &record) {
-    if (!entry.fnConfigureInput)
-        return;
+PluginEntry::InputReport PluginManager::ConfigureInput(PluginEntry &entry, const PluginRecord &record) {
+    using S = PluginEntry::InputReport::Status;
+    PluginEntry::InputReport report{record.manifest.id, L"Not confirmed: plugin provides no acknowledgment.",
+                                    S::Unconfirmed};
+    if (!entry.fnConfigureInput && !entry.fnConfigureInputV2)
+        return report;
     const auto &rows = record.manifest.shortcuts;
     std::vector<std::wstring> values;
     std::vector<NskryInputBindingV1> bindings;
@@ -203,21 +209,57 @@ void PluginManager::ConfigureInput(PluginEntry &entry, const PluginRecord &recor
         bindings.push_back({rows[i].id.c_str() + prefix.size(), values[i].c_str()});
     }
     NskryInputConfigV1 config{sizeof(config), 1, uint32_t(bindings.size()), bindings.data()};
-    entry.fnConfigureInput(&config);
+    if (entry.fnConfigureInputV2) {
+        wchar_t error[512]{};
+        NskryInputResultV2 result{sizeof(result), 2, error, 512};
+        const auto status = entry.fnConfigureInputV2(&config, &result);
+        error[511] = 0;
+        report.message = error;
+        switch (status) {
+        case NSKRY_INPUT_APPLIED:
+            report.status = S::Applied;
+            report.message = L"Confirmed applied by plugin.";
+            break;
+        case NSKRY_INPUT_UNSUPPORTED:
+            report.status = S::Unsupported;
+            if (report.message.empty())
+                report.message = L"Plugin does not support this input configuration.";
+            break;
+        case NSKRY_INPUT_FAILED:
+            report.status = S::Failed;
+            if (report.message.empty())
+                report.message = L"Plugin rejected input configuration.";
+            break;
+        default:
+            report.status = S::Failed;
+            report.message = L"Plugin returned an invalid input acknowledgment.";
+            break;
+        }
+    } else
+        entry.fnConfigureInput(&config);
+    return report;
 }
-std::vector<std::wstring> PluginManager::RefreshInputConfiguration() {
-    std::vector<std::wstring> failed;
+std::vector<PluginEntry::InputReport> PluginManager::RefreshInputConfiguration() {
+    std::vector<PluginEntry::InputReport> reports;
     if (!m_registry)
-        return failed;
+        return reports;
     for (auto &[id, entry] : m_plugins)
         if (const auto *record = m_registry->Find(id)) {
             try {
-                ConfigureInput(entry, *record);
+                entry.inputReport = ConfigureInput(entry, *record);
             } catch (...) {
-                failed.push_back(id);
+                entry.inputReport = {id, L"Plugin input configuration threw an exception.",
+                                     PluginEntry::InputReport::Status::Failed};
             }
+            reports.push_back(entry.inputReport);
         }
-    return failed;
+    return reports;
+}
+PluginEntry::InputReport PluginManager::GetInputReport(const std::wstring &id) const {
+    auto entry = m_plugins.find(id);
+    return entry == m_plugins.end() ? PluginEntry::InputReport{id, L"Not loaded: confirmation has not been queried.",
+                                                               PluginEntry::InputReport::Status::NotLoaded}
+                                    : entry->second.inputReport;
 }
 
 std::vector<PluginToolbarAction> PluginManager::GetEnabledToolbarActions() const {

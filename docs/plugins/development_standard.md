@@ -1,6 +1,6 @@
 # 插件开发与交付规范（API 2）
 
-快捷键、默认键和 General 跳转入口须遵循 [输入扩展 v1](shortcuts_and_input_extension.md)。
+快捷键、默认键和 General 跳转入口须遵循 [输入扩展 v1/v2](shortcuts_and_input_extension.md)。
 不得只展示可配置快捷键而未实现配置导出，亦不得占用 API 2 reserved 字段。
 
 适用官方及独立第三方作者。先阅读 [基础能力契约](../architecture/core_plugin_contract.md)
@@ -81,6 +81,9 @@ feed 不得更新其他插件、升级自己的信任等级或替换官方身份
 示例 SHA 是占位不是有效值。官方 catalog 使用 `{"schema":1,"plugins":[上述对象...]}`，
 由维护者认证流程决定哪些 ID/publisher 被收编；第三方 feed 即使返回数组也只能更新自身 ID。
 当前文本下载上限 2 MiB，包下载上限 128 MiB；超大模型另行评估，不能默认提高所有插件限额。
+包验证额外限制 central directory 为 16 MiB、4096 项、声明解压总量 512 MiB；ZIP64 不支持。
+检查/下载/验证/解压使用按需可取消任务和元数据快照，禁止 worker 访问活 Registry、UI 或插件生命周期。
+主线程交付前再次核对 ID、版本和来源；持久化暂存目录不是任务临时资源，仍在重启时应用。
 下载 hash 只校验内容一致性，不证明签名/作者身份。数字签名与吊销是后续发行前置工作。
 
 ## 5. 许可与隐私

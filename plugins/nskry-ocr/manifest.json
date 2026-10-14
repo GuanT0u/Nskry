@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "nskry-ocr",
   "name": "Text recognition",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "author": "Nskry Team",
   "description": "On-demand offline Chinese and English text recognition, with a lightweight Windows OCR option.",
   "runtime": {

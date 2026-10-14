@@ -12,6 +12,7 @@
 #include <chrono>
 #include <iostream>
 #include <fstream>
+#include <condition_variable>
 
 namespace nskry {
 struct InputPageTestAccess {
@@ -192,15 +193,22 @@ int wmain() {
     struct GdiplusGuard{ULONG_PTR token;~GdiplusGuard(){Gdiplus::GdiplusShutdown(token);}} gdiplusGuard{gdiplusToken};
     using namespace nskry;
     bool ok = true, closed = false;
-    ok &= Expect(InputPageTestAccess::Verify(),"display/record/type/delete, blur cancellation, plugin sections, jump pulse and virtual rows");
-    ok &= Expect(SelectionWindowTestAccess::Verify(), "desktop drag, reverse drag, release endpoint, empty click and window snap");
-    ok &= Expect(MonitorControllerTestAccess::Verify(), "event controller focus/menu/override/release/resume/source destruction");
     // Redirect persistence to an owned, unique test folder; never touch user settings.
     const auto testDirectory = std::filesystem::current_path() / (L"feature-config-" + std::to_wstring(GetCurrentProcessId()));
     if (!std::filesystem::create_directory(testDirectory)) return 1;
     std::wstring oldLocal(32768, L'\0'); DWORD oldLength = GetEnvironmentVariableW(L"LOCALAPPDATA", oldLocal.data(), static_cast<DWORD>(oldLocal.size()));
     oldLocal.resize(oldLength);
-    SetEnvironmentVariableW(L"LOCALAPPDATA", testDirectory.c_str());
+    if(!SetEnvironmentVariableW(L"LOCALAPPDATA", testDirectory.c_str()))return 1;
+    // Establish isolation before any UI helper can initialize the settings singleton.
+    std::mutex waitMutex;std::condition_variable_any waitSignal;UpdateTask waitingUpdate;
+    ok &= Expect(waitingUpdate.Start([&](std::stop_token stop){
+        std::unique_lock lock(waitMutex);waitSignal.wait(lock,stop,[]{return false;});return UpdateTaskResult{};
+    },{}),"background wait starts without blocking UI");
+    ok &= Expect(InputPageTestAccess::Verify(),"display/record/type/delete, blur cancellation, plugin sections, jump pulse and virtual rows");
+    ok &= Expect(SelectionWindowTestAccess::Verify(), "desktop drag, reverse drag, release endpoint, empty click and window snap");
+    ok &= Expect(MonitorControllerTestAccess::Verify(), "event controller focus/menu/override/release/resume/source destruction");
+    waitingUpdate.Cancel();waitingUpdate.Shutdown();
+    if(std::filesystem::path(SettingsManager::Instance().SettingsPath()).parent_path()!=testDirectory/L"Nskry"/L"config")return 1;
     auto& manager = SettingsManager::Instance(); manager.Load();
     {
         std::ofstream output(std::filesystem::path(manager.SettingsPath()),std::ios::binary|std::ios::trunc);
@@ -252,7 +260,9 @@ int wmain() {
         item.version = L"1.0.0"; item.status = L"Enabled - Not loaded"; item.loadPolicy = L"on_demand";
         return std::vector<SettingsPluginItem>{item};
     };
-    services.checkPluginUpdates = [&](std::wstring&) { ++networkCalls; return std::vector<PluginUpdate>{}; };
+    UpdateTask::Completion pendingUpdate;int updateCancels=0;
+    services.checkPluginUpdates = [&](UpdateTask::Completion completion) { ++networkCalls;pendingUpdate=std::move(completion);return true; };
+    services.cancelPluginUpdate=[&]{++updateCancels;};
     SettingsWindow settings(std::move(services), [&] { closed = true; });
     settings.Show(nullptr);
     HWND window = OwnWindow(L"NskrySettings");
@@ -271,7 +281,16 @@ int wmain() {
     SetWindowPos(window, nullptr, 0, 0, 1000, 800, SWP_NOMOVE | SWP_NOZORDER);
     for (int id : {120, 125, 126, 127}) ok &= Expect(InClient(window, GetDlgItem(window, id)), "resized plugin controls fit");
     ok &= Expect(networkCalls == 0, "opening plugins page does not request updates");
+    SendMessageW(window,WM_COMMAND,124,LPARAM(GetDlgItem(window,124)));
+    auto stale=pendingUpdate;
+    ok &= Expect(Text(GetDlgItem(window,124))==L"Cancel update" && !IsWindowEnabled(GetDlgItem(window,123)),"active task UI and commit exclusion");
+    SendMessageW(window,WM_COMMAND,124,LPARAM(GetDlgItem(window,124)));
+    UpdateTaskResult late;late.message=L"stale response";stale(late);
+    ok &= Expect(updateCancels==1 && Text(GetDlgItem(window,125)).find(L"stale response")==std::wstring::npos,"cancel ignores stale completion");
+    SendMessageW(window,WM_COMMAND,124,LPARAM(GetDlgItem(window,124)));
     SendMessageW(window, WM_CLOSE, 0, 0);
+    pendingUpdate(late);
+    ok &= Expect(updateCancels==2,"close cancels active work and ignores late callback");
     ok &= Expect(closed && !OwnWindow(L"NskrySettings"), "settings destroyed on close");
 
     // Core editing is available with no plugin runtime or registry at all.

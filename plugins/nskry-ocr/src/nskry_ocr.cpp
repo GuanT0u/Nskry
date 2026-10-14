@@ -4,6 +4,11 @@
 extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_configure_input_v1(const NskryInputConfigV1* config) {
     nskry::input::Configure(config);
 }
+extern "C" NSKRY_API int32_t NSKRY_CALL nskry_plugin_configure_input_v2(const NskryInputConfigV1* config,NskryInputResultV2* result) {
+    using K=nskry::input::Kind;
+    return nskry::input::ConfigureConfirmed(config,result,{{L"copy",K::Key},{L"copy_alt",K::Key},{L"cancel",K::Key},
+        {L"zoom",K::Wheel},{L"pan_x",K::Wheel},{L"pan_y",K::Wheel}});
+}
 #include "ocr_arbitration.h"
 #include "model/ocr_process.h"
 
@@ -335,7 +340,7 @@ struct OcrRequest {
 };
 
 NskryPluginInfo kInfo{ sizeof(NskryPluginInfo), NSKRY_PLUGIN_API_VERSION,
-    L"Text recognition", L"nskry-ocr", L"0.6.1", L"Nskry Team",
+    L"Text recognition", L"nskry-ocr", L"0.6.2", L"Nskry Team",
     L"On-demand offline text recognition", nullptr,
     NSKRY_CAP_TOOLBAR_ACTION | NSKRY_CAP_POST_CAPTURE, {} };
 

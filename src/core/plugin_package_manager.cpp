@@ -1,6 +1,6 @@
-#include "pch.h"
-#include "core/json.h"
 #include "core/plugin_package_manager.h"
+#include "core/json.h"
+#include "pch.h"
 #include "update/package_verifier.h"
 
 #include <fstream>
@@ -9,26 +9,32 @@
 namespace nskry {
 namespace {
 
-bool EnsureDirectory(const std::wstring& path) {
+bool EnsureDirectory(const std::wstring &path) {
     return !path.empty() && (::CreateDirectoryW(path.c_str(), nullptr) || ::GetLastError() == ERROR_ALREADY_EXISTS);
 }
 
-bool IsChildOf(const std::wstring& root, const std::wstring& path) {
-    if (path.size() <= root.size() || _wcsnicmp(root.c_str(), path.c_str(), root.size()) != 0) return false;
+bool IsChildOf(const std::wstring &root, const std::wstring &path) {
+    if (path.size() <= root.size() || _wcsnicmp(root.c_str(), path.c_str(), root.size()) != 0)
+        return false;
     return path[root.size()] == L'\\';
 }
 
-bool DeleteTree(const std::wstring& root, const std::wstring& path) {
-    if (!IsChildOf(root, path)) return false;
+bool DeleteTree(const std::wstring &root, const std::wstring &path) {
+    if (!IsChildOf(root, path))
+        return false;
     WIN32_FIND_DATAW data{};
     const HANDLE find = ::FindFirstFileW((path + L"\\*").c_str(), &data);
     if (find != INVALID_HANDLE_VALUE) {
         do {
-            if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0) continue;
+            if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0)
+                continue;
             const std::wstring child = path + L"\\" + data.cFileName;
             if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
                 if (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
-                    if (!::RemoveDirectoryW(child.c_str())) { ::FindClose(find); return false; }
+                    if (!::RemoveDirectoryW(child.c_str())) {
+                        ::FindClose(find);
+                        return false;
+                    }
                 } else if (!DeleteTree(root, child)) {
                     ::FindClose(find);
                     return false;
@@ -43,14 +49,17 @@ bool DeleteTree(const std::wstring& root, const std::wstring& path) {
     return ::RemoveDirectoryW(path.c_str()) != FALSE;
 }
 
-bool ValidateTreeRecursive(const std::wstring& root, const std::wstring& path, std::wstring* error) {
+bool ValidateTreeRecursive(const std::wstring &root, const std::wstring &path, std::wstring *error) {
     WIN32_FIND_DATAW data{};
     const HANDLE find = ::FindFirstFileW((path + L"\\*").c_str(), &data);
-    if (find == INVALID_HANDLE_VALUE) return false;
+    if (find == INVALID_HANDLE_VALUE)
+        return false;
     do {
-        if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0) continue;
+        if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0)
+            continue;
         if (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
-            if (error) *error = L"Plugin package extraction produced a reparse point.";
+            if (error)
+                *error = L"Plugin package extraction produced a reparse point.";
             ::FindClose(find);
             return false;
         }
@@ -64,28 +73,35 @@ bool ValidateTreeRecursive(const std::wstring& root, const std::wstring& path, s
     return true;
 }
 
-std::wstring QuoteArgument(const std::wstring& value) {
+std::wstring QuoteArgument(const std::wstring &value) {
     std::wstring quoted = L"\"";
     for (const wchar_t ch : value) {
-        if (ch == L'\"') quoted += L"\\\"";
-        else quoted += ch;
+        if (ch == L'\"')
+            quoted += L"\\\"";
+        else
+            quoted += ch;
     }
     quoted += L"\"";
     return quoted;
 }
 
-bool IsSafeRelativeStagingPath(const std::wstring& path) {
+bool IsSafeRelativeStagingPath(const std::wstring &path) {
     return path.rfind(L"staging/pending-updates/", 0) == 0 && path.find(L"..") == std::wstring::npos &&
-        path.find_first_of(L"\\:") == std::wstring::npos;
+           path.find_first_of(L"\\:") == std::wstring::npos;
 }
 
 } // namespace
 
-PluginPackageManager::PluginPackageManager(PluginRegistry& registry)
-    : m_registry(registry) {}
+PreparedPluginPackage::~PreparedPluginPackage() {
+    if (!path.empty() && GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES)
+        DeleteTree(parent, path);
+}
+PluginPackageManager::PluginPackageManager(PluginRegistry &registry) : m_registry(registry) {
+}
 
 bool PluginPackageManager::Initialize() {
-    if (m_registry.AppRoot().empty()) return false;
+    if (m_registry.AppRoot().empty())
+        return false;
     m_stagingRoot = m_registry.AppRoot() + L"\\staging";
     m_packagesRoot = m_stagingRoot + L"\\packages";
     m_updatesRoot = m_stagingRoot + L"\\pending-updates";
@@ -95,83 +111,133 @@ bool PluginPackageManager::Initialize() {
 }
 
 bool PluginPackageManager::EnsureDirectories() const {
-    return EnsureDirectory(m_stagingRoot) && EnsureDirectory(m_packagesRoot) &&
-        EnsureDirectory(m_updatesRoot) && EnsureDirectory(m_rollbackRoot);
+    return EnsureDirectory(m_stagingRoot) && EnsureDirectory(m_packagesRoot) && EnsureDirectory(m_updatesRoot) &&
+           EnsureDirectory(m_rollbackRoot);
 }
 
-std::wstring PluginPackageManager::CreateStagingDirectory(const std::wstring& parent, const wchar_t* prefix) const {
+std::wstring PluginPackageManager::CreateStagingDirectory(const std::wstring &parent, const wchar_t *prefix) {
     wchar_t temporary[MAX_PATH]{};
-    if (!::GetTempFileNameW(parent.c_str(), prefix, 0, temporary)) return {};
+    if (!::GetTempFileNameW(parent.c_str(), prefix, 0, temporary))
+        return {};
     ::DeleteFileW(temporary);
-    if (!::CreateDirectoryW(temporary, nullptr)) return {};
+    if (!::CreateDirectoryW(temporary, nullptr))
+        return {};
     return temporary;
 }
 
-bool PluginPackageManager::ExtractToStaging(const std::wstring& packagePath, const std::wstring& destination,
-                                            std::wstring* error) const {
+bool PluginPackageManager::ExtractToStaging(const std::wstring &packagePath, const std::wstring &destination,
+                                            std::wstring *error, std::stop_token stop) {
+    if (stop.stop_requested()) {
+        if (error)
+            *error = L"Package preparation cancelled.";
+        return false;
+    }
     wchar_t systemDirectory[MAX_PATH]{};
     if (::GetSystemDirectoryW(systemDirectory, MAX_PATH) == 0) {
-        if (error) *error = L"Unable to locate the Windows system directory.";
+        if (error)
+            *error = L"Unable to locate the Windows system directory.";
         return false;
     }
     const std::wstring tarPath = std::wstring(systemDirectory) + L"\\tar.exe";
-    const std::wstring command = QuoteArgument(tarPath) + L" -xf " + QuoteArgument(packagePath) + L" -C " + QuoteArgument(destination);
+    const std::wstring command =
+        QuoteArgument(tarPath) + L" -xf " + QuoteArgument(packagePath) + L" -C " + QuoteArgument(destination);
     std::vector<wchar_t> commandBuffer(command.begin(), command.end());
     commandBuffer.push_back(L'\0');
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
-    if (!::CreateProcessW(tarPath.c_str(), commandBuffer.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
-                          nullptr, nullptr, &startup, &process)) {
-        if (error) *error = L"Unable to start the Windows ZIP extractor.";
+    struct Handles {
+        HANDLE job = CreateJobObjectW(nullptr, nullptr), cancelled = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        PROCESS_INFORMATION *process{};
+        ~Handles() {
+            if (job)
+                CloseHandle(job);
+            if (cancelled)
+                CloseHandle(cancelled);
+            if (process->hThread)
+                CloseHandle(process->hThread);
+            if (process->hProcess)
+                CloseHandle(process->hProcess);
+        }
+    } handles;
+    handles.process = &process;
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!handles.job || !handles.cancelled ||
+        !SetInformationJobObject(handles.job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
+        return false;
+    if (!::CreateProcessW(tarPath.c_str(), commandBuffer.data(), nullptr, nullptr, FALSE,
+                          CREATE_NO_WINDOW | CREATE_SUSPENDED | BELOW_NORMAL_PRIORITY_CLASS, nullptr, nullptr, &startup, &process)) {
+        if (error)
+            *error = L"Unable to start the Windows ZIP extractor.";
         return false;
     }
-    ::WaitForSingleObject(process.hProcess, INFINITE);
+    if (!AssignProcessToJobObject(handles.job, process.hProcess) || ResumeThread(process.hThread) == DWORD(-1)) {
+        TerminateProcess(process.hProcess, 1);
+        WaitForSingleObject(process.hProcess, INFINITE);
+        if (error)
+            *error = L"Unable to isolate ZIP extraction task.";
+        return false;
+    }
+    std::stop_callback cancel(stop, [&] { SetEvent(handles.cancelled); });
+    HANDLE waits[] = {handles.cancelled, process.hProcess};
+    const auto outcome = WaitForMultipleObjects(2, waits, FALSE, 120000);
+    if (outcome != WAIT_OBJECT_0 + 1 || stop.stop_requested()) {
+        TerminateJobObject(handles.job, 1);
+        WaitForSingleObject(process.hProcess, INFINITE);
+        if (error)
+            *error = stop.stop_requested() ? L"Package preparation cancelled." : L"ZIP extraction timed out or failed.";
+        return false;
+    }
     DWORD exitCode = 1;
     ::GetExitCodeProcess(process.hProcess, &exitCode);
-    ::CloseHandle(process.hThread);
-    ::CloseHandle(process.hProcess);
     if (exitCode != 0) {
-        if (error) *error = L"The plugin package could not be extracted.";
+        if (error)
+            *error = L"The plugin package could not be extracted.";
         return false;
     }
     return true;
 }
 
-bool PluginPackageManager::ValidateExtractedTree(const std::wstring& root, std::wstring* error) const {
+bool PluginPackageManager::ValidateExtractedTree(const std::wstring &root, std::wstring *error) {
     const DWORD attributes = ::GetFileAttributesW((root + L"\\manifest.json").c_str());
     if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY)) {
-        if (error) *error = L"Extracted package is missing manifest.json.";
+        if (error)
+            *error = L"Extracted package is missing manifest.json.";
         return false;
     }
     return ValidateTreeRecursive(root, root, error);
 }
 
-bool PluginPackageManager::InspectPackage(const std::wstring& packagePath, PluginManifest& manifest,
-                                          std::wstring* error) {
+bool PluginPackageManager::InspectPackage(const std::wstring &packagePath, PluginManifest &manifest,
+                                          std::wstring *error) {
     if (!EnsureDirectories()) {
-        if (error) *error = L"Package staging directory is unavailable.";
+        if (error)
+            *error = L"Package staging directory is unavailable.";
         return false;
     }
     VerifiedPackage verified;
-    if (!PackageVerifier::VerifyNskryPluginArchive(packagePath, verified, error)) return false;
+    if (!PackageVerifier::VerifyNskryPluginArchive(packagePath, verified, error))
+        return false;
 
     const std::wstring stage = CreateStagingDirectory(m_packagesRoot, L"chk");
     if (stage.empty()) {
-        if (error) *error = L"Unable to create package inspection directory.";
+        if (error)
+            *error = L"Unable to create package inspection directory.";
         return false;
     }
     const auto cleanup = [&]() {
-        if (::GetFileAttributesW(stage.c_str()) != INVALID_FILE_ATTRIBUTES) DeleteTree(m_packagesRoot, stage);
+        if (::GetFileAttributesW(stage.c_str()) != INVALID_FILE_ATTRIBUTES)
+            DeleteTree(m_packagesRoot, stage);
     };
-    const bool valid = ExtractToStaging(packagePath, stage, error) &&
-        ValidateExtractedTree(stage, error) &&
-        PluginManifest::LoadFromFile(stage + L"\\manifest.json", manifest, error) &&
-        manifest.IsCompatibleWithHost(error);
+    const bool valid = ExtractToStaging(packagePath, stage, error) && ValidateExtractedTree(stage, error) &&
+                       PluginManifest::LoadFromFile(stage + L"\\manifest.json", manifest, error) &&
+                       manifest.IsCompatibleWithHost(error);
     if (valid) {
         const DWORD entryAttributes = ::GetFileAttributesW((stage + L"\\" + manifest.entry).c_str());
         if (entryAttributes == INVALID_FILE_ATTRIBUTES || (entryAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-            if (error) *error = L"Package entry DLL is missing.";
+            if (error)
+                *error = L"Package entry DLL is missing.";
             cleanup();
             return false;
         }
@@ -180,31 +246,64 @@ bool PluginPackageManager::InspectPackage(const std::wstring& packagePath, Plugi
     return valid;
 }
 
-PluginPackageResult PluginPackageManager::InstallPackage(const std::wstring& packagePath, PluginSource source) {
+PluginPackageResult PluginPackageManager::InstallPackage(const std::wstring &packagePath, PluginSource source) {
     PluginPackageResult result;
-    if (!EnsureDirectories()) { result.message = L"Package staging directory is unavailable."; return result; }
-
+    auto prepared = PreparePackage(packagePath, m_registry.AppRoot(), &result.message);
+    return prepared ? InstallPrepared(prepared, source) : result;
+}
+std::shared_ptr<PreparedPluginPackage> PluginPackageManager::PreparePackage(const std::wstring &packagePath,
+                                                                            const std::wstring &appRoot,
+                                                                            std::wstring *error, std::stop_token stop) {
+    if (stop.stop_requested()) {
+        if (error)
+            *error = L"Package preparation cancelled.";
+        return {};
+    }
+    const auto parent = appRoot + L"\\staging\\packages";
+    if (appRoot.empty() || !EnsureDirectory(appRoot + L"\\staging") || !EnsureDirectory(parent)) {
+        if (error)
+            *error = L"Package staging directory is unavailable.";
+        return {};
+    }
     VerifiedPackage verified;
-    if (!PackageVerifier::VerifyNskryPluginArchive(packagePath, verified, &result.message)) return result;
-
-    const std::wstring stage = CreateStagingDirectory(m_packagesRoot, L"pkg");
-    if (stage.empty()) { result.message = L"Unable to create package staging directory."; return result; }
-    const auto cleanupStage = [&]() { if (::GetFileAttributesW(stage.c_str()) != INVALID_FILE_ATTRIBUTES) DeleteTree(m_packagesRoot, stage); };
-
-    if (!ExtractToStaging(packagePath, stage, &result.message) || !ValidateExtractedTree(stage, &result.message)) {
-        cleanupStage();
+    if (!PackageVerifier::VerifyNskryPluginArchive(packagePath, verified, error, stop) || stop.stop_requested())
+        return {};
+    auto prepared = std::make_shared<PreparedPluginPackage>();
+    prepared->parent = parent;
+    prepared->path = CreateStagingDirectory(parent, L"pkg");
+    if (prepared->path.empty()) {
+        if (error)
+            *error = L"Unable to create staging directory.";
+        return {};
+    }
+    if (!ExtractToStaging(packagePath, prepared->path, error, stop) || !ValidateExtractedTree(prepared->path, error) ||
+        !PluginManifest::LoadFromFile(prepared->path + L"\\manifest.json", prepared->manifest, error) ||
+        !prepared->manifest.IsCompatibleWithHost(error) || stop.stop_requested())
+        return {};
+    const auto entry = GetFileAttributesW((prepared->path + L"\\" + prepared->manifest.entry).c_str());
+    if (entry == INVALID_FILE_ATTRIBUTES || (entry & FILE_ATTRIBUTE_DIRECTORY)) {
+        if (error)
+            *error = L"Package entry DLL is missing.";
+        return {};
+    }
+    return prepared;
+}
+PluginPackageResult PluginPackageManager::InstallPrepared(const std::shared_ptr<PreparedPluginPackage> &prepared,
+                                                          PluginSource source) {
+    PluginPackageResult result;
+    if (!EnsureDirectories()) {
+        result.message = L"Package staging directory is unavailable.";
         return result;
     }
-
-    PluginManifest manifest;
-    if (!PluginManifest::LoadFromFile(stage + L"\\manifest.json", manifest, &result.message)) {
-        cleanupStage();
+    if (!prepared || !IsChildOf(m_packagesRoot, prepared->path) ||
+        !prepared->manifest.IsCompatibleWithHost(&result.message))
         return result;
-    }
-    if (!manifest.IsCompatibleWithHost(&result.message)) {
-        cleanupStage();
-        return result;
-    }
+    const std::wstring stage = prepared->path;
+    PluginManifest manifest = prepared->manifest;
+    const auto cleanupStage = [&]() {
+        if (::GetFileAttributesW(stage.c_str()) != INVALID_FILE_ATTRIBUTES)
+            DeleteTree(m_packagesRoot, stage);
+    };
     const DWORD entryAttributes = ::GetFileAttributesW((stage + L"\\" + manifest.entry).c_str());
     if (entryAttributes == INVALID_FILE_ATTRIBUTES || (entryAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
         result.message = L"Package entry DLL is missing.";
@@ -216,9 +315,11 @@ PluginPackageResult PluginPackageManager::InstallPackage(const std::wstring& pac
     const std::wstring target = TargetPathForId(manifest.id);
     if (m_registry.Find(manifest.id)) {
         const std::wstring updateStage = CreateStagingDirectory(m_updatesRoot, L"upd");
-        if (updateStage.empty() || !::RemoveDirectoryW(updateStage.c_str()) || !::MoveFileExW(stage.c_str(), updateStage.c_str(), MOVEFILE_WRITE_THROUGH)) {
+        if (updateStage.empty() || !::RemoveDirectoryW(updateStage.c_str()) ||
+            !::MoveFileExW(stage.c_str(), updateStage.c_str(), MOVEFILE_WRITE_THROUGH)) {
             result.message = L"Unable to stage plugin update.";
-            if (!updateStage.empty() && ::GetFileAttributesW(updateStage.c_str()) != INVALID_FILE_ATTRIBUTES) DeleteTree(m_updatesRoot, updateStage);
+            if (!updateStage.empty() && ::GetFileAttributesW(updateStage.c_str()) != INVALID_FILE_ATTRIBUTES)
+                DeleteTree(m_updatesRoot, updateStage);
             cleanupStage();
             return result;
         }
@@ -230,9 +331,10 @@ PluginPackageResult PluginPackageManager::InstallPackage(const std::wstring& pac
         }
         // Keep only the newest staged update for a plugin. This also prevents
         // repeated development installs from applying obsolete packages first.
-        std::erase_if(operations, [&](const PendingOperation& pending) {
+        std::erase_if(operations, [&](const PendingOperation &pending) {
             if (pending.type != PendingType::Update || pending.pluginId != manifest.id ||
-                !IsSafeRelativeStagingPath(pending.stagedPath)) return false;
+                !IsSafeRelativeStagingPath(pending.stagedPath))
+                return false;
             std::wstring relative = pending.stagedPath;
             std::replace(relative.begin(), relative.end(), L'/', L'\\');
             const std::wstring obsoleteStage = m_registry.AppRoot() + L"\\" + relative;
@@ -242,8 +344,8 @@ PluginPackageResult PluginPackageManager::InstallPackage(const std::wstring& pac
             }
             return true;
         });
-        operations.push_back({ PendingType::Update, manifest.id,
-            L"staging/pending-updates/" + updateStage.substr(m_updatesRoot.size() + 1) });
+        operations.push_back({PendingType::Update, manifest.id,
+                              L"staging/pending-updates/" + updateStage.substr(m_updatesRoot.size() + 1)});
         if (!WritePending(operations)) {
             result.message = L"Unable to record pending plugin update.";
             DeleteTree(m_updatesRoot, updateStage);
@@ -255,7 +357,8 @@ PluginPackageResult PluginPackageManager::InstallPackage(const std::wstring& pac
         return result;
     }
 
-    if (::GetFileAttributesW(target.c_str()) != INVALID_FILE_ATTRIBUTES || !::MoveFileExW(stage.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH)) {
+    if (::GetFileAttributesW(target.c_str()) != INVALID_FILE_ATTRIBUTES ||
+        !::MoveFileExW(stage.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH)) {
         result.message = L"Unable to install plugin package.";
         cleanupStage();
         return result;
@@ -270,7 +373,7 @@ PluginPackageResult PluginPackageManager::InstallPackage(const std::wstring& pac
     return result;
 }
 
-PluginPackageResult PluginPackageManager::Uninstall(const std::wstring& pluginId) {
+PluginPackageResult PluginPackageManager::Uninstall(const std::wstring &pluginId) {
     PluginPackageResult result;
     result.pluginId = pluginId;
     if (!PluginManifest::IsSafePluginId(pluginId) || !m_registry.Find(pluginId)) {
@@ -282,7 +385,7 @@ PluginPackageResult PluginPackageManager::Uninstall(const std::wstring& pluginId
         result.message = L"Unable to read pending plugin operations.";
         return result;
     }
-    operations.push_back({ PendingType::Delete, pluginId, {} });
+    operations.push_back({PendingType::Delete, pluginId, {}});
     if (!WritePending(operations)) {
         result.message = L"Unable to record pending plugin removal.";
         return result;
@@ -293,104 +396,129 @@ PluginPackageResult PluginPackageManager::Uninstall(const std::wstring& pluginId
     return result;
 }
 
-bool PluginPackageManager::ReadPending(std::vector<PendingOperation>& operations) const {
+bool PluginPackageManager::ReadPending(std::vector<PendingOperation> &operations) const {
     operations.clear();
-    if (::GetFileAttributesW(m_pendingPath.c_str()) == INVALID_FILE_ATTRIBUTES) return true;
+    if (::GetFileAttributesW(m_pendingPath.c_str()) == INVALID_FILE_ATTRIBUTES)
+        return true;
     json::Value root;
-    if (!json::ParseUtf8File(m_pendingPath, root) || !root.IsObject()) return false;
-    const json::Value* operationValue = root.Find(L"operations");
-    const json::Value::Array* operationArray = operationValue ? operationValue->AsArray() : nullptr;
-    if (!operationArray) return false;
-    for (const json::Value& item : *operationArray) {
+    if (!json::ParseUtf8File(m_pendingPath, root) || !root.IsObject())
+        return false;
+    const json::Value *operationValue = root.Find(L"operations");
+    const json::Value::Array *operationArray = operationValue ? operationValue->AsArray() : nullptr;
+    if (!operationArray)
+        return false;
+    for (const json::Value &item : *operationArray) {
         std::wstring type, id, stagedPath;
         if (!item.IsObject() || !item.GetString(L"type", type) || !item.GetString(L"id", id) ||
-            !item.GetString(L"staged_path", stagedPath) ||
-            (type != L"update" && type != L"delete") || !PluginManifest::IsSafePluginId(id) ||
-            (type == L"update" && !IsSafeRelativeStagingPath(stagedPath)) ||
-            (type == L"delete" && !stagedPath.empty())) return false;
-        operations.push_back({ type == L"update" ? PendingType::Update : PendingType::Delete, id, stagedPath });
+            !item.GetString(L"staged_path", stagedPath) || (type != L"update" && type != L"delete") ||
+            !PluginManifest::IsSafePluginId(id) || (type == L"update" && !IsSafeRelativeStagingPath(stagedPath)) ||
+            (type == L"delete" && !stagedPath.empty()))
+            return false;
+        operations.push_back({type == L"update" ? PendingType::Update : PendingType::Delete, id, stagedPath});
     }
     return true;
 }
 
-bool PluginPackageManager::WritePending(const std::vector<PendingOperation>& operations) const {
+bool PluginPackageManager::WritePending(const std::vector<PendingOperation> &operations) const {
     if (operations.empty()) {
-        if (::GetFileAttributesW(m_pendingPath.c_str()) != INVALID_FILE_ATTRIBUTES) return ::DeleteFileW(m_pendingPath.c_str()) != FALSE;
+        if (::GetFileAttributesW(m_pendingPath.c_str()) != INVALID_FILE_ATTRIBUTES)
+            return ::DeleteFileW(m_pendingPath.c_str()) != FALSE;
         return true;
     }
     std::wostringstream output;
     output << L"{\n  \"operations\": [";
     bool first = true;
-    for (const auto& operation : operations) {
-        if (!first) output << L',';
+    for (const auto &operation : operations) {
+        if (!first)
+            output << L',';
         output << L"\n    {\"type\": \"" << (operation.type == PendingType::Update ? L"update" : L"delete")
-               << L"\", \"id\": \"" << json::EscapeString(operation.pluginId)
-               << L"\", \"staged_path\": \"" << json::EscapeString(operation.stagedPath) << L"\"}";
+               << L"\", \"id\": \"" << json::EscapeString(operation.pluginId) << L"\", \"staged_path\": \""
+               << json::EscapeString(operation.stagedPath) << L"\"}";
         first = false;
     }
     output << L"\n  ]\n}\n";
     std::string bytes;
-    if (!json::ToUtf8(output.str(), bytes)) return false;
+    if (!json::ToUtf8(output.str(), bytes))
+        return false;
     std::ofstream file(m_pendingPath, std::ios::binary | std::ios::trunc);
     return file && static_cast<bool>(file.write(bytes.data(), static_cast<std::streamsize>(bytes.size())));
 }
 
-bool PluginPackageManager::ApplyPendingOperations(std::wstring* error) {
+bool PluginPackageManager::ApplyPendingOperations(std::wstring *error) {
     std::vector<PendingOperation> operations;
-    if (!ReadPending(operations)) return false;
+    if (!ReadPending(operations))
+        return false;
     std::vector<PendingOperation> remaining;
     bool success = true;
-    for (const PendingOperation& operation : operations) {
+    for (const PendingOperation &operation : operations) {
         std::wstring operationError;
-        const bool applied = operation.type == PendingType::Update ? ApplyUpdate(operation, &operationError) : ApplyDelete(operation, &operationError);
+        const bool applied = operation.type == PendingType::Update ? ApplyUpdate(operation, &operationError)
+                                                                   : ApplyDelete(operation, &operationError);
         if (!applied) {
             success = false;
             remaining.push_back(operation);
-            if (error && error->empty()) *error = operationError;
+            if (error && error->empty())
+                *error = operationError;
         }
     }
     return WritePending(remaining) && success;
 }
 
-bool PluginPackageManager::ApplyUpdate(const PendingOperation& operation, std::wstring* error) {
-    if (!IsSafeRelativeStagingPath(operation.stagedPath)) { if (error) *error = L"Pending update path is invalid."; return false; }
+bool PluginPackageManager::ApplyUpdate(const PendingOperation &operation, std::wstring *error) {
+    if (!IsSafeRelativeStagingPath(operation.stagedPath)) {
+        if (error)
+            *error = L"Pending update path is invalid.";
+        return false;
+    }
     std::wstring relativeStage = operation.stagedPath;
     std::replace(relativeStage.begin(), relativeStage.end(), L'/', L'\\');
     const std::wstring stage = m_registry.AppRoot() + L"\\" + relativeStage;
     const std::wstring target = TargetPathForId(operation.pluginId);
     if (!IsChildOf(m_updatesRoot, stage) || ::GetFileAttributesW(stage.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        if (error) *error = L"Pending update files are missing.";
+        if (error)
+            *error = L"Pending update files are missing.";
         return false;
     }
     const std::wstring backup = CreateStagingDirectory(m_rollbackRoot, L"bak");
-    if (backup.empty() || !::RemoveDirectoryW(backup.c_str())) { if (error) *error = L"Unable to create plugin rollback directory."; return false; }
+    if (backup.empty() || !::RemoveDirectoryW(backup.c_str())) {
+        if (error)
+            *error = L"Unable to create plugin rollback directory.";
+        return false;
+    }
 
     const bool targetExists = ::GetFileAttributesW(target.c_str()) != INVALID_FILE_ATTRIBUTES;
     if (targetExists && !::MoveFileExW(target.c_str(), backup.c_str(), MOVEFILE_WRITE_THROUGH)) {
-        if (error) *error = L"Unable to preserve the current plugin for rollback.";
+        if (error)
+            *error = L"Unable to preserve the current plugin for rollback.";
         return false;
     }
     if (!::MoveFileExW(stage.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH)) {
-        if (targetExists) ::MoveFileExW(backup.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH);
-        else ::RemoveDirectoryW(backup.c_str());
-        if (error) *error = L"Unable to apply pending plugin update.";
+        if (targetExists)
+            ::MoveFileExW(backup.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH);
+        else
+            ::RemoveDirectoryW(backup.c_str());
+        if (error)
+            *error = L"Unable to apply pending plugin update.";
         return false;
     }
-    if (targetExists) DeleteTree(m_rollbackRoot, backup);
+    if (targetExists)
+        DeleteTree(m_rollbackRoot, backup);
     return true;
 }
 
-bool PluginPackageManager::ApplyDelete(const PendingOperation& operation, std::wstring* error) {
+bool PluginPackageManager::ApplyDelete(const PendingOperation &operation, std::wstring *error) {
     const std::wstring target = TargetPathForId(operation.pluginId);
-    if (::GetFileAttributesW(target.c_str()) == INVALID_FILE_ATTRIBUTES) return true;
+    if (::GetFileAttributesW(target.c_str()) == INVALID_FILE_ATTRIBUTES)
+        return true;
     if (!DeleteTree(m_registry.PluginRoot(), target)) {
-        if (error) *error = L"Unable to remove plugin files.";
+        if (error)
+            *error = L"Unable to remove plugin files.";
         return false;
     }
     return true;
 }
 
-std::wstring PluginPackageManager::TargetPathForId(const std::wstring& pluginId) const {
+std::wstring PluginPackageManager::TargetPathForId(const std::wstring &pluginId) const {
     return PluginManifest::IsSafePluginId(pluginId) ? m_registry.PluginRoot() + L"\\" + pluginId : std::wstring{};
 }
 

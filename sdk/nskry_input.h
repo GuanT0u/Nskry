@@ -4,11 +4,14 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cwchar>
 #include <cwctype>
+#include <initializer_list>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include <windows.h>
 
@@ -22,6 +25,19 @@ struct NskryInputConfigV1 {
     const NskryInputBindingV1 *bindings; // Borrowed only during configure; copy strings.
 };
 using NskryConfigureInputV1 = void(__cdecl *)(const NskryInputConfigV1 *);
+
+// Optional confirmation extension. V1 config and API 2 structures remain unchanged.
+enum NskryInputStatusV2 : int32_t {
+    NSKRY_INPUT_APPLIED = 0,
+    NSKRY_INPUT_FAILED = 1,
+    NSKRY_INPUT_UNSUPPORTED = 2
+};
+struct NskryInputResultV2 {
+    uint32_t structSize, version;
+    wchar_t *error;         // Caller-owned UTF-16 buffer, borrowed for this call only.
+    uint32_t errorCapacity; // wchar_t count including terminator; zero is allowed.
+};
+using NskryConfigureInputV2 = int32_t(__cdecl *)(const NskryInputConfigV1 *, NskryInputResultV2 *);
 
 namespace nskry::input {
 enum class Kind {
@@ -265,6 +281,42 @@ inline void Configure(const NskryInputConfigV1 *config) {
     for (uint32_t i = 0; i < config->count; ++i)
         if (config->bindings[i].id && config->bindings[i].shortcut)
             pluginBindings.emplace(config->bindings[i].id, config->bindings[i].shortcut);
+}
+inline int32_t ConfigureConfirmed(const NskryInputConfigV1 *config, NskryInputResultV2 *result,
+                                  std::initializer_list<std::pair<const wchar_t *, Kind>> supported) {
+    if (!result || result->structSize < sizeof(*result) || result->version != 2)
+        return NSKRY_INPUT_UNSUPPORTED;
+    auto fail = [&](int32_t status, const wchar_t *message) {
+        if (result->error && result->errorCapacity)
+            wcsncpy_s(result->error, result->errorCapacity, message, _TRUNCATE);
+        return status;
+    };
+    if (result->error && result->errorCapacity)
+        result->error[0] = 0;
+    if (!config || config->structSize < sizeof(*config) || config->version != 1 || config->count > 64 ||
+        (config->count && !config->bindings))
+        return fail(NSKRY_INPUT_FAILED, L"Invalid input configuration descriptor.");
+    try {
+        std::unordered_map<std::wstring, std::wstring> next;
+        for (uint32_t i = 0; i < config->count; ++i) {
+            const auto &row = config->bindings[i];
+            if (!row.id || !row.shortcut || wcsnlen_s(row.id, 161) > 160 || wcsnlen_s(row.shortcut, 129) > 128)
+                return fail(NSKRY_INPUT_FAILED, L"Invalid binding string.");
+            auto kind = std::find_if(supported.begin(), supported.end(),
+                                     [&](const auto &key) { return key.first && !wcscmp(key.first, row.id); });
+            if (kind == supported.end())
+                return fail(NSKRY_INPUT_UNSUPPORTED, L"Unsupported local input command.");
+            Chord chord;
+            if (*row.shortcut && !Parse(row.shortcut, kind->second, chord))
+                return fail(NSKRY_INPUT_FAILED, L"Invalid local shortcut.");
+            if (!next.emplace(row.id, row.shortcut).second)
+                return fail(NSKRY_INPUT_FAILED, L"Duplicate local command.");
+        }
+        pluginBindings.swap(next);
+        return NSKRY_INPUT_APPLIED;
+    } catch (...) {
+        return fail(NSKRY_INPUT_FAILED, L"Unable to allocate input configuration.");
+    }
 }
 inline bool PluginMatches(const wchar_t *id, const wchar_t *fallback, UINT key, Kind kind = Kind::Key) {
     if (!id || !fallback)

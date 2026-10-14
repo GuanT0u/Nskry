@@ -1,0 +1,8 @@
+{
+  "manifest_version": 1,
+  "id": "org.test.update",
+  "name": "Update fixture (not executable)",
+  "version": "1.1.0",
+  "runtime": {"entry": "fixture.dll", "architecture": "x64", "api_version": 2, "load_policy": "on_demand"},
+  "capabilities": ["toolbar_action"]
+}

@@ -26,7 +26,7 @@ void ShowControl(HWND hwnd, bool show) { if (hwnd) ::ShowWindow(hwnd, show ? SW_
 
 SettingsWindow::SettingsWindow(SettingsWindowServices services, std::function<void()> onClosed)
     : m_services(std::move(services)), m_onClosed(std::move(onClosed)) {}
-SettingsWindow::~SettingsWindow() { m_inputPage.reset();m_jumpPage.reset();m_interactionPage.reset();if (m_hwnd) ::DestroyWindow(m_hwnd); }
+SettingsWindow::~SettingsWindow() { m_updateLifetime.reset();CancelPluginUpdate();m_inputPage.reset();m_jumpPage.reset();m_interactionPage.reset();if (m_hwnd) ::DestroyWindow(m_hwnd); }
 
 void SettingsWindow::Show(HWND owner) {
     std::call_once(s_classOnce, [] {
@@ -59,6 +59,7 @@ LRESULT SettingsWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CREATE: CreateControls(); ::DragAcceptFiles(m_hwnd, TRUE); RefreshFromServices(); return 0;
     case WM_NOTIFY: if (reinterpret_cast<NMHDR*>(lp)->idFrom == IDC_TAB && reinterpret_cast<NMHDR*>(lp)->code == TCN_SELCHANGE) SelectPage(TabCtrl_GetCurSel(m_tab)); return 0;
     case WM_COMMAND:
+        if(m_updateBusy && (LOWORD(wp)==IDC_PLUGIN_TOGGLE || LOWORD(wp)==IDC_PLUGIN_UNINSTALL || LOWORD(wp)==IDC_PLUGIN_INSTALL))return 0;
         if (LOWORD(wp) >= 140 && LOWORD(wp) <= 154) { OnVisualControl(LOWORD(wp)); return 0; }
         if (LOWORD(wp) == IDC_APPLY) ApplySettings();
         else if (LOWORD(wp) == IDC_PLUGIN_TOGGLE) ToggleSelectedPlugin();
@@ -229,12 +230,13 @@ void SettingsWindow::RefreshPluginList() {
 void SettingsWindow::RefreshPluginDetails() {
     const int selected = static_cast<int>(::SendMessageW(m_pluginList, LB_GETCURSEL, 0, 0));
     const bool valid = selected >= 0 && selected < static_cast<int>(m_plugins.size());
-    ::EnableWindow(m_pluginToggle, valid); ::EnableWindow(m_pluginUninstall, valid);
-    if (!valid) { SetText(m_pluginDetails, L"No plugin selected. Use Browse official plugins or install a local package."); return; }
+    ::EnableWindow(m_pluginToggle, valid && !m_updateBusy); ::EnableWindow(m_pluginUninstall, valid && !m_updateBusy);
+    const auto notice=m_updateNotice.empty()?L"":m_updateNotice+L"\r\n\r\n";
+    if (!valid) { SetText(m_pluginDetails, notice+L"No plugin selected. Use Browse official plugins or install a local package."); return; }
     const auto& plugin = m_plugins[selected];
     const wchar_t* source = plugin.source == PluginSource::Official ? L"Official source (identity not verified)" :
         plugin.source == PluginSource::ThirdParty ? L"Third-party" : plugin.source == PluginSource::Legacy ? L"Legacy" : L"Local / unverified";
-    SetText(m_pluginDetails, plugin.name + L"  v" + plugin.version + L"\r\n" + plugin.description +
+    SetText(m_pluginDetails, notice+plugin.name + L"  v" + plugin.version + L"\r\n" + plugin.description +
         L"\r\nID: " + plugin.id + L"  |  Author: " + plugin.author + L"\r\nSource: " + source +
         L"\r\nState: " + plugin.status + L"  |  Load policy: " + plugin.loadPolicy +
         L"\r\nHost compatibility: " + (plugin.minVersion.empty() ? L"unspecified" : plugin.minVersion) +
@@ -333,6 +335,7 @@ void SettingsWindow::BrowseAndInstallPlugin() {
 }
 
 void SettingsWindow::InstallThirdPartyPackage(const std::wstring& packagePath) {
+    if(m_updateBusy)return;
     constexpr std::wstring_view extension = L".nskryplugin";
     if (packagePath.size() < extension.size() ||
         _wcsicmp(packagePath.c_str() + packagePath.size() - extension.size(), extension.data()) != 0) {
@@ -360,29 +363,6 @@ void SettingsWindow::InstallThirdPartyPackage(const std::wstring& packagePath) {
         result.success ? MB_ICONINFORMATION : MB_ICONERROR);
     if (result.success) RefreshPluginList();
 }
-void SettingsWindow::CheckForPluginUpdates() {
-    if (!m_services.checkPluginUpdates || !m_services.downloadPluginUpdate) return;
-    std::wstring error;
-    const std::vector<PluginUpdate> updates = m_services.checkPluginUpdates(error);
-    if (updates.empty()) {
-        const std::wstring message = error.empty() ? L"No compatible newer versions were reported by the configured sources." : L"No updates were found.\n\n" + error;
-        ::MessageBoxW(m_hwnd, message.c_str(), L"Plugin updates", error.empty() ? MB_ICONINFORMATION : MB_ICONWARNING);
-        return;
-    }
-    if (!error.empty()) ::MessageBoxW(m_hwnd, (L"Some update sources were not checked:\n\n" + error).c_str(),
-        L"Plugin update warnings", MB_OK | MB_ICONWARNING);
-    for (const PluginUpdate& update : updates) {
-        const std::wstring prompt = update.name + L"  " + update.currentVersion + L" → " + update.version +
-            L"\nID: " + update.pluginId + L"\nSource: " +
-            (update.source == PluginSource::Official ? L"Official catalog (publisher identity not yet verified)" : L"Publisher's feed (not an official certification)") +
-            L"\nPackage: " + update.packageUrl +
-            (update.releaseNotes.empty() ? L"" : L"\n\n" + update.releaseNotes) + L"\n\nDownload and stage this update for the next restart?";
-        if (::MessageBoxW(m_hwnd, prompt.c_str(), L"Plugin update available", MB_YESNO | MB_ICONQUESTION) != IDYES) continue;
-        const PluginPackageResult result = m_services.downloadPluginUpdate(update);
-        ::MessageBoxW(m_hwnd, result.message.c_str(), result.success ? L"Plugin update" : L"Plugin update failed", result.success ? MB_ICONINFORMATION : MB_ICONERROR);
-    }
-    RefreshPluginList();
-}
-void SettingsWindow::Close() { if (m_closed) return; m_closed = true; if (m_hwnd) ::DestroyWindow(m_hwnd); if (m_onClosed) m_onClosed(); }
+void SettingsWindow::Close() { if (m_closed) return; m_closed = true;m_updateLifetime.reset();CancelPluginUpdate(); if (m_hwnd) ::DestroyWindow(m_hwnd); if (m_onClosed) m_onClosed(); }
 
 } // namespace nskry

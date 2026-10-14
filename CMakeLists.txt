@@ -20,6 +20,7 @@ add_executable(Nskry WIN32
     src/core/plugin_manager.cpp
     src/core/plugin_package_manager.cpp
     src/core/plugin_update_manager.cpp
+    src/core/update_task.cpp
     src/core/plugin_update_policy.cpp
     src/core/plugin_registry.cpp
     src/core/settings_manager.cpp
@@ -37,6 +38,7 @@ add_executable(Nskry WIN32
     src/ui/precision_loupe.cpp
     src/ui/selection_window.cpp
     src/ui/settings/settings_window.cpp
+    src/ui/settings/plugin_update_flow.cpp
     src/ui/settings/input_page.cpp src/ui/settings/interaction_page.cpp
     src/update/package_verifier.cpp
     src/update/downloader.cpp
@@ -81,6 +83,15 @@ add_subdirectory(plugins/nskry-scroll)
 add_subdirectory(plugins/nskry-ocr)
 
 if (BUILD_TESTING)
+    add_executable(NskryUpdateTaskTests tests/update_task_tests.cpp src/core/update_task.cpp src/update/downloader.cpp)
+    target_include_directories(NskryUpdateTaskTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} src sdk)
+    target_compile_definitions(NskryUpdateTaskTests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN WINRT_LEAN_AND_MEAN)
+    target_link_libraries(NskryUpdateTaskTests PRIVATE user32 winhttp bcrypt ws2_32)
+    if(MSVC)
+        target_compile_options(NskryUpdateTaskTests PRIVATE /utf-8)
+    endif()
+    add_test(NAME NskryUpdateTaskTests COMMAND NskryUpdateTaskTests)
+    set_tests_properties(NskryUpdateTaskTests PROPERTIES TIMEOUT 20)
     add_executable(NskryInputSettingsTests tests/input_settings_tests.cpp src/core/hotkey_manager.cpp)
     target_include_directories(NskryInputSettingsTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} src sdk)
     target_compile_definitions(NskryInputSettingsTests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN WINRT_LEAN_AND_MEAN)
@@ -163,7 +174,9 @@ if (BUILD_TESTING)
     add_test(NAME NskryCoreTests COMMAND NskryCoreTests)
     target_link_libraries(NskryCoreTests PRIVATE winhttp)
     add_executable(NskryHostPluginUiTests tests/host_plugin_ui_tests.cpp
+        src/core/update_task.cpp
         src/ui/settings/settings_window.cpp src/ui/long_image_crop_window.cpp
+        src/ui/settings/plugin_update_flow.cpp
         src/ui/settings/input_page.cpp src/ui/settings/interaction_page.cpp
         src/core/image_edit_model.cpp
         src/ui/window_visual_style.cpp src/core/monitor_visibility_controller.cpp src/core/settings_manager.cpp
@@ -180,8 +193,16 @@ if (BUILD_TESTING)
     set_tests_properties(NskryHostPluginUiTests PROPERTIES TIMEOUT 15)
     add_library(NskryPluginRuntimeFixture SHARED tests/plugin_runtime_fixture.cpp)
     target_include_directories(NskryPluginRuntimeFixture PRIVATE sdk)
+    add_library(NskryPluginInputV2Fixture SHARED tests/plugin_runtime_fixture.cpp)
+    target_include_directories(NskryPluginInputV2Fixture PRIVATE sdk)
+    target_compile_definitions(NskryPluginInputV2Fixture PRIVATE NSKRY_TEST_INPUT_V2)
+    add_library(NskryPluginLegacyInputFixture SHARED tests/plugin_runtime_fixture.cpp)
+    target_include_directories(NskryPluginLegacyInputFixture PRIVATE sdk)
+    target_compile_definitions(NskryPluginLegacyInputFixture PRIVATE NSKRY_TEST_NO_INPUT)
     if (MSVC)
         target_compile_options(NskryPluginRuntimeFixture PRIVATE /utf-8)
+        target_compile_options(NskryPluginInputV2Fixture PRIVATE /utf-8)
+        target_compile_options(NskryPluginLegacyInputFixture PRIVATE /utf-8)
     endif()
     add_executable(NskryPluginRuntimeTests tests/plugin_runtime_tests.cpp
         src/core/plugin_manager.cpp src/core/plugin_registry.cpp src/core/plugin_manifest.cpp
@@ -192,7 +213,32 @@ if (BUILD_TESTING)
         target_compile_options(NskryPluginRuntimeTests PRIVATE /utf-8)
     endif()
     add_dependencies(NskryPluginRuntimeTests NskryPluginRuntimeFixture)
+    set(update_fixture_dir "${CMAKE_BINARY_DIR}/update-fixture")
+    file(MAKE_DIRECTORY "${update_fixture_dir}")
+    configure_file(tests/update_package_fixture.json "${update_fixture_dir}/manifest.json" COPYONLY)
+    add_custom_command(OUTPUT "${update_fixture_dir}/fixture.nskryplugin"
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:NskryPluginRuntimeFixture> "${update_fixture_dir}/fixture.dll"
+        COMMAND ${CMAKE_COMMAND} -E tar cf fixture.nskryplugin --format=zip manifest.json fixture.dll
+        WORKING_DIRECTORY "${update_fixture_dir}"
+        DEPENDS NskryPluginRuntimeFixture "${update_fixture_dir}/manifest.json")
+    add_custom_target(NskryUpdatePackageFixture DEPENDS "${update_fixture_dir}/fixture.nskryplugin")
+    add_executable(NskryUpdateBackendTests tests/update_backend_tests.cpp
+        src/core/plugin_update_manager.cpp src/core/plugin_package_manager.cpp src/core/plugin_update_policy.cpp
+        src/core/plugin_registry.cpp src/core/plugin_manifest.cpp src/core/json.cpp src/update/semver.cpp
+        src/update/package_verifier.cpp src/update/downloader.cpp)
+    target_include_directories(NskryUpdateBackendTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} src sdk)
+    target_compile_definitions(NskryUpdateBackendTests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN WINRT_LEAN_AND_MEAN)
+    target_link_libraries(NskryUpdateBackendTests PRIVATE user32 winhttp bcrypt)
+    if(MSVC)
+        target_compile_options(NskryUpdateBackendTests PRIVATE /utf-8)
+    endif()
+    add_dependencies(NskryUpdateBackendTests NskryUpdatePackageFixture)
+    add_test(NAME NskryUpdateBackendTests COMMAND NskryUpdateBackendTests "${update_fixture_dir}/fixture.nskryplugin" "${CMAKE_BINARY_DIR}")
+    set_tests_properties(NskryUpdateBackendTests PROPERTIES TIMEOUT 20)
+    add_dependencies(NskryPluginRuntimeTests NskryPluginInputV2Fixture NskryPluginLegacyInputFixture)
     add_test(NAME NskryPluginRuntimeTests COMMAND NskryPluginRuntimeTests $<TARGET_FILE:NskryPluginRuntimeFixture> "${CMAKE_BINARY_DIR}")
+    add_test(NAME NskryPluginInputV2Tests COMMAND NskryPluginRuntimeTests $<TARGET_FILE:NskryPluginInputV2Fixture> "${CMAKE_BINARY_DIR}" v2)
+    add_test(NAME NskryPluginLegacyInputTests COMMAND NskryPluginRuntimeTests $<TARGET_FILE:NskryPluginLegacyInputFixture> "${CMAKE_BINARY_DIR}" legacy)
 
     add_executable(NskryOcrSmokeTests tests/ocr_plugin_smoke.cpp)
     target_include_directories(NskryOcrSmokeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/sdk)

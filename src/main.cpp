@@ -226,6 +226,7 @@ int WINAPI wWinMain(
     nskry::PluginRegistry pluginRegistry;
     nskry::PluginPackageManager packageManager(pluginRegistry);
     nskry::PluginUpdateManager pluginUpdateManager(pluginRegistry, packageManager);
+    nskry::UpdateTask updateTask;
     std::wstring packageError;
     if (!pluginRegistry.Initialize() || !packageManager.Initialize() ||
         !packageManager.ApplyPendingOperations(&packageError) || !pluginRegistry.Load()) {
@@ -271,9 +272,9 @@ int WINAPI wWinMain(
                 error+=L"\nThe Windows startup setting could not be restored.";
             return false;
         }
-        for(const auto& id:nskry::PluginManager::Instance().RefreshInputConfiguration())
-            error+=L"\nSettings saved, but this plugin failed to update its input configuration: "+id+
-                L". Restart Nskry or contact its publisher.";
+        for(const auto& report:nskry::PluginManager::Instance().RefreshInputConfiguration())
+            if(report.status!=nskry::PluginEntry::InputReport::Status::Applied)
+                error+=L"\n"+report.pluginId+L": "+report.message;
         if (g_monitorVisibility) {
             g_monitorVisibility->SetGlobal(next.hideMonitorOnSourceFocus);
             if (nskry::MonitorHideEnabled(next.hideMonitorOnSourceFocus, g_monitorVisibility->Override()) &&
@@ -293,6 +294,7 @@ int WINAPI wWinMain(
             item.id = record->manifest.id; item.name = record->manifest.name; item.version = record->manifest.version;
             item.author = record->manifest.author; item.enabled = record->enabled;
             item.description = record->manifest.description;
+            item.description+=L"\n\nInput configuration: "+nskry::PluginManager::Instance().GetInputReport(record->manifest.id).message;
             item.homepage = record->manifest.homepage; item.repository = record->manifest.repository;
             item.updateUrl = record->source == nskry::PluginSource::Official ? settings.GetOfficialPluginCatalogUrl() : record->manifest.updateUrl;
             item.source = record->source;
@@ -315,12 +317,15 @@ int WINAPI wWinMain(
     settingsServices.installThirdPartyPlugin = [&packageManager](const std::wstring& path) {
         return packageManager.InstallPackage(path, nskry::PluginSource::ThirdParty);
     };
-    settingsServices.checkPluginUpdates = [&pluginUpdateManager, &settings](std::wstring& error) {
-        return pluginUpdateManager.CheckForUpdates(settings.GetOfficialPluginCatalogUrl(), &error);
+    settingsServices.checkPluginUpdates = [&pluginUpdateManager, &settings, &updateTask](nskry::UpdateTask::Completion completion) {
+        return updateTask.Start(pluginUpdateManager.MakeCheckWork(settings.GetOfficialPluginCatalogUrl()),std::move(completion));
     };
-    settingsServices.downloadPluginUpdate = [&pluginUpdateManager](const nskry::PluginUpdate& update) {
-        return pluginUpdateManager.DownloadAndStage(update);
+    settingsServices.downloadPluginUpdate = [&pluginUpdateManager, &updateTask](const nskry::PluginUpdate& update,nskry::UpdateTask::Completion completion,std::wstring& error) {
+        auto work=pluginUpdateManager.MakeDownloadWork(update,error);
+        return work && updateTask.Start(std::move(work),std::move(completion));
     };
+    settingsServices.commitPluginUpdate=[&pluginUpdateManager](const nskry::PluginUpdate& update,const nskry::DownloadedUpdate& download){return pluginUpdateManager.CommitDownload(update,download);};
+    settingsServices.cancelPluginUpdate=[&updateTask]{updateTask.Cancel();};
     settingsServices.getOfficialPluginsPageUrl = [&settings]() { return settings.GetOfficialPluginsPageUrl(); };
     g_settingsServices = &settingsServices;
 
@@ -357,6 +362,7 @@ int WINAPI wWinMain(
     }
 
     // Cleanup
+    updateTask.Shutdown(); // Join/cancel before Registry/services or plugin shutdown.
     nskry::PluginManager::Instance().Shutdown();
     ::Shell_NotifyIconW(NIM_DELETE, &nid);
     CleanupPip();

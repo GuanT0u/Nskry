@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include <stop_token>
 
 namespace nskry {
 
@@ -16,7 +17,7 @@ class PackageVerifier {
 public:
     static bool VerifyNskryPluginArchive(const std::wstring& archivePath,
                                          VerifiedPackage& package,
-                                         std::wstring* error = nullptr);
+                                         std::wstring* error = nullptr, std::stop_token stop = {});
 };
 
 } // namespace nskry

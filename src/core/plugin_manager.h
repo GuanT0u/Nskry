@@ -14,6 +14,18 @@ struct PluginEntry {
     decltype(&nskry_plugin_execute) fnExecute = nullptr;
     decltype(&nskry_plugin_shutdown) fnShutdown = nullptr;
     NskryConfigureInputV1 fnConfigureInput = nullptr;
+    NskryConfigureInputV2 fnConfigureInputV2 = nullptr;
+    struct InputReport {
+        enum class Status {
+            NotLoaded,
+            Unconfirmed,
+            Applied,
+            Failed,
+            Unsupported
+        };
+        std::wstring pluginId, message;
+        Status status = Status::Unconfirmed;
+    } inputReport;
 };
 
 struct PluginToolbarAction {
@@ -45,7 +57,8 @@ class PluginManager {
         m_shortcutProvider = std::move(provider);
     }
     // Failed IDs are reported to the user; configuration cannot force a native DLL to comply.
-    std::vector<std::wstring> RefreshInputConfiguration();
+    std::vector<PluginEntry::InputReport> RefreshInputConfiguration();
+    PluginEntry::InputReport GetInputReport(const std::wstring &id) const;
 
   private:
     PluginManager() = default;
@@ -54,7 +67,7 @@ class PluginManager {
     }
 
     bool LoadPlugin(const PluginRecord &record);
-    void ConfigureInput(PluginEntry &entry, const PluginRecord &record);
+    PluginEntry::InputReport ConfigureInput(PluginEntry &entry, const PluginRecord &record);
 
     PluginRegistry *m_registry = nullptr;
     NskryHostContext m_hostContext{};

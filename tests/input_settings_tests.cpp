@@ -13,6 +13,17 @@ int wmain() {
     using namespace nskry;
     using namespace input;
     bool ok = true;
+    wchar_t errorText[16]{};NskryInputResultV2 ack{sizeof(ack),2,errorText,16};
+    NskryInputBindingV1 local[]{ {L"copy",L"Ctrl+C"} };
+    NskryInputConfigV1 config{sizeof(config),1,1,local};
+    ok &= Check(ConfigureConfirmed(&config,&ack,{{L"copy",Kind::Key}})==NSKRY_INPUT_APPLIED,"v2 accepts supported local configuration");
+    local[0].shortcut=L"A+B";
+    ok &= Check(ConfigureConfirmed(&config,&ack,{{L"copy",Kind::Key}})==NSKRY_INPUT_FAILED && pluginBindings[L"copy"]==L"Ctrl+C" && errorText[15]==0,
+        "v2 rejects invalid syntax without replacing prior configuration, bounded error");
+    local[0].id=L"unknown";
+    ok &= Check(ConfigureConfirmed(&config,&ack,{{L"copy",Kind::Key}})==NSKRY_INPUT_UNSUPPORTED,"v2 distinguishes unsupported command");
+    ack.version=99;
+    ok &= Check(ConfigureConfirmed(&config,&ack,{{L"copy",Kind::Key}})==NSKRY_INPUT_UNSUPPORTED,"v2 descriptor version negotiation");
     std::vector<ShortcutDefinition> installed{
         {L"plugin.nskry-ocr.launch", L"Imported OCR", L"", L"nskry-ocr", L"Imported OCR", Kind::Global, false, true}};
     AddBuiltinCapturePlaceholders(installed);

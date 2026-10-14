@@ -30,8 +30,10 @@ struct SettingsWindowServices {
     std::function<bool(const std::wstring&, std::wstring&)> uninstallPlugin;
     std::function<bool(const std::wstring&, PluginManifest&, std::wstring&)> inspectPluginPackage;
     std::function<PluginPackageResult(const std::wstring&)> installThirdPartyPlugin;
-    std::function<std::vector<PluginUpdate>(std::wstring&)> checkPluginUpdates;
-    std::function<PluginPackageResult(const PluginUpdate&)> downloadPluginUpdate;
+    std::function<bool(UpdateTask::Completion)> checkPluginUpdates;
+    std::function<bool(const PluginUpdate&, UpdateTask::Completion, std::wstring&)> downloadPluginUpdate;
+    std::function<PluginPackageResult(const PluginUpdate&, const DownloadedUpdate&)> commitPluginUpdate;
+    std::function<void()> cancelPluginUpdate;
     std::function<std::wstring()> getOfficialPluginsPageUrl;
     std::function<std::vector<ShortcutDefinition>()> getShortcuts;
     std::function<void(bool)> setRecording;
@@ -60,6 +62,11 @@ private:
     void BrowseAndInstallPlugin();
     void InstallThirdPartyPackage(const std::wstring& packagePath);
     void CheckForPluginUpdates();
+    void HandleUpdateCheck(UpdateTaskResult result);
+    void DownloadNextUpdate();
+    void CancelPluginUpdate();
+    void SetUpdateBusy(bool busy);
+    void SetUpdateNotice(std::wstring notice);
     void RefreshVisualControls();
     void OnVisualControl(int id);
     void Close();
@@ -82,6 +89,12 @@ private:
     HWND m_apply{};
     int m_page = 0;
     bool m_closed = false;
+    bool m_updateBusy=false;
+    std::wstring m_updateNotice,m_checkWarnings;
+    std::vector<PluginUpdate> m_updates;
+    size_t m_nextUpdate=0;
+    std::shared_ptr<int> m_updateLifetime=std::make_shared<int>(0);
+    unsigned m_updateGeneration=0;
     std::vector<SettingsPluginItem> m_plugins;
     std::vector<HWND> m_generalDecor, m_hotkeyDecor;
     static inline std::once_flag s_classOnce;
