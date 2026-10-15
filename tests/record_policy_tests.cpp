@@ -43,5 +43,22 @@ int main() {
     publish.Stop(10, false);
     if (!publish.Publish() || publish.Stop(11, true) || publish.Elapsed(12) != 10)
         return 12;
+    Timeline recovery;
+    recovery.Start();
+    recovery.Ready(100);
+    recovery.BeginRecovery(250);
+    if (recovery.Elapsed(999) != 150 || recovery.Pause(300) || recovery.Resume(301) || recovery.Stop(400, false))
+        return 14;
+    if (!recovery.Stop(500, true) || recovery.SealRecovery() || recovery.Elapsed(700) != 150)
+        return 15;
+    Timeline retain;
+    retain.Start();
+    retain.Ready(0);
+    retain.BeginRecovery(10);
+    if (!retain.SealRecovery() || retain.Stop(11, true))
+        return 16;
+    if (!ValidSampleTime(0, 1, 0) || ValidSampleTime(-1, 1, 0) || ValidSampleTime(5, 1, 6) ||
+        ValidSampleTime(INT64_MAX, 1, 0) || ValidSampleTime(0, 0, 0))
+        return 17;
     std::cout << "Record state, rapid pause/resume, timestamps, stop/cancel and bounded scheduling passed.\n";
 }

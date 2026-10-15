@@ -1,5 +1,8 @@
 # Phase 5：nskry-record 首版实施与验证（2026-10-15）
 
+历史首版记录：后续 0.1.1 的失败恢复、存储故障测试、采样节奏和资源增长发现见
+[可靠性与资源复测](recording_hardening_20261015.md)。下文实测保留为 0.1.0 数据，不代表最新资源门禁结论。
+
 ## 结论与范围
 
 独立、按需 `nskry-record` 0.1.0 已实现，包位于 `installer/bundled/nskry-record.nskryplugin`。

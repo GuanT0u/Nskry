@@ -1,4 +1,5 @@
 #include "mf_encoder.h"
+#include "record_policy.h"
 #include <algorithm>
 #include <codecapi.h>
 #include <icodecapi.h>
@@ -12,18 +13,31 @@ MfEncoder::MfEncoder() {
     winrt::check_hresult(MFStartup(MF_VERSION));
 }
 MfEncoder::~MfEncoder() {
-    m_writer = nullptr;
-    m_file = nullptr;
+    ClosePipeline();
     MFShutdown();
 }
-void MfEncoder::Open(const std::wstring &path, UINT width, UINT height, UINT fps, bool hardware) {
-    if (m_writer || m_ownsFile || width < 2 || height < 2 || (width & 1) || (height & 1) ||
-        uint64_t(width) * height > 1920 * 1080 || fps < 1 || fps > 30)
+void MfEncoder::ClosePipeline() noexcept {
+    m_writer = nullptr;
+    m_file = nullptr;
+}
+void MfEncoder::SetFormat(UINT width, UINT height, UINT fps) {
+    if (m_writer || m_file || m_ownsFile || m_finalizationAttempted || width < 2 || height < 2 || (width & 1) ||
+        (height & 1) || uint64_t(width) * height > 1920 * 1080 || fps < 1 || fps > 30)
         winrt::throw_hresult(E_INVALIDARG);
-    m_path = path;
     m_width = width;
     m_height = height;
     m_fps = fps;
+}
+void MfEncoder::OpenStream(IMFByteStream *stream, UINT width, UINT height, UINT fps) {
+    if (!stream)
+        winrt::throw_hresult(E_INVALIDARG);
+    SetFormat(width, height, fps);
+    m_file.copy_from(stream);
+    Configure(false);
+}
+void MfEncoder::Open(const std::wstring &path, UINT width, UINT height, UINT fps, bool hardware) {
+    SetFormat(width, height, fps);
+    m_path = path;
     // FAIL_IF_EXIST protects unrelated files, including previous partial recordings.
     winrt::check_hresult(
         MFCreateFile(MF_ACCESSMODE_WRITE, MF_OPENMODE_FAIL_IF_EXIST, MF_FILEFLAGS_NONE, path.c_str(), m_file.put()));
@@ -33,8 +47,7 @@ void MfEncoder::Open(const std::wstring &path, UINT width, UINT height, UINT fps
     } catch (...) {
         if (!hardware)
             throw;
-        m_writer = nullptr;
-        m_file = nullptr;
+        ClosePipeline();
         // This is exactly the file this encoder created, never the requested final output.
         if (!DeleteFileW(m_path.c_str()))
             winrt::throw_last_error();
@@ -111,7 +124,7 @@ void MfEncoder::DescribeBackend() {
     }
 }
 void MfEncoder::Write(const uint8_t *bgra, int64_t time, int64_t duration) {
-    if (!m_writer || !bgra || time < 0 || duration <= 0)
+    if (!m_writer || m_finalizationAttempted || !bgra || !ValidSampleTime(time, duration, m_lastEnd))
         winrt::throw_hresult(E_INVALIDARG);
     winrt::com_ptr<IMFSample> sample;
     winrt::com_ptr<IMFMediaBuffer> buffer;
@@ -151,16 +164,18 @@ void MfEncoder::Write(const uint8_t *bgra, int64_t time, int64_t duration) {
     winrt::check_hresult(sample->SetSampleDuration(duration));
     winrt::check_hresult(m_writer->WriteSample(m_stream, sample.get()));
     ++m_samples;
+    m_lastEnd = time + duration;
 }
 void MfEncoder::Finalize() {
-    if (!m_writer || !m_samples)
+    if (!m_writer || !m_samples || m_finalizationAttempted)
         winrt::throw_hresult(MF_E_INVALIDREQUEST);
+    m_finalizationAttempted = true;
     auto hr = m_writer->Finalize();
     if (FAILED(hr))
         throw winrt::hresult_error(hr, L"MP4 sink Finalize failed");
     // The MP4 sink owns the byte stream's close/flush protocol. After Finalize
     // it may already be closed; Flush on that stream returns E_INVALIDARG.
-    m_writer = nullptr;
-    m_file = nullptr;
+    ClosePipeline();
+    m_finalized = true;
 }
 } // namespace nskry::record

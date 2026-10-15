@@ -12,6 +12,7 @@ enum class State {
     Stopping,
     Discarding,
     Publishing,
+    Recovering,
     Done,
     Failed
 };
@@ -46,7 +47,7 @@ class Timeline {
     }
     bool Stop(int64_t now, bool discard) {
         if (state != State::Starting && state != State::Recording && state != State::Paused &&
-            !(discard && state == State::Stopping))
+            !(discard && (state == State::Stopping || state == State::Recovering)))
             return false;
         frozen = Elapsed(now);
         state = discard ? State::Discarding : State::Stopping;
@@ -56,6 +57,19 @@ class Timeline {
         if (state != State::Stopping)
             return false;
         state = State::Publishing;
+        return true;
+    }
+    void BeginRecovery(int64_t now) {
+        if (state == State::Discarding)
+            return;
+        frozen = Elapsed(now);
+        state = State::Recovering;
+    }
+    bool SealRecovery() {
+        if (state == State::Discarding)
+            return false;
+        if (state == State::Recovering)
+            state = State::Publishing; // Same non-cancelable terminal ownership decision.
         return true;
     }
     int64_t Elapsed(int64_t now) const {
@@ -69,6 +83,9 @@ class Timeline {
   private:
     int64_t base{}, frozen{};
 };
+inline bool ValidSampleTime(int64_t time, int64_t duration, int64_t previousEnd) {
+    return time >= 0 && time >= previousEnd && duration > 0 && duration <= INT64_MAX - time;
+}
 // Single pending sample + latest frame: no catch-up burst after a slow encoder.
 struct FrameSchedule {
     explicit FrameSchedule(unsigned fps = 20) : interval(10000000 / std::clamp(fps, 1u, 30u)) {

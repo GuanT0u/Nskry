@@ -78,6 +78,14 @@ int wmain(int argc, wchar_t **argv) {
     SendMessageW(hwnd, WM_COMMAND, 3, 0);
     ok = Pump([&] { return !IsWindow(hwnd); }) && !RecordControlTestAlive() && !captures &&
          !std::filesystem::exists(root / L"discard.mp4") && ok;
+    for (const auto message : {WM_DISPLAYCHANGE, WM_POWERBROADCAST}) {
+        const auto path = root / (message == WM_DISPLAYCHANGE ? L"display-change.mp4" : L"suspend.mp4");
+        hwnd = RecordControlTestStart(capture, {0, 0, 160, 90}, path.wstring());
+        ok = hwnd && Pump([] { return RecordControlTestStatus().frames >= 2; }) && ok;
+        SendMessageW(hwnd, message, message == WM_POWERBROADCAST ? PBT_APMSUSPEND : 0, 0);
+        ok = Pump([] { return !RecordControlTestAlive(); }) && !captures && std::filesystem::exists(path) && ok;
+        SendMessageW(hwnd, WM_CLOSE, 0, 0);
+    }
     nskry_plugin_shutdown();
     for (const auto &file : std::filesystem::directory_iterator(root))
         ok = !file.path().filename().wstring().starts_with(L".nskry-record-") && ok;

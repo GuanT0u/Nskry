@@ -19,7 +19,7 @@ NskryPluginInfo info{sizeof(info),
                      NSKRY_PLUGIN_API_VERSION,
                      L"Screen recording",
                      L"nskry-record",
-                     L"0.1.0",
+                     L"0.1.1",
                      L"Nskry Team",
                      L"On-demand fixed screen-region MP4/H.264 recording. No audio.",
                      nullptr,
@@ -39,6 +39,7 @@ void Update() {
                            : s.state == State::Stopping   ? L"Finalizing"
                            : s.state == State::Discarding ? L"Discarding"
                            : s.state == State::Publishing ? L"Publishing (cannot discard)"
+                           : s.state == State::Recovering ? L"Recovering captured portion"
                                                           : L"Finished";
     const auto seconds = s.duration / 10000000;
     const auto text = std::wstring(state) + L"  " + std::to_wstring(seconds / 60) + L":" +

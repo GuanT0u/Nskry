@@ -1,0 +1,234 @@
+#include "record_session.h"
+#include <atomic>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <iostream>
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mfreadwrite.h>
+#include <psapi.h>
+#include <winrt/base.h>
+
+using namespace nskry::record;
+namespace {
+unsigned width{}, height{};
+std::atomic<unsigned> captures{}, frame{};
+HRESULT __cdecl Open(RECT, uint32_t, void **value, NskryCaptureDescriptionV1 *desc, wchar_t *, uint32_t) {
+    *value = new int(1);
+    *desc = {sizeof(*desc), 1, width, height, width * 4};
+    ++captures;
+    return S_OK;
+}
+HRESULT __cdecl Read(void *, uint8_t *pixels, uint32_t capacity) {
+    if (capacity != width * height * 4)
+        return E_INVALIDARG;
+    std::memset(pixels, 30, capacity);
+    const auto column = (++frame * 20) % (width - 20);
+    for (unsigned y = 0; y < height; ++y)
+        for (unsigned x = column; x < column + 20; ++x) {
+            auto *p = pixels + (size_t(y) * width + x) * 4;
+            p[0] = 30;
+            p[1] = 80;
+            p[2] = 190;
+            p[3] = 255;
+        }
+    return S_OK;
+}
+void __cdecl Close(void *value) {
+    delete static_cast<int *>(value);
+    --captures;
+}
+uint64_t Cpu() {
+    FILETIME c, e, k, u;
+    GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u);
+    ULARGE_INTEGER a{}, b{};
+    a.LowPart = k.dwLowDateTime;
+    a.HighPart = k.dwHighDateTime;
+    b.LowPart = u.dwLowDateTime;
+    b.HighPart = u.dwHighDateTime;
+    return a.QuadPart + b.QuadPart;
+}
+bool Finished(const RecordSession &s) {
+    auto state = s.Status().state;
+    return state == State::Done || state == State::Failed;
+}
+bool Pump(const std::function<bool()> &done, DWORD timeout = 15000) {
+    const auto end = GetTickCount64() + timeout;
+    while (!done() && GetTickCount64() < end) {
+        MsgWaitForMultipleObjects(0, nullptr, FALSE, 20, QS_ALLINPUT);
+        MSG msg{};
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    return done();
+}
+struct Metrics {
+    PROCESS_MEMORY_COUNTERS_EX memory{};
+    DWORD handles{};
+    Metrics() {
+        memory.cb = sizeof(memory);
+        GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&memory), sizeof(memory));
+        GetProcessHandleCount(GetCurrentProcess(), &handles);
+    }
+};
+int Number(const wchar_t *text, int low, int high) {
+    if (!text || !*text)
+        return -1;
+    int value = 0;
+    for (; *text; ++text) {
+        if (*text < L'0' || *text > L'9' || value > (high - int(*text - L'0')) / 10)
+            return -1;
+        value = value * 10 + int(*text - L'0');
+    }
+    return value >= low && value <= high ? value : -1;
+}
+int64_t Verify(const std::filesystem::path &path) {
+    winrt::check_hresult(MFStartup(MF_VERSION));
+    struct Mf {
+        ~Mf() {
+            MFShutdown();
+        }
+    } platform;
+    winrt::com_ptr<IMFSourceReader> reader;
+    winrt::check_hresult(MFCreateSourceReaderFromURL(path.c_str(), nullptr, reader.put()));
+    PROPVARIANT v{};
+    winrt::check_hresult(reader->GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE, MF_PD_DURATION, &v));
+    const auto duration = int64_t(v.uhVal.QuadPart);
+    PropVariantClear(&v);
+    winrt::com_ptr<IMFMediaType> decoded;
+    MFCreateMediaType(decoded.put());
+    decoded->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+    decoded->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
+    winrt::check_hresult(reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, decoded.get()));
+    unsigned count = 0;
+    for (unsigned safety = 0; safety < 72000; ++safety) {
+        DWORD flags{};
+        winrt::com_ptr<IMFSample> sample;
+        winrt::check_hresult(
+            reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, &flags, nullptr, sample.put()));
+        if (flags & MF_SOURCE_READERF_ENDOFSTREAM)
+            break;
+        if (sample)
+            ++count;
+    }
+    if (!count)
+        winrt::throw_hresult(E_FAIL);
+    std::cout << "decoded_frames=" << count << " duration100ns=" << duration << '\n';
+    return duration;
+}
+} // namespace
+int wmain(int argc, wchar_t **argv) {
+    if (argc != 7) {
+        std::cerr << "Usage: benchmark output-directory width height active-seconds hardware|software cycles\n";
+        return 2;
+    }
+    const int w = Number(argv[2], 160, 1920), h = Number(argv[3], 90, 1920), seconds = Number(argv[4], 1, 1800),
+              cycles = Number(argv[6], 1, 5);
+    const bool hardware = !wcscmp(argv[5], L"hardware");
+    if (w < 0 || h < 0 || seconds < 0 || cycles < 0 || w % 2 || h % 2 || int64_t(w) * h > 1920 * 1080 ||
+        (!hardware && wcscmp(argv[5], L"software")))
+        return 2;
+    width = w;
+    height = h;
+    SYSTEM_INFO system{};
+    GetSystemInfo(&system);
+    std::cout << "Synthetic frames + real MF encoding; no WGC measurement; logical_cpus=" << system.dwNumberOfProcessors
+              << '\n';
+    winrt::init_apartment(winrt::apartment_type::multi_threaded);
+    int result = 0;
+    try {
+        const auto root =
+            std::filesystem::absolute(argv[1]) /
+            (L"record-benchmark-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+        if (!std::filesystem::create_directory(root))
+            winrt::throw_hresult(E_FAIL);
+        std::ofstream csv(root / L"metrics.csv", std::ios::binary);
+        csv << "cycle,phase,wall_ms,cpu_ms,private_bytes,working_bytes,handles,frames,slow_intervals,active_100ns\n";
+        const auto epoch = GetTickCount64(), cpuEpoch = Cpu();
+        auto sample = [&](int cycle, const char *phase, const Snapshot &s) {
+            Metrics m;
+            csv << cycle << ',' << phase << ',' << GetTickCount64() - epoch << ',' << (Cpu() - cpuEpoch) / 10000 << ','
+                << m.memory.PrivateUsage << ',' << m.memory.WorkingSetSize << ',' << m.handles << ',' << s.frames << ','
+                << s.skipped << ',' << s.duration << '\n';
+            if (!csv)
+                winrt::throw_hresult(E_FAIL);
+            std::cout << cycle << ',' << phase << " private=" << m.memory.PrivateUsage
+                      << " working=" << m.memory.WorkingSetSize << " handles=" << m.handles << '\n';
+        };
+        NskryCaptureServiceV1 capture{sizeof(capture), 1, Open, Read, Close};
+        std::vector<std::pair<std::filesystem::path, int64_t>> completed;
+        for (int i = 0; i < cycles; ++i) {
+            sample(i, "idle", {});
+            const auto path = root / (L"cycle-" + std::to_wstring(i) + L".mp4");
+            RecordSession session(capture, {0, 0, w, h}, path.wstring(), hardware);
+            session.Start();
+            if (!Pump([&] { return session.Status().state == State::Recording || Finished(session); }) ||
+                Finished(session)) {
+                std::wcerr << session.Status().message << L'\n';
+                result = 1;
+                break;
+            }
+            std::wcout << L"Backend=" << session.Status().backend << L'\n';
+            const auto target = int64_t(seconds) * 10000000;
+            bool paused = false;
+            uint64_t sampledAt = 0;
+            while (!Finished(session) && session.Status().duration < target) {
+                if (!paused && session.Status().duration >= target / 2) {
+                    session.PauseResume();
+                    const auto pausedAt = GetTickCount64();
+                    Pump([&] { return !captures || Finished(session); });
+                    sample(i, "paused", session.Status());
+                    const auto frozen = session.Status().duration;
+                    const auto pausedCpu = Cpu();
+                    Pump([&] { return GetTickCount64() - pausedAt >= 1000; });
+                    std::cout << "pause_cpu_ms=" << (Cpu() - pausedCpu) / 10000 << '\n';
+                    if (captures || session.Status().duration != frozen)
+                        result = 1;
+                    session.PauseResume();
+                    paused = true;
+                }
+                const auto now = GetTickCount64();
+                if (now - sampledAt >= 1000) {
+                    sample(i, "recording", session.Status());
+                    sampledAt = now;
+                }
+                const auto until = now + 20;
+                Pump([&] { return GetTickCount64() >= until || Finished(session); });
+            }
+            session.Stop(false);
+            if (!Pump([&] { return Finished(session); }))
+                result = 1;
+            const auto s = session.Status();
+            session.Shutdown();
+            sample(i, "stopped", s);
+            if (s.state != State::Done || captures) {
+                std::wcerr << s.message << L'\n';
+                result = 1;
+                break;
+            }
+            const auto quiet = GetTickCount64(), quietCpu = Cpu();
+            Pump([&] { return GetTickCount64() - quiet >= 1000; });
+            std::cout << "post_stop_cpu_ms=" << (Cpu() - quietCpu) / 10000 << " samples=" << s.frames
+                      << " active100ns=" << s.duration << '\n';
+            sample(i, "quiet", s);
+            completed.emplace_back(path, s.duration);
+        }
+        // Decoder caches must not contaminate the next recording cycle baseline.
+        for (const auto &[path, duration] : completed)
+            if (std::abs(Verify(path) - duration) > 100000)
+                result = 1;
+        std::wcout << L"Metrics retained: " << (root / L"metrics.csv").c_str() << L'\n';
+    } catch (const winrt::hresult_error &e) {
+        std::wcerr << e.message().c_str() << L" 0x" << std::hex << e.code().value << L'\n';
+        result = 1;
+    } catch (const std::exception &e) {
+        std::cerr << e.what() << '\n';
+        result = 1;
+    }
+    winrt::uninit_apartment();
+    return result;
+}

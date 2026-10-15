@@ -4,6 +4,7 @@
 #include <cstring>
 #include <dxgi.h>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <mfapi.h>
@@ -15,7 +16,9 @@
 using namespace nskry::record;
 namespace {
 std::atomic<int> active{}, reads{}, delay{}, failAfter{-1}, violations{};
+std::atomic<int> closeDelay{};
 std::atomic<bool> inRead{}, noFrames{};
+std::atomic<bool> scratchOnly{};
 struct Fake {
     DWORD thread = GetCurrentThreadId();
 };
@@ -41,6 +44,10 @@ HRESULT __cdecl Read(void *handle, uint8_t *p, uint32_t capacity) {
     const int n = ++reads;
     if (noFrames)
         return S_FALSE;
+    if (scratchOnly) {
+        std::memset(p, 255, capacity);
+        return S_FALSE;
+    }
     if (failAfter >= 0 && n > failAfter)
         return DXGI_ERROR_DEVICE_REMOVED;
     for (unsigned i = 0; i < capacity; i += 4) {
@@ -52,6 +59,8 @@ HRESULT __cdecl Read(void *handle, uint8_t *p, uint32_t capacity) {
     return S_OK;
 }
 void __cdecl Close(void *handle) {
+    if (closeDelay)
+        Sleep(closeDelay.load());
     if (static_cast<Fake *>(handle)->thread != GetCurrentThreadId())
         ++violations;
     delete static_cast<Fake *>(handle);
@@ -79,16 +88,53 @@ bool Finished(RecordSession &s) {
     auto st = s.Status().state;
     return st == State::Done || st == State::Failed;
 }
-int64_t Duration(const std::filesystem::path &path) {
+int64_t Duration(const std::filesystem::path &path, bool decode = false, bool expectRed = false) {
     winrt::check_hresult(MFStartup(MF_VERSION));
     int64_t value{};
     {
         winrt::com_ptr<IMFSourceReader> reader;
-        winrt::check_hresult(MFCreateSourceReaderFromURL(path.c_str(), nullptr, reader.put()));
+        winrt::com_ptr<IMFAttributes> attributes;
+        MFCreateAttributes(attributes.put(), 1);
+        attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
+        winrt::check_hresult(MFCreateSourceReaderFromURL(path.c_str(), attributes.get(), reader.put()));
         PROPVARIANT v{};
         winrt::check_hresult(reader->GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE, MF_PD_DURATION, &v));
         value = v.uhVal.QuadPart;
         PropVariantClear(&v);
+        if (decode) {
+            winrt::com_ptr<IMFMediaType> type;
+            MFCreateMediaType(type.put());
+            type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+            type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
+            winrt::check_hresult(reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, type.get()));
+            unsigned frames = 0;
+            for (unsigned safety = 0; safety < 1000; ++safety) {
+                DWORD flags{};
+                winrt::com_ptr<IMFSample> sample;
+                winrt::check_hresult(
+                    reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, &flags, nullptr, sample.put()));
+                if (flags & MF_SOURCE_READERF_ENDOFSTREAM)
+                    break;
+                if (sample) {
+                    if (expectRed) {
+                        winrt::com_ptr<IMFMediaBuffer> buffer;
+                        sample->ConvertToContiguousBuffer(buffer.put());
+                        BYTE *p{};
+                        DWORD size{};
+                        buffer->Lock(&p, nullptr, &size);
+                        const bool red =
+                            size >= 320 * 180 * 4 && p[(90 * 320 + 160) * 4 + 2] > p[(90 * 320 + 160) * 4 + 1] + 50;
+                        buffer->Unlock();
+                        if (!red)
+                            winrt::throw_hresult(E_FAIL);
+                    }
+                    ++frames;
+                }
+            }
+            if (!frames)
+                winrt::throw_hresult(E_FAIL);
+            std::cout << "Recovered RGB frames=" << frames << '\n';
+        }
     }
     MFShutdown();
     return value;
@@ -221,13 +267,83 @@ int wmain(int argc, wchar_t **argv) {
             ok &= Check(std::abs(Duration(root / L"slow.mp4") - slow.Status().duration) < 100000,
                         "slow encoder preserves wall-time duration");
         delay = 0;
+        {
+            RecordSession still(service, {0, 0, 320, 180}, (root / L"static.mp4").wstring());
+            still.Start();
+            ok &= Check(Pump([&] { return still.Status().state == State::Recording; }), "static frame starts");
+            scratchOnly = true;
+            const auto until = GetTickCount64() + 300;
+            Pump([&] { return GetTickCount64() >= until; });
+            still.Stop(false);
+            ok &= Check(Pump([&] { return Finished(still); }) && still.Status().state == State::Done,
+                        "S_FALSE repeats valid pending frame, ignores scratch pixels");
+            scratchOnly = false;
+            if (still.Status().state == State::Done)
+                ok &= Check(Duration(root / L"static.mp4", true, true) > 0,
+                            "static repeated frames decode with correct pixels");
+        }
         reads = 0;
         failAfter = 3;
         RecordSession failed(service, {0, 0, 320, 180}, (root / L"failed.mp4").wstring());
         failed.Start();
         ok &= Check(Pump([&] { return Finished(failed); }) && failed.Status().state == State::Failed && !active,
                     "capture/device failure cleanup");
+        const auto recovery = failed.Status();
+        ok &= Check(recovery.recoveryFinalized && !recovery.recoveryPath.empty() &&
+                        !std::filesystem::exists(root / L"failed.mp4"),
+                    "capture failure retains a finalized portion, not a false full success");
+        if (recovery.recoveryFinalized) {
+            const auto duration = Duration(recovery.recoveryPath, true);
+            ok &= Check(duration > 0 && std::abs(duration - recovery.encodedDuration) < 100000,
+                        "recovered MP4 duration matches only successfully encoded frames");
+            std::cout << "Recovered duration100ns=" << duration << " encoded=" << recovery.encodedDuration << '\n';
+        }
         failAfter = -1;
+        {
+            const auto folder = root / L"中文 output path";
+            std::filesystem::create_directory(folder);
+            const auto collision = folder / L"record.mp4";
+            RecordSession publish(service, {0, 0, 320, 180}, collision.wstring());
+            publish.Start();
+            ok &= Check(Pump([&] { return publish.Status().frames >= 2; }), "recording before target collision");
+            const char marker[] = "untouched";
+            HANDLE file =
+                CreateFileW(collision.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+            DWORD written{};
+            ok &= Check(file != INVALID_HANDLE_VALUE, "test-owned collision file created");
+            if (file != INVALID_HANDLE_VALUE) {
+                WriteFile(file, marker, sizeof(marker), &written, nullptr);
+                CloseHandle(file);
+            }
+            publish.Stop(false);
+            ok &= Check(Pump([&] { return Finished(publish); }), "publish collision completes");
+            const auto result = publish.Status();
+            std::ifstream input(collision, std::ios::binary);
+            std::string contents((std::istreambuf_iterator<char>(input)), {});
+            ok &= Check(contents == std::string(marker, sizeof(marker)) && result.state == State::Failed &&
+                            result.recoveryFinalized,
+                        "target preserved, finalized partial correctly reported after rename failure");
+            if (result.recoveryFinalized)
+                ok &= Check(Duration(result.recoveryPath, true) > 0, "collision recovery is playable");
+        }
+        {
+            reads = 0;
+            failAfter = 3;
+            closeDelay = 200;
+            RecordSession canceledRecovery(service, {0, 0, 320, 180}, (root / L"cancel-recovery.mp4").wstring());
+            canceledRecovery.Start();
+            ok &= Check(Pump([&] { return canceledRecovery.Status().state == State::Recovering; }),
+                        "recovery freezes clock before cleanup");
+            ok &= Check(!canceledRecovery.PauseResume() && canceledRecovery.Stop(true),
+                        "recovery remains cancelable, cannot resume");
+            ok &= Check(Pump([&] { return Finished(canceledRecovery); }) &&
+                            canceledRecovery.Status().state == State::Done &&
+                            canceledRecovery.Status().recoveryPath.empty() &&
+                            !std::filesystem::exists(root / L"cancel-recovery.mp4") && !active,
+                        "cancel during failure cleanup succeeds without retained data");
+            closeDelay = 0;
+            failAfter = -1;
+        }
         RecordSession badPath(service, {0, 0, 320, 180}, (root / L"missing" / L"output.mp4").wstring());
         badPath.Start();
         ok &= Check(Pump([&] { return Finished(badPath); }) && badPath.Status().state == State::Failed && !active,
