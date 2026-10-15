@@ -2,6 +2,7 @@
 #include "interop/window_enumerator.h"
 #include "capture/d3d_device.h"
 #include "capture/capture_session.h"
+#include "capture/region_stream.h"
 #include "ui/pip_window.h"
 #include "ui/pin_window.h"
 #include "ui/long_image_crop_window.h"
@@ -224,6 +225,7 @@ int WINAPI wWinMain(
     hostCtx.copyBitmapToClipboard = CopyBitmapToClipboard;
     hostCtx.openBitmapEditor = OpenBitmapEditor;
     nskry::PluginRegistry pluginRegistry;
+    nskry::PluginManager::Instance().SetCaptureService(nskry::RegionCaptureService());
     nskry::PluginPackageManager packageManager(pluginRegistry);
     nskry::PluginUpdateManager pluginUpdateManager(pluginRegistry, packageManager);
     nskry::UpdateTask updateTask;
@@ -238,7 +240,13 @@ int WINAPI wWinMain(
     }
 
     for(const auto& row:AllShortcuts())if(!row.pluginId.empty() && row.kind==nskry::input::Kind::Global)
-        commands.Register(row.id,[id=row.pluginId]{
+        commands.Register(row.id,[id=row.pluginId,command=row.pluginCommand,full=row.id]{
+            if(command) {
+                std::wstring error;
+                const auto local=full.substr((L"plugin."+id+L".").size());
+                if(!nskry::PluginManager::Instance().ExecuteCommand(id,local,error)) ShowPluginNotification(error.c_str(),3000);
+                return;
+            }
             bool enabled=false;for(const auto& action:nskry::PluginManager::Instance().GetEnabledToolbarActions())if(action.id==id)enabled=true;
             if(enabled)ShowSelectionOverlay(nskry::SelectionAction::Plugin,id);
             else ShowPluginNotification(L"This capture plugin is not installed or enabled.",3000);

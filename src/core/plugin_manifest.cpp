@@ -37,6 +37,16 @@ bool PluginManifest::LoadFromFile(const std::wstring& path, PluginManifest& mani
         return false;
     }
     result.manifestVersion = static_cast<int>(manifestVersion);
+    if (const auto *extensions = root.Find(L"extensions")) {
+        if (!extensions->IsObject() ||
+            (extensions->Find(L"commands") &&
+             (!extensions->GetUnsigned(L"commands", result.commandApi) || result.commandApi != 1)) ||
+            (extensions->Find(L"region_capture") &&
+             (!extensions->GetUnsigned(L"region_capture", result.captureApi) || result.captureApi != 1))) {
+            SetError(error, L"Unsupported optional extension version.");
+            return false;
+        }
+    }
     // API 2 has no cross-plugin service/dependency resolver. Do not silently
     // accept a declared prerequisite that the host cannot satisfy.
     if (const auto* required = root.Find(L"requires_plugins")) {
@@ -124,6 +134,10 @@ bool PluginManifest::LoadFromFile(const std::wstring& path, PluginManifest& mani
                std::find(seen.begin(),seen.end(),local)!=seen.end()) {SetError(error,L"Invalid or duplicate shortcut descriptor.");return false;}
             seen.push_back(local);
             if(scope==L"capture" && local==L"launch" && result.toolbarAction) row.kind=input::Kind::Global;
+            else if(scope==L"command" && local!=L"launch" && result.commandApi==1) {
+                row.kind=input::Kind::Global;
+                row.pluginCommand=true;
+            }
             else if(scope==L"key")row.kind=input::Kind::Key;
             else if(scope==L"hold")row.kind=input::Kind::Hold;
             else if(scope==L"wheel")row.kind=input::Kind::Wheel;

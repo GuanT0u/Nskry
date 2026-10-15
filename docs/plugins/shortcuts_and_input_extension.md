@@ -18,6 +18,8 @@ manifest v1 可声明最多 32 个快捷键：
 - `capture` 只允许 `launch` 且必须声明 toolbar_action：宿主框选后调用主 execute，
   不是任意全局命令/独立插件页面注入接口。
 - `key` / `hold` / `wheel` 是插件自行实现的窗口按键、按住键、滚轮操作。
+- 2026-10-15：显式声明 `extensions.commands=1` 后可用 `command`，仅控制已加载任务，见
+  [可选命令扩展](recording_extensions_v1.md)。不替代 capture/launch，不加载闲置 DLL，也不传入局部配置导出。
 - `default` 可以为空；用户显式保存空值是禁用，不能恢复默认值。
 - `general_jump` 默认 false，决定是否贡献 General 页跳转入口，与用户是否设键无关。
 - 设置只读元数据，不为展示快捷键加载 DLL；子分区标题沿用插件名。

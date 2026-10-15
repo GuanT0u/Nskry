@@ -1,0 +1,47 @@
+#include "record_policy.h"
+#include <iostream>
+int main() {
+    using namespace nskry::record;
+    Timeline t;
+    if (!t.Start() || t.Start() || !t.Ready(100) || t.Elapsed(150) != 50)
+        return 1;
+    if (!t.Pause(160) || t.Pause(170) || t.Elapsed(900) != 60)
+        return 2;
+    if (!t.Resume(1000) || t.Elapsed(1040) != 100)
+        return 3;
+    for (int i = 0; i < 1000; ++i) {
+        if (!t.Pause(1040 + i * 2) || !t.Resume(1041 + i * 2))
+            return 4;
+    }
+    if (!t.Stop(4000, false) || t.Resume(4001) || t.Pause(4001) || t.Stop(4001, false))
+        return 5;
+    auto final = t.Elapsed(5000);
+    if (!t.Stop(5001, true) || t.Elapsed(6000) != final)
+        return 6;
+    t.Complete(true);
+    if (t.state != State::Done || t.Start())
+        return 7;
+    Timeline early;
+    early.Start();
+    early.Stop(100, true);
+    if (early.Ready(200) || early.Elapsed(300))
+        return 8;
+    FrameSchedule s;
+    if (!s.Due(0))
+        return 9;
+    s.Submitted(0);
+    if (s.Due(1) || !s.Due(500000))
+        return 10;
+    s.Submitted(10000000);
+    if (s.Due(10000001) || s.next != 10500000)
+        return 11;
+    Timeline publish;
+    if (FrameSchedule(0).interval != 10000000 || FrameSchedule(999).interval != 333333)
+        return 13;
+    publish.Start();
+    publish.Ready(0);
+    publish.Stop(10, false);
+    if (!publish.Publish() || publish.Stop(11, true) || publish.Elapsed(12) != 10)
+        return 12;
+    std::cout << "Record state, rapid pause/resume, timestamps, stop/cancel and bounded scheduling passed.\n";
+}

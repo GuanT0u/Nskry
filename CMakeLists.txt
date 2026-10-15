@@ -29,6 +29,7 @@ add_executable(Nskry WIN32
     src/interop/window_enumerator.cpp
     src/capture/d3d_device.cpp
     src/capture/capture_session.cpp
+    src/capture/region_stream.cpp
     src/ui/annotation/annotation_engine.cpp
     src/ui/pip_window.cpp
     src/ui/image_action.cpp
@@ -81,8 +82,12 @@ target_precompile_headers(Nskry PRIVATE src/pch.h)
 # Official plugins use the same packaged form that Settings and Setup consume.
 add_subdirectory(plugins/nskry-scroll)
 add_subdirectory(plugins/nskry-ocr)
+add_subdirectory(plugins/nskry-record)
 
 if (BUILD_TESTING)
+    add_executable(NskryRecordPolicyTests tests/record_policy_tests.cpp)
+    target_include_directories(NskryRecordPolicyTests PRIVATE plugins/nskry-record/src)
+    add_test(NAME NskryRecordPolicyTests COMMAND NskryRecordPolicyTests)
     add_executable(NskryUpdateTaskTests tests/update_task_tests.cpp src/core/update_task.cpp src/update/downloader.cpp)
     target_include_directories(NskryUpdateTaskTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} src sdk)
     target_compile_definitions(NskryUpdateTaskTests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN WINRT_LEAN_AND_MEAN)

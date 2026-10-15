@@ -34,6 +34,7 @@ void PluginManager::Shutdown() {
     m_plugins.clear();
     m_registry = nullptr;
     m_hostContext = {};
+    m_captureService = {};
     m_initialized = false;
 }
 
@@ -67,6 +68,15 @@ bool PluginManager::LoadPlugin(const PluginRecord &record) {
         reinterpret_cast<NskryConfigureInputV1>(::GetProcAddress(module, "nskry_plugin_configure_input_v1"));
     const auto configureInputV2 =
         reinterpret_cast<NskryConfigureInputV2>(::GetProcAddress(module, "nskry_plugin_configure_input_v2"));
+    const auto connectCapture =
+        reinterpret_cast<NskryConnectCaptureV1>(::GetProcAddress(module, "nskry_plugin_connect_capture_v1"));
+    const auto command =
+        reinterpret_cast<NskryCommandHandlerV1>(::GetProcAddress(module, "nskry_plugin_command_v1"));
+    if ((record.manifest.commandApi && !command) ||
+        (record.manifest.captureApi && (!connectCapture || m_captureService.version != 1))) {
+        ::FreeLibrary(module);
+        return false;
+    }
     const bool localInput = std::any_of(record.manifest.shortcuts.begin(), record.manifest.shortcuts.end(),
                                         [](const ShortcutDefinition &row) { return row.kind != input::Kind::Global; });
     if (localInput && !configureInput && !configureInputV2) {
@@ -91,6 +101,8 @@ bool PluginManager::LoadPlugin(const PluginRecord &record) {
                       record.manifest.version == runtimeInfo->version;
         if (initialized) {
             initAttempted = true;
+            if (record.manifest.captureApi && !connectCapture(&m_captureService))
+                throw std::runtime_error("Capture extension rejected");
             initialized = fnInit(&m_hostContext) != 0;
         }
     } catch (...) {
@@ -116,6 +128,7 @@ bool PluginManager::LoadPlugin(const PluginRecord &record) {
     entry.fnShutdown = fnShutdown;
     entry.fnConfigureInput = configureInput;
     entry.fnConfigureInputV2 = configureInputV2;
+    entry.fnCommand = command;
     try {
         entry.inputReport = ConfigureInput(entry, record);
     } catch (...) {
@@ -167,6 +180,35 @@ bool PluginManager::IsLoaded(const std::wstring &pluginId) const {
     return m_plugins.contains(pluginId);
 }
 
+bool PluginManager::ExecuteCommand(const std::wstring &id, const std::wstring &local, std::wstring &error) {
+    error.clear();
+    const auto loaded = m_plugins.find(id);
+    const auto *record = m_registry ? m_registry->Find(id) : nullptr;
+    if (!record || record->manifest.commandApi != 1 || loaded == m_plugins.end() || !loaded->second.fnCommand) {
+        error = L"No active plugin session for this command.";
+        return false;
+    }
+    const auto full = L"plugin." + id + L"." + local;
+    if (std::none_of(record->manifest.shortcuts.begin(), record->manifest.shortcuts.end(),
+                     [&](const auto &row) { return row.pluginCommand && row.id == full; })) {
+        error = L"Undeclared plugin command.";
+        return false;
+    }
+    wchar_t text[512]{};
+    NskryCommandV1 request{sizeof(request), 1, local.c_str()};
+    NskryCommandResultV1 result{sizeof(result), 1, text, 512};
+    int32_t status = NSKRY_COMMAND_FAILED;
+    try {
+        status = loaded->second.fnCommand(&request, &result);
+    } catch (...) {
+    }
+    text[511] = 0;
+    if (status == NSKRY_COMMAND_OK)
+        return true;
+    error = text[0] ? text : L"Plugin command failed or is unsupported.";
+    return false;
+}
+
 std::vector<ShortcutDefinition> PluginManager::GetShortcutDefinitions() const {
     std::vector<ShortcutDefinition> out;
     if (!m_registry)
@@ -203,7 +245,7 @@ PluginEntry::InputReport PluginManager::ConfigureInput(PluginEntry &entry, const
     const auto prefix = L"plugin." + record.manifest.id + L".";
     for (size_t i = 0; i < rows.size(); ++i) {
         if (rows[i].kind == input::Kind::Global)
-            continue; // Launch belongs to the host, not plugin-local input.
+            continue; // Capture launch and explicit global commands belong to the host.
         if (!rows[i].id.starts_with(prefix))
             throw std::invalid_argument("Invalid plugin shortcut namespace");
         bindings.push_back({rows[i].id.c_str() + prefix.size(), values[i].c_str()});

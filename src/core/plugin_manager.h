@@ -2,6 +2,8 @@
 
 #include "core/plugin_registry.h"
 #include "sdk/nskry_plugin.h"
+#include "sdk/nskry_capture.h"
+#include "sdk/nskry_commands.h"
 #include <functional>
 #include <string>
 #include <unordered_map>
@@ -15,6 +17,7 @@ struct PluginEntry {
     decltype(&nskry_plugin_shutdown) fnShutdown = nullptr;
     NskryConfigureInputV1 fnConfigureInput = nullptr;
     NskryConfigureInputV2 fnConfigureInputV2 = nullptr;
+    NskryCommandHandlerV1 fnCommand = nullptr;
     struct InputReport {
         enum class Status {
             NotLoaded,
@@ -49,6 +52,9 @@ class PluginManager {
     bool EnsureLoaded(const std::wstring &pluginId);
     bool Unload(const std::wstring &pluginId);
     bool ExecutePlugin(const std::wstring &pluginId, const NskryHostContext &hostContext);
+    // Does not load idle plugins. Cleanup commands remain usable after disable.
+    bool ExecuteCommand(const std::wstring& pluginId, const std::wstring& localId, std::wstring& error);
+    void SetCaptureService(const NskryCaptureServiceV1& service) { m_captureService = service; }
     bool IsLoaded(const std::wstring &pluginId) const;
     std::vector<PluginToolbarAction> GetEnabledToolbarActions() const;
     std::vector<PluginImageAction> GetEnabledImageActions() const;
@@ -71,6 +77,7 @@ class PluginManager {
 
     PluginRegistry *m_registry = nullptr;
     NskryHostContext m_hostContext{};
+    NskryCaptureServiceV1 m_captureService{};
     std::unordered_map<std::wstring, PluginEntry> m_plugins;
     bool m_initialized = false;
     std::function<std::wstring(const ShortcutDefinition &)> m_shortcutProvider;

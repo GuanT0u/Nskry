@@ -2,6 +2,8 @@
 
 快捷键、默认键和 General 跳转入口须遵循 [输入扩展 v1/v2](shortcuts_and_input_extension.md)。
 不得只展示可配置快捷键而未实现配置导出，亦不得占用 API 2 reserved 字段。
+已加载任务的全局控制与连续区域采集另见 [可选命令/采集 v1](recording_extensions_v1.md)；
+不是 screenshot context 的帧流，也不是已实现 standalone 或跨插件服务。
 
 适用官方及独立第三方作者。先阅读 [基础能力契约](../architecture/core_plugin_contract.md)
 与 [第三方安全政策](third_party_policy.md)。官方身份不改变 SDK 约束。

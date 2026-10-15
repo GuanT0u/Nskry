@@ -16,7 +16,8 @@
 | 宿主窗口按钮布局、菜单、悬停、基础视觉资源 | Core | 可用 | 插件只声明动作；宿主负责渲染、限额、生命周期 |
 | 滚动采集、拼接、自动滚动与采集预览 | nskry-scroll | 无该可选动作 | toolbar_action；完成后交给宿主编辑器 |
 | OCR 引擎、模型、识别结果页与文字选择 | nskry-ocr | 无该可选动作 | toolbar_action + post_capture；Edit 使用 Core |
-| 翻译、录屏、上传等专项功能 | 后续插件 | 尚未提供 | 单独包、按需资源；不得偷用 OCR/Scroll 私有 UI |
+| 单屏固定区域 MP4/H.264 录屏 | nskry-record | 无该可选动作 | toolbar_action + 可选区域采集/命令 v1；控制/编码/文件归插件 |
+| 翻译、上传等专项功能 | 后续插件 | 尚未提供 | 单独包、按需资源；不得偷用 OCR/Scroll 私有 UI |
 
 裁剪/标注是多种图像功能共有的能力，确定并入 Core，不再拆一个“必须安装的编辑插件”。
 不为已确定的基础编辑窗口增加前置安装链；这不禁止其他独立、边界清晰的服务插件成为前置。
@@ -51,7 +52,9 @@ OCR result → 复制原图 → `NskryHostContext.openBitmapEditor` → `main.cp
 实时截图工具栏用 `toolbar_action`；长截图这种需要页面滚动的动作不应仅因有图像就声明 post_capture。
 窗口打开时是元数据快照，启用状态以执行时 runtime 再检查为准；更新菜单不需要加载 DLL。
 
-API 2 每插件只有主 execute 动作。每插件多个命令、动作图标、排序/分组、专用 hover 快捷槽，
+API 2 每插件只有主 execute 动作。2026-10-15 的 [可选命令/采集 v1](../plugins/recording_extensions_v1.md)
+允许已加载任务的显式控制命令，不负责独立任务启动；standalone 位仍未启用。
+更广的多个动作、动作图标、排序/分组、专用 hover 快捷槽，
 需要后续 API 3 的版本化 Action Descriptor；不要先占用 reserved 字段塞未定义指针。
 
 ## 4. 宿主服务 vs 前置插件

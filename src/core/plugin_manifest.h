@@ -26,6 +26,7 @@ struct PluginManifest {
     std::wstring updateUrl;
     bool toolbarAction = false;
     bool postCapture = false;
+    unsigned int commandApi = 0, captureApi = 0;
     std::vector<ShortcutDefinition> shortcuts;
 
     static bool LoadFromFile(const std::wstring& path, PluginManifest& manifest, std::wstring* error = nullptr);

@@ -15,9 +15,10 @@
 - **可选窗口效果** — 固定图与监控支持阴影/圆角，提供 Win11、近似 macOS 与自定义参数；默认关闭
 - **长截图** — 手动或自动滚动采集页面，带实时预览；可调整裁剪范围并编辑结果
 - **OCR 文字识别** — 默认使用按需启动的 PP-OCRv4 离线 CPU 引擎；保留 Windows OCR 快速选项，可查看或在图片上选择文字
+- **区域录屏（首版）** — 可选独立插件，MP4/H.264、暂停/继续/保存/丢弃，最高 20fps / 1080p；仅单屏固定区域，无声音
 - **截图标注** — 矩形、椭圆、箭头、画笔、马赛克和文字工具，支持撤销/重做
 - **系统托盘** — 后台运行，托盘右键菜单快捷操作
-- **插件管理** — 插件按需加载，可在设置中管理；官方长截图和 OCR 插件随安装器提供
+- **插件管理** — 插件按需加载，可在设置中管理；构建安装器时可提供长截图、OCR 和录屏可选包
 - **输入自定义** — 快捷键录制/输入/删除、插件分区及快捷设置跳转；可调整框选线、切除预览和操作光标
 
 ## 快捷键
@@ -45,13 +46,14 @@ cmd /c "`"$vcvars`" > nul 2>&1 && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Rel
 
 如需构建安装器，先完成上述 CMake 构建。构建过程会生成官方插件包：
 `installer/bundled/nskry-scroll.nskryplugin` 和
-`installer/bundled/nskry-ocr.nskryplugin`。再运行 Inno Setup：
+`installer/bundled/nskry-ocr.nskryplugin`、`installer/bundled/nskry-record.nskryplugin`。再运行 Inno Setup：
 
 ```powershell
 iscc installer/NskrySetup.iss
 ```
 
-安装器会显示当前 `installer/bundled/` 中实际存在的官方插件作为可选组件，并通过 Nskry 自己的插件安装流程完成校验和安装。翻译与录屏仍属于后续规划，尚未实现。
+安装器会显示当前 `installer/bundled/` 中实际存在的官方插件作为可选组件，并通过 Nskry 自己的插件安装流程完成校验和安装。翻译仍待开发。
+录屏需要同轮构建的 Core，范围、资源实测及待验收限制见 [录屏说明](plugins/nskry-record/README.md)。
 
 ## 技术栈
 

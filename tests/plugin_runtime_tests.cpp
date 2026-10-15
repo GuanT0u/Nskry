@@ -26,6 +26,8 @@ int wmain(int argc, wchar_t** argv) {
     runtime.SetShortcutProvider([](const nskry::ShortcutDefinition&){return std::wstring(L"Ctrl+Shift+C");});
     NskryHostContext context{}; context.structSize = sizeof(context); context.apiVersion = NSKRY_PLUGIN_API_VERSION;
     runtime.Initialize(registry, context);
+    std::wstring commandError;
+    if(runtime.ExecuteCommand(manifest.id,L"stop",commandError) || runtime.IsLoaded(manifest.id))return 27;
     struct ShutdownGuard { nskry::PluginManager& runtime; ~ShutdownGuard() { runtime.Shutdown(); } } guard{runtime};
     if (runtime.IsLoaded(manifest.id) || runtime.GetEnabledImageActions().size() != 1) return 6;
     if(runtime.GetInputReport(manifest.id).status!=InputStatus::NotLoaded || !runtime.RefreshInputConfiguration().empty())return 23;
@@ -41,6 +43,11 @@ int wmain(int argc, wchar_t** argv) {
     HMODULE module = GetModuleHandleW(dll.filename().c_str());
     const auto count = reinterpret_cast<int (NSKRY_CALL*)()>(GetProcAddress(module, "nskry_test_execute_count"));
     if (!count || count() != 1) return 8;
+    auto commandManifest=manifest;
+    commandManifest.commandApi=1;
+    commandManifest.shortcuts.push_back({L"plugin.org.test.runtime.stop",L"Stop",L"",manifest.id,manifest.name,nskry::input::Kind::Global,false,false,true});
+    if(!registry.UpsertInstalled(commandManifest,dll.parent_path().wstring(),nskry::PluginSource::ThirdParty) ||
+       !runtime.ExecuteCommand(manifest.id,L"stop",commandError) || runtime.ExecuteCommand(manifest.id,L"undeclared",commandError))return 28;
     const auto configured=reinterpret_cast<int (NSKRY_CALL*)()>(GetProcAddress(module,"nskry_test_configured"));
     if(!legacy && (!configured || !configured()))return 18;
     if(runtime.GetInputReport(manifest.id).status!=(confirmed?InputStatus::Applied:InputStatus::Unconfirmed))return 24;
@@ -64,6 +71,7 @@ int wmain(int argc, wchar_t** argv) {
     if (!SetFileAttributesW(registry.RegistryPath().c_str(), attributes) || !saveFailureRetainsState) return 13;
     if (!registry.SetEnabled(manifest.id, false) || runtime.EnsureLoaded(manifest.id) ||
         runtime.ExecutePlugin(manifest.id, context) || count() != 1 || !runtime.GetEnabledImageActions().empty()) return 9;
+    if(!runtime.ExecuteCommand(manifest.id,L"stop",commandError))return 29;
     if (!registry.SetEnabled(manifest.id, true) || !runtime.ExecutePlugin(manifest.id, context) || count() != 2) return 10;
     auto incompatible=manifest;incompatible.apiVersion=NSKRY_PLUGIN_API_VERSION-1;
     if(!registry.UpsertInstalled(incompatible,dll.parent_path().wstring(),nskry::PluginSource::ThirdParty))return 21;

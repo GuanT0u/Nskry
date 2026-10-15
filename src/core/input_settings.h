@@ -5,6 +5,7 @@ struct ShortcutDefinition {
     std::wstring id, label, defaultShortcut, pluginId, pluginName;
     input::Kind kind = input::Kind::Key;
     bool official = false, generalJump = false;
+    bool pluginCommand = false; // Optional commands v1; not a capture/launch route.
 };
 inline std::vector<ShortcutDefinition> CoreShortcuts() {
     using K = input::Kind;

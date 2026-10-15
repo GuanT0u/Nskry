@@ -109,6 +109,9 @@ bool TestManifestDependencyContract() {
     };
     bool ok = Expect(load(""), "minimal API 2 manifest accepted");
     ok &= Expect(load(",\"requires_plugins\":[]"), "empty prerequisites accepted");
+    ok &= Expect(load(R"(,"extensions":{"commands":1,"region_capture":1},"shortcuts":[{"id":"stop","label":"Stop","scope":"command","default":"Ctrl+Alt+R"}])"),"optional versioned command/capture metadata accepted");
+    ok &= Expect(!load(R"(,"extensions":{"commands":2})"),"unknown command version rejected before DLL load");
+    ok &= Expect(!load(R"(,"shortcuts":[{"id":"stop","label":"Stop","scope":"command"}])"),"command scope needs explicit extension negotiation");
     ok &= Expect(!load(",\"requires_plugins\":[\"nskry-scroll\"]"), "unsupported cross-plugin dependency rejected");
     ok &= Expect(!load(",\"requires_plugins\":true"), "malformed dependency field rejected");
     ok &= Expect(load(R"(,"shortcuts":[{"id":"copy","label":"Copy text","scope":"key","default":"Ctrl+C","general_jump":true}])"),"plugin shortcut metadata accepted without loading DLL");
