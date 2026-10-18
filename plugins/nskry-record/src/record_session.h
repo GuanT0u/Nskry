@@ -14,6 +14,9 @@ struct Snapshot {
     std::wstring recoveryPath;
     bool recoveryFinalized = false;
     int64_t encodedDuration{};
+    DWORD encoderProcessId{};                 // Diagnostic only; not an ownership/control handle.
+    uint64_t encoderCpu100ns{};               // Final child CPU total, includes child teardown.
+    int64_t maxRead100ns{}, maxEncode100ns{}; // Wall spans, not CPU attribution.
 };
 // UI owns this object and its thread; worker owns capture/encoder/COM/files.
 // UI never joins until Snapshot says finished. Shutdown cancels and joins before DLL unload.
@@ -35,7 +38,8 @@ class RecordSession {
     std::wstring m_output;
     bool m_preferHardware = true;
     mutable std::mutex m_mutex;
-    HANDLE m_wakeEvent{}; // One on-demand command signal; closed after joining.
+    HANDLE m_wakeEvent{};   // One on-demand command signal; closed after joining.
+    HANDLE m_cancelEvent{}; // Manual-reset cancellation also interrupts encoder IPC.
     Timeline m_timeline;
     std::thread m_worker;
     Snapshot m_status;

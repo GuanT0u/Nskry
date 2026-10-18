@@ -1,19 +1,29 @@
 #include "record_session.h"
-#include "mf_encoder.h"
+#include "isolated_encoder.h"
 #include <chrono>
+#include <filesystem>
 #include <memory>
 #include <shellscalingapi.h>
 #include <vector>
 #include <winrt/base.h>
 
 namespace nskry::record {
+namespace {
+bool RemoveTemporary(const std::wstring &path) {
+    if (DeleteFileW(path.c_str()))
+        return true;
+    const auto error = GetLastError();
+    return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+}
+} // namespace
 int64_t RecordSession::Now() {
     return std::chrono::duration_cast<std::chrono::duration<int64_t, std::ratio<1, 10000000>>>(
                std::chrono::steady_clock::now().time_since_epoch())
         .count();
 }
 RecordSession::RecordSession(NskryCaptureServiceV1 service, RECT region, std::wstring output, bool preferHardware)
-    : m_service(service), m_region(region), m_output(std::move(output)), m_preferHardware(preferHardware) {
+    : m_service(service), m_region(region), m_output(std::filesystem::absolute(output).wstring()),
+      m_preferHardware(preferHardware) {
 }
 RecordSession::~RecordSession() {
     Shutdown();
@@ -24,13 +34,18 @@ bool RecordSession::Start() {
         return false;
     try {
         m_wakeEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-        if (!m_wakeEvent)
+        m_cancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!m_wakeEvent || !m_cancelEvent)
             winrt::throw_last_error();
         m_worker = std::thread([this] { Run(); });
     } catch (...) {
         if (m_wakeEvent) {
             CloseHandle(m_wakeEvent);
             m_wakeEvent = nullptr;
+        }
+        if (m_cancelEvent) {
+            CloseHandle(m_cancelEvent);
+            m_cancelEvent = nullptr;
         }
         m_timeline.Complete(false);
         m_status.message = L"Could not start recording thread.";
@@ -48,8 +63,11 @@ bool RecordSession::PauseResume() {
 bool RecordSession::Stop(bool discard) {
     std::lock_guard lock(m_mutex);
     const auto changed = m_timeline.Stop(Now(), discard);
-    if (changed)
+    if (changed) {
         SetEvent(m_wakeEvent);
+        if (discard)
+            SetEvent(m_cancelEvent);
+    }
     return changed;
 }
 void RecordSession::Shutdown() {
@@ -59,6 +77,10 @@ void RecordSession::Shutdown() {
     if (m_wakeEvent) {
         CloseHandle(m_wakeEvent);
         m_wakeEvent = nullptr;
+    }
+    if (m_cancelEvent) {
+        CloseHandle(m_cancelEvent);
+        m_cancelEvent = nullptr;
     }
 }
 Snapshot RecordSession::Status() const {
@@ -83,10 +105,24 @@ void RecordSession::Run() noexcept {
             Close();
         }
     } capture{m_service};
-    std::unique_ptr<MfEncoder> encoder;
+    std::unique_ptr<IsolatedEncoder> encoder;
     std::wstring temporary;
-    bool apartment = false, owned = false, success = false, finalizedFile = false;
+    bool apartment = false, owned = false, success = false, finalizedFile = false, encoderExited = true;
     std::wstring outcome;
+    const auto releaseEncoder = [&] {
+        if (encoder) {
+            encoderExited = encoder->Close();
+            // Ownership can become visible during failed/canceled Open. Read it
+            // AFTER child shutdown, before deleting or reporting a partial.
+            owned = owned || encoder->CreatedFile();
+            finalizedFile = finalizedFile || encoder->Finalized();
+            const auto cpu = encoder->CpuTime();
+            encoder.reset();
+            std::lock_guard lock(m_mutex);
+            m_status.encoderCpu100ns = cpu;
+        }
+        return encoderExited;
+    };
     try {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
         apartment = true;
@@ -107,7 +143,8 @@ void RecordSession::Run() noexcept {
         GUID id{};
         winrt::check_hresult(CoCreateGuid(&id));
         wchar_t guid[40]{};
-        StringFromGUID2(id, guid, 40);
+        if (!StringFromGUID2(id, guid, 40))
+            winrt::throw_hresult(E_FAIL);
         const auto slash = m_output.find_last_of(L"\\/");
         temporary = m_output.substr(0, slash + 1) + L".nskry-record-" + guid + L".partial.mp4";
         NskryCaptureDescriptionV1 description{sizeof(description), 1};
@@ -118,23 +155,25 @@ void RecordSession::Run() noexcept {
         if (FAILED(hr))
             throw winrt::hresult_error(hr, error);
         const auto expected = description;
-        if (description.version != 1 || description.width < 2 || description.height < 2 || description.width > 1920 ||
-            description.height > 1920 || uint64_t(description.width) * description.height > 1920 * 1080 ||
+        if (description.structSize < sizeof(description) || description.version != 1 ||
+            !ValidFrameFormat(description.width, description.height, fps) ||
             description.stride != description.width * 4)
             winrt::throw_hresult(E_BOUNDS);
         if (Status().state == State::Discarding)
             winrt::throw_hresult(HRESULT_FROM_WIN32(ERROR_CANCELLED));
         std::vector<uint8_t> pixels(uint64_t(description.stride) * description.height);
         std::vector<uint8_t> pending(pixels.size());
-        encoder = std::make_unique<MfEncoder>();
+        encoder = std::make_unique<IsolatedEncoder>(m_cancelEvent);
         encoder->Open(temporary, description.width, description.height, fps, m_preferHardware);
         {
             std::lock_guard lock(m_mutex);
             m_status.backend = encoder->Backend();
+            m_status.encoderProcessId = encoder->ProcessId();
         }
         FrameSchedule schedule(fps);
         bool ready = false, haveFrame = false, havePending = false;
         int64_t pendingTime = 0;
+        int64_t maxRead = 0;
         auto startupDeadline = Now() + 100000000; // ten seconds, cancel-aware waits
         MONITORINFOEXW initial{};
         initial.cbSize = sizeof(initial);
@@ -164,13 +203,17 @@ void RecordSession::Run() noexcept {
                     dpiY != initialDpiY)
                     winrt::throw_hresult(HRESULT_FROM_WIN32(ERROR_DEVICE_NOT_CONNECTED));
                 winrt::check_hresult(m_service.open(m_region, fps, &capture.value, &description, error, 512));
-                if (description.width != expected.width || description.height != expected.height)
+                if (description.structSize < sizeof(description) || description.version != expected.version ||
+                    description.width != expected.width || description.height != expected.height ||
+                    description.stride != expected.stride)
                     winrt::throw_hresult(E_BOUNDS);
                 haveFrame = false;
                 startupDeadline = Now() + 100000000;
             }
             if (schedule.Due(snapshot.duration) || !ready) {
+                const auto readStarted = Now();
                 const HRESULT read = m_service.read(capture.value, pixels.data(), uint32_t(pixels.size()));
+                maxRead = (std::max)(maxRead, Now() - readStarted);
                 winrt::check_hresult(read);
                 if (read == S_OK)
                     haveFrame = true;
@@ -190,10 +233,14 @@ void RecordSession::Run() noexcept {
                     // layout and device health even on S_FALSE; repeat last pixels at real timestamps.
                     const auto at = first ? int64_t(0) : Status().duration;
                     if (havePending && at > pendingTime) {
+                        const auto encodeStarted = Now();
                         encoder->Write(pending.data(), pendingTime, at - pendingTime);
+                        const auto encodeSpan = Now() - encodeStarted;
                         std::lock_guard lock(m_mutex);
                         ++m_status.frames;
                         m_status.encodedDuration = encoder->EncodedDuration();
+                        m_status.maxRead100ns = maxRead;
+                        m_status.maxEncode100ns = (std::max)(m_status.maxEncode100ns, encodeSpan);
                         if (at - pendingTime > schedule.interval * 2)
                             ++m_status.skipped;
                     }
@@ -224,29 +271,36 @@ void RecordSession::Run() noexcept {
         const auto final = Status();
         owned = encoder->CreatedFile();
         if (final.state == State::Discarding) {
-            encoder.reset();
-            if (owned && !DeleteFileW(temporary.c_str()))
+            if (!releaseEncoder())
+                throw winrt::hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), L"Encoder process did not exit.");
+            if (owned && !RemoveTemporary(temporary))
                 winrt::throw_last_error();
             owned = false;
             outcome = L"Recording discarded.";
             success = true;
         } else if (!havePending) {
-            encoder.reset();
-            if (owned && !DeleteFileW(temporary.c_str()))
+            if (!releaseEncoder())
+                throw winrt::hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), L"Encoder process did not exit.");
+            if (owned && !RemoveTemporary(temporary))
                 winrt::throw_last_error();
             owned = false;
             outcome = L"Stopped before the first frame. No file was saved.";
             success = true;
         } else {
+            const auto encodeStarted = Now();
             encoder->Write(pending.data(), pendingTime, (std::max)(int64_t(1), final.duration - pendingTime));
+            const auto encodeSpan = Now() - encodeStarted;
             {
                 std::lock_guard lock(m_mutex);
                 ++m_status.frames;
                 m_status.encodedDuration = encoder->EncodedDuration();
+                m_status.maxRead100ns = maxRead;
+                m_status.maxEncode100ns = (std::max)(m_status.maxEncode100ns, encodeSpan);
             }
             encoder->Finalize();
             finalizedFile = true;
-            encoder.reset();
+            if (!releaseEncoder())
+                throw winrt::hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), L"Encoder process did not exit.");
             // Cancellation may race Finalize. Recheck before publishing the completed file.
             bool discard;
             {
@@ -256,7 +310,7 @@ void RecordSession::Run() noexcept {
                     m_timeline.Publish();
             } // Never hold the UI/state mutex during filesystem operations.
             if (discard) {
-                if (!DeleteFileW(temporary.c_str()))
+                if (!RemoveTemporary(temporary))
                     winrt::throw_last_error();
                 outcome = L"Recording discarded.";
             } else {
@@ -305,14 +359,19 @@ void RecordSession::Run() noexcept {
             outcome += L" (recovery failed)";
         }
     }
-    encoder.reset();
+    releaseEncoder();
+    if (!encoderExited) {
+        outcome += L"\nEncoder process did not exit within the cleanup deadline.";
+        success = false;
+    }
+    finalized = finalized || finalizedFile;
     if (owned) {
         bool retain;
         {
             std::lock_guard lock(m_mutex);
             retain = m_timeline.SealRecovery();
         }
-        if (!retain && DeleteFileW(temporary.c_str())) {
+        if (!retain && encoderExited && RemoveTemporary(temporary)) {
             outcome = L"Recording discarded.";
             success = true;
         } else {
@@ -323,7 +382,7 @@ void RecordSession::Run() noexcept {
             m_status.recoveryPath = temporary;
             m_status.recoveryFinalized = finalized;
         }
-    } else if (Status().state == State::Discarding && !success) {
+    } else if (Status().state == State::Discarding && !success && encoderExited) {
         outcome = L"Recording discarded.";
         success = true;
     }

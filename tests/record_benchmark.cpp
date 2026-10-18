@@ -9,6 +9,7 @@
 #include <mfidl.h>
 #include <mfreadwrite.h>
 #include <psapi.h>
+#include <tuple>
 #include <winrt/base.h>
 
 using namespace nskry::record;
@@ -75,6 +76,26 @@ struct Metrics {
         GetProcessHandleCount(GetCurrentProcess(), &handles);
     }
 };
+struct EncoderMetrics {
+    uint64_t cpu{};
+    PROCESS_MEMORY_COUNTERS_EX memory{};
+    DWORD handles{};
+    explicit EncoderMetrics(const Snapshot &s) : cpu(s.encoderCpu100ns) {
+        if (!s.encoderProcessId || (s.state != State::Recording && s.state != State::Paused))
+            return;
+        HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, s.encoderProcessId);
+        if (!process)
+            return;
+        FILETIME c{}, e{}, k{}, u{};
+        if (GetProcessTimes(process, &c, &e, &k, &u))
+            cpu = (uint64_t(k.dwHighDateTime) << 32 | k.dwLowDateTime) +
+                  (uint64_t(u.dwHighDateTime) << 32 | u.dwLowDateTime);
+        memory.cb = sizeof(memory);
+        GetProcessMemoryInfo(process, reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&memory), sizeof(memory));
+        GetProcessHandleCount(process, &handles);
+        CloseHandle(process);
+    }
+};
 int Number(const wchar_t *text, int low, int high) {
     if (!text || !*text)
         return -1;
@@ -86,7 +107,7 @@ int Number(const wchar_t *text, int low, int high) {
     }
     return value >= low && value <= high ? value : -1;
 }
-int64_t Verify(const std::filesystem::path &path) {
+int64_t Verify(const std::filesystem::path &path, uint64_t expectedFrames) {
     winrt::check_hresult(MFStartup(MF_VERSION));
     struct Mf {
         ~Mf() {
@@ -98,36 +119,64 @@ int64_t Verify(const std::filesystem::path &path) {
     PROPVARIANT v{};
     winrt::check_hresult(reader->GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE, MF_PD_DURATION, &v));
     const auto duration = int64_t(v.uhVal.QuadPart);
+    const bool validDuration = v.vt == VT_UI8 && duration > 0;
     PropVariantClear(&v);
+    if (!validDuration)
+        winrt::throw_hresult(E_FAIL);
     winrt::com_ptr<IMFMediaType> decoded;
     MFCreateMediaType(decoded.put());
     decoded->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
     decoded->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
     winrt::check_hresult(reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, decoded.get()));
     unsigned count = 0;
+    bool end = false;
+    LONGLONG previous = -1;
     for (unsigned safety = 0; safety < 72000; ++safety) {
         DWORD flags{};
+        LONGLONG timestamp{};
         winrt::com_ptr<IMFSample> sample;
         winrt::check_hresult(
-            reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, &flags, nullptr, sample.put()));
-        if (flags & MF_SOURCE_READERF_ENDOFSTREAM)
+            reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, &flags, &timestamp, sample.put()));
+        if (flags & MF_SOURCE_READERF_ENDOFSTREAM) {
+            end = true;
             break;
-        if (sample)
+        }
+        if (sample) {
+            if (timestamp <= previous || (!count && timestamp != 0))
+                winrt::throw_hresult(E_FAIL);
+            previous = timestamp;
             ++count;
+        }
     }
-    if (!count)
+    if (!end || count != expectedFrames)
         winrt::throw_hresult(E_FAIL);
     std::cout << "decoded_frames=" << count << " duration100ns=" << duration << '\n';
     return duration;
 }
 } // namespace
 int wmain(int argc, wchar_t **argv) {
+    // Revalidate a retained file without recording or overwriting anything.
+    if (argc == 5 && !wcscmp(argv[1], L"--verify")) {
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        int result = 1;
+        try {
+            const auto frames = Number(argv[3], 1, 72000);
+            size_t consumed{};
+            const auto expected = std::stoll(argv[4], &consumed);
+            if (frames > 0 && consumed == wcslen(argv[4]) && expected > 0 &&
+                std::abs(Verify(argv[2], uint64_t(frames)) - expected) <= 100000)
+                result = 0;
+        } catch (...) {
+        }
+        winrt::uninit_apartment();
+        return result;
+    }
     if (argc != 7) {
         std::cerr << "Usage: benchmark output-directory width height active-seconds hardware|software cycles\n";
         return 2;
     }
     const int w = Number(argv[2], 160, 1920), h = Number(argv[3], 90, 1920), seconds = Number(argv[4], 1, 1800),
-              cycles = Number(argv[6], 1, 5);
+              cycles = Number(argv[6], 1, 20);
     const bool hardware = !wcscmp(argv[5], L"hardware");
     if (w < 0 || h < 0 || seconds < 0 || cycles < 0 || w % 2 || h % 2 || int64_t(w) * h > 1920 * 1080 ||
         (!hardware && wcscmp(argv[5], L"software")))
@@ -147,20 +196,27 @@ int wmain(int argc, wchar_t **argv) {
         if (!std::filesystem::create_directory(root))
             winrt::throw_hresult(E_FAIL);
         std::ofstream csv(root / L"metrics.csv", std::ios::binary);
-        csv << "cycle,phase,wall_ms,cpu_ms,private_bytes,working_bytes,handles,frames,slow_intervals,active_100ns\n";
+        csv << "cycle,phase,wall_ms,cpu_ms,private_bytes,working_bytes,handles,frames,slow_intervals,active_100ns,"
+               "encoder_cpu_ms,encoder_private_bytes,encoder_working_bytes,encoder_handles,encoder_pid,"
+               "max_capture_ms,max_encode_ms\n";
         const auto epoch = GetTickCount64(), cpuEpoch = Cpu();
         auto sample = [&](int cycle, const char *phase, const Snapshot &s) {
             Metrics m;
+            EncoderMetrics child(s);
             csv << cycle << ',' << phase << ',' << GetTickCount64() - epoch << ',' << (Cpu() - cpuEpoch) / 10000 << ','
                 << m.memory.PrivateUsage << ',' << m.memory.WorkingSetSize << ',' << m.handles << ',' << s.frames << ','
-                << s.skipped << ',' << s.duration << '\n';
+                << s.skipped << ',' << s.duration << ',' << child.cpu / 10000 << ',' << child.memory.PrivateUsage << ','
+                << child.memory.WorkingSetSize << ',' << child.handles << ',' << s.encoderProcessId << ','
+                << s.maxRead100ns / 10000.0 << ',' << s.maxEncode100ns / 10000.0 << '\n';
             if (!csv)
                 winrt::throw_hresult(E_FAIL);
             std::cout << cycle << ',' << phase << " private=" << m.memory.PrivateUsage
-                      << " working=" << m.memory.WorkingSetSize << " handles=" << m.handles << '\n';
+                      << " working=" << m.memory.WorkingSetSize << " handles=" << m.handles
+                      << " encoder_private=" << child.memory.PrivateUsage << " encoder_cpu_ms=" << child.cpu / 10000
+                      << '\n';
         };
         NskryCaptureServiceV1 capture{sizeof(capture), 1, Open, Read, Close};
-        std::vector<std::pair<std::filesystem::path, int64_t>> completed;
+        std::vector<std::tuple<std::filesystem::path, int64_t, uint64_t>> completed;
         for (int i = 0; i < cycles; ++i) {
             sample(i, "idle", {});
             const auto path = root / (L"cycle-" + std::to_wstring(i) + L".mp4");
@@ -184,8 +240,11 @@ int wmain(int argc, wchar_t **argv) {
                     sample(i, "paused", session.Status());
                     const auto frozen = session.Status().duration;
                     const auto pausedCpu = Cpu();
+                    const auto pausedChildCpu = EncoderMetrics(session.Status()).cpu;
                     Pump([&] { return GetTickCount64() - pausedAt >= 1000; });
                     std::cout << "pause_cpu_ms=" << (Cpu() - pausedCpu) / 10000 << '\n';
+                    std::cout << "pause_encoder_cpu_ms="
+                              << (EncoderMetrics(session.Status()).cpu - pausedChildCpu) / 10000 << '\n';
                     if (captures || session.Status().duration != frozen)
                         result = 1;
                     session.PauseResume();
@@ -215,11 +274,11 @@ int wmain(int argc, wchar_t **argv) {
             std::cout << "post_stop_cpu_ms=" << (Cpu() - quietCpu) / 10000 << " samples=" << s.frames
                       << " active100ns=" << s.duration << '\n';
             sample(i, "quiet", s);
-            completed.emplace_back(path, s.duration);
+            completed.emplace_back(path, s.duration, s.frames);
         }
         // Decoder caches must not contaminate the next recording cycle baseline.
-        for (const auto &[path, duration] : completed)
-            if (std::abs(Verify(path) - duration) > 100000)
+        for (const auto &[path, duration, frames] : completed)
+            if (std::abs(Verify(path, frames) - duration) > 100000)
                 result = 1;
         std::wcout << L"Metrics retained: " << (root / L"metrics.csv").c_str() << L'\n';
     } catch (const winrt::hresult_error &e) {

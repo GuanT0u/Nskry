@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "nskry-record",
   "name": "Screen recording",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "author": "Nskry Team",
   "description": "Fixed screen-region MP4/H.264 recording. Up to 20 fps / 1080p, pause, resume, stop and discard. No audio.",
   "runtime": {"entry": "nskry-record.dll", "architecture": "x64", "api_version": 2, "load_policy": "on_demand"},
@@ -10,7 +10,8 @@
   "extensions": {"commands": 1, "region_capture": 1},
   "shortcuts": [
     {"id":"launch", "label":"Start recording a selected region", "scope":"capture", "default":"", "general_jump":true},
-    {"id":"stop", "label":"Stop recording and save", "scope":"command", "default":"", "general_jump":true}
+    {"id":"stop", "label":"Stop recording and save", "scope":"command", "default":"", "general_jump":true},
+    {"id":"pause_resume", "label":"Pause or resume recording", "scope":"command", "default":"", "general_jump":true}
   ],
   "compatibility": {"nskry_min":"0.5.0", "nskry_max":null},
   "source": {"homepage":"https://github.com/GuanT0u/Nskry", "repository":"https://github.com/GuanT0u/Nskry"}

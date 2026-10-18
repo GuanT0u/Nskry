@@ -15,11 +15,12 @@ HINSTANCE module{};
 bool closing = false;
 bool selectingOutput = false;
 bool closePromptActive = false;
+bool failurePromptActive = false;
 NskryPluginInfo info{sizeof(info),
                      NSKRY_PLUGIN_API_VERSION,
                      L"Screen recording",
                      L"nskry-record",
-                     L"0.1.1",
+                     L"0.2.0",
                      L"Nskry Team",
                      L"On-demand fixed screen-region MP4/H.264 recording. No audio.",
                      nullptr,
@@ -42,25 +43,36 @@ void Update() {
                            : s.state == State::Recovering ? L"Recovering captured portion"
                                                           : L"Finished";
     const auto seconds = s.duration / 10000000;
-    const auto text = std::wstring(state) + L"  " + std::to_wstring(seconds / 60) + L":" +
-                      (seconds % 60 < 10 ? L"0" : L"") + std::to_wstring(seconds % 60) + L"\n" +
-                      (finished ? s.message : s.backend);
+    const auto text =
+        (closePromptActive ? std::wstring(L"Close recording? Save, discard, or go back.\n") : std::wstring()) + state +
+        L"  " + std::to_wstring(seconds / 60) + L":" + (seconds % 60 < 10 ? L"0" : L"") +
+        std::to_wstring(seconds % 60) + L"\n" + (finished ? s.message : s.backend);
     SetWindowTextW(statusLabel, text.c_str());
+    if (closePromptActive) {
+        // Confirmation stays INSIDE the capture-excluded control window. No
+        // new top-level MessageBox which could leak into a full-screen recording.
+        SetWindowTextW(pauseButton, finished ? L"Close" : L"Save / close");
+        SetWindowTextW(stopButton, L"Discard / close");
+        SetWindowTextW(discardButton, L"Back");
+        EnableWindow(pauseButton, s.state != State::Recovering && s.state != State::Discarding);
+        EnableWindow(stopButton, !finished && s.state != State::Publishing && s.state != State::Discarding);
+        EnableWindow(discardButton, TRUE);
+        return; // Keep the session alive while its inline confirmation is shown.
+    }
     SetWindowTextW(pauseButton, s.state == State::Paused ? L"Resume" : L"Pause");
+    SetWindowTextW(stopButton, L"Stop / save");
     EnableWindow(pauseButton, s.state == State::Recording || s.state == State::Paused);
     EnableWindow(stopButton, s.state == State::Starting || s.state == State::Recording || s.state == State::Paused);
     SetWindowTextW(discardButton, finished ? L"Close" : L"Cancel / discard");
     EnableWindow(discardButton, s.state != State::Publishing);
     if (finished) {
-        // MessageBox pumps timers/hotkeys. Keep the session alive until its
-        // caller returns; otherwise a concurrent Stop can invalidate WM_CLOSE.
-        if (closePromptActive)
-            return;
         KillTimer(window, Poll);
         session.reset(); // Done published after resource release; join finished thread, no idle thread.
         if (s.state == State::Failed) {
             closing = false;
+            failurePromptActive = true;
             MessageBoxW(window, s.message.c_str(), L"Recording failed", MB_OK | MB_ICONWARNING);
+            failurePromptActive = false;
         }
         if (closing)
             DestroyWindow(window);
@@ -72,6 +84,21 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         Update();
         return 0;
     case WM_COMMAND:
+        if (closePromptActive) {
+            const auto state = session ? session->Status().state : State::Done;
+            if (LOWORD(wp) == 1) {
+                closing = !session || state == State::Done || state == State::Failed || state == State::Stopping ||
+                          state == State::Publishing || session->Stop(false);
+            } else if (LOWORD(wp) == 2) {
+                closing = session && session->Stop(true);
+            } else if (LOWORD(wp) == 3) {
+                closing = false;
+            } else
+                return 0;
+            closePromptActive = false;
+            Update();
+            return 0;
+        }
         switch (LOWORD(wp)) {
         case 1:
             if (session)
@@ -102,22 +129,12 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (closePromptActive)
             return 0;
         if (session) {
-            if (session->Status().state == State::Publishing) {
+            const auto state = session->Status().state;
+            if (state == State::Publishing || state == State::Discarding) {
                 closing = true;
                 return 0;
             }
             closePromptActive = true;
-            const int choice =
-                MessageBoxW(hwnd, L"Save this recording before closing?\nYes: stop and save. No: discard.",
-                            L"Screen recording", MB_YESNOCANCEL | MB_ICONQUESTION);
-            closePromptActive = false;
-            if (choice == IDCANCEL) {
-                Update();
-                return 0;
-            }
-            // A global Stop may already have committed while the prompt was open.
-            // Do not promise a discard or dereference a timer-deleted session.
-            closing = session->Stop(choice == IDNO) || choice == IDYES;
             Update();
         } else
             DestroyWindow(hwnd);
@@ -140,7 +157,8 @@ bool ShowControl(RECT region) {
         return false;
     auto monitor = MonitorFromRect(&region, MONITOR_DEFAULTTONEAREST);
     MONITORINFO mi{sizeof(mi)};
-    GetMonitorInfoW(monitor, &mi);
+    if (!monitor || !GetMonitorInfoW(monitor, &mi))
+        return false;
     window =
         CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, ClassName, L"Nskry — Screen recording (fixed display region)",
                         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, mi.rcWork.right - 560, mi.rcWork.top + 12, 540, 160,
@@ -165,6 +183,7 @@ bool ShowControl(RECT region) {
         return false;
     }
     closing = false;
+    closePromptActive = false;
     ShowWindow(window, SW_SHOWNOACTIVATE);
     if (!SetTimer(window, Poll, 250, nullptr)) {
         DestroyWindow(window);
@@ -192,7 +211,7 @@ NSKRY_API int32_t NSKRY_CALL nskry_plugin_init(const NskryHostContext *ctx) {
 }
 NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext *ctx) {
     try {
-        if (session || selectingOutput) {
+        if (session || selectingOutput || failurePromptActive) {
             if (window)
                 SetForegroundWindow(window);
             return;
@@ -216,23 +235,25 @@ NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext *ctx) {
             Error(L"Select a region inside one monitor. Cross-monitor recording is not supported.");
             return;
         }
-        wchar_t path[32768] = L"Recording.mp4";
+        std::wstring path(32768, L'\0');
+        wcscpy_s(path.data(), path.size(), L"Recording.mp4");
         OPENFILENAMEW dialog{sizeof(dialog)};
         dialog.hwndOwner = ctx->mainHwnd;
         dialog.lpstrFilter = L"MP4 video\0*.mp4\0\0";
-        dialog.lpstrFile = path;
+        dialog.lpstrFile = path.data();
         dialog.nMaxFile = 32768;
         dialog.lpstrDefExt = L"mp4";
         dialog.lpstrTitle = L"Record fixed screen area (no audio; does not follow windows)";
         dialog.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
         if (!GetSaveFileNameW(&dialog))
             return;
-        const auto length = wcslen(path);
-        if (length < 4 || _wcsicmp(path + length - 4, L".mp4")) {
+        const auto length = wcslen(path.c_str());
+        path.resize(length);
+        if (length < 4 || _wcsicmp(path.c_str() + length - 4, L".mp4")) {
             Error(L"Choose a file name ending in .mp4.");
             return;
         }
-        if (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) {
+        if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
             Error(L"Choose a new file name. Recording never overwrites an existing file.");
             return;
         }
@@ -255,11 +276,15 @@ NSKRY_API int32_t NSKRY_CALL nskry_plugin_command_v1(const NskryCommandV1 *reque
     if (!request || request->structSize < sizeof(*request) || request->version != 1 || !request->id || !result ||
         result->structSize < sizeof(*result) || result->version != 1)
         return NSKRY_COMMAND_UNSUPPORTED;
-    if (wcscmp(request->id, L"stop"))
+    const bool stop = !wcscmp(request->id, L"stop");
+    const bool pause = !wcscmp(request->id, L"pause_resume");
+    if (!stop && !pause)
         return NSKRY_COMMAND_UNSUPPORTED;
-    if (!session || !session->Stop(false)) {
+    if (!session || !(stop ? session->Stop(false) : session->PauseResume())) {
         if (result->error && result->capacity)
-            wcsncpy_s(result->error, result->capacity, L"No recording is ready to stop.", _TRUNCATE);
+            wcsncpy_s(result->error, result->capacity,
+                      stop ? L"No recording is ready to stop." : L"No recording is ready to pause or resume.",
+                      _TRUNCATE);
         return NSKRY_COMMAND_FAILED;
     }
     Update();

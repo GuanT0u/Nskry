@@ -19,6 +19,7 @@ std::atomic<int> active{}, reads{}, delay{}, failAfter{-1}, violations{};
 std::atomic<int> closeDelay{};
 std::atomic<bool> inRead{}, noFrames{};
 std::atomic<bool> scratchOnly{};
+std::atomic<bool> badReopen{};
 struct Fake {
     DWORD thread = GetCurrentThreadId();
 };
@@ -26,6 +27,8 @@ HRESULT __cdecl Open(RECT, uint32_t, void **result, NskryCaptureDescriptionV1 *d
     *result = new Fake;
     ++active;
     *d = {sizeof(*d), 1, 320, 180, 1280};
+    if (badReopen)
+        d->stride += 4;
     return S_OK;
 }
 HRESULT __cdecl Read(void *handle, uint8_t *p, uint32_t capacity) {
@@ -281,6 +284,17 @@ int wmain(int argc, wchar_t **argv) {
             if (still.Status().state == State::Done)
                 ok &= Check(Duration(root / L"static.mp4", true, true) > 0,
                             "static repeated frames decode with correct pixels");
+        }
+        {
+            RecordSession resized(service, {0, 0, 320, 180}, (root / L"bad-resume.mp4").wstring());
+            resized.Start();
+            ok &= Check(Pump([&] { return resized.Status().frames >= 2; }), "frames before invalid resume");
+            ok &= Check(resized.PauseResume() && Pump([] { return active == 0; }), "pause before descriptor change");
+            badReopen = true;
+            ok &= Check(resized.PauseResume() && Pump([&] { return Finished(resized); }) &&
+                            resized.Status().state == State::Failed && !active,
+                        "changed resume stride rejected before reading into fixed buffers");
+            badReopen = false;
         }
         reads = 0;
         failAfter = 3;

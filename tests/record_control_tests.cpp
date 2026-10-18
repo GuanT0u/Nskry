@@ -7,6 +7,7 @@
 #include <iostream>
 #include <winrt/base.h>
 using namespace nskry::record;
+extern "C" int32_t NSKRY_CALL nskry_plugin_command_v1(const NskryCommandV1 *, NskryCommandResultV1 *);
 // Internal seam exists only in this test's statically linked UI source.
 HWND RecordControlTestStart(NskryCaptureServiceV1, RECT, const std::wstring &);
 bool RecordControlTestAlive();
@@ -54,15 +55,19 @@ int wmain(int argc, wchar_t **argv) {
     bool ok = hwnd && Pump([] { return RecordControlTestStatus().state == State::Recording; });
     DWORD affinity{};
     ok = GetWindowDisplayAffinity(hwnd, &affinity) && affinity == WDA_EXCLUDEFROMCAPTURE && ok;
-    SendMessageW(hwnd, WM_COMMAND, 1, 0);
+    wchar_t commandError[256]{};
+    NskryCommandV1 pauseCommand{sizeof(pauseCommand), 1, L"pause_resume"};
+    NskryCommandResultV1 pauseResult{sizeof(pauseResult), 1, commandError, 256};
+    ok = nskry_plugin_command_v1(&pauseCommand, &pauseResult) == NSKRY_COMMAND_OK && ok;
     ok = Pump([] { return !captures; }) && RecordControlTestStatus().state == State::Paused && ok;
-    SendMessageW(hwnd, WM_COMMAND, 1, 0);
+    ok = nskry_plugin_command_v1(&pauseCommand, &pauseResult) == NSKRY_COMMAND_OK && ok;
     ok = Pump([] { return captures == 1; }) && ok;
     const auto until = GetTickCount64() + 200;
     Pump([&] { return GetTickCount64() >= until; });
-    // Emulate the nested close prompt's message loop while a global Stop completes.
+    // A global Stop may complete while inline close confirmation remains open.
     RecordControlTestHoldPrompt(true);
-    SendMessageW(hwnd, WM_COMMAND, 2, 0);
+    NskryCommandV1 stopCommand{sizeof(stopCommand), 1, L"stop"};
+    ok = nskry_plugin_command_v1(&stopCommand, &pauseResult) == NSKRY_COMMAND_OK && ok;
     ok = Pump([] { return RecordControlTestStatus().state == State::Done; }) && ok;
     RecordControlTestUpdate();
     ok = RecordControlTestAlive() && !captures && IsWindow(hwnd) && ok;
@@ -73,6 +78,23 @@ int wmain(int argc, wchar_t **argv) {
     ok = !RecordControlTestAlive() && std::filesystem::exists(root / L"save.mp4") && ok;
     SendMessageW(hwnd, WM_CLOSE, 0, 0);
     ok = !IsWindow(hwnd) && ok;
+    for (const auto save : {true, false}) {
+        const auto path = root / (save ? L"inline-save.mp4" : L"inline-discard.mp4");
+        hwnd = RecordControlTestStart(capture, {0, 0, 160, 90}, path.wstring());
+        ok = hwnd && Pump([] { return RecordControlTestStatus().frames >= 2; }) && ok;
+        SendMessageW(hwnd, WM_CLOSE, 0, 0);
+        wchar_t label[64]{};
+        GetWindowTextW(GetDlgItem(hwnd, 1), label, 64);
+        ok = !wcscmp(label, L"Save / close") && RecordControlTestAlive() && ok;
+        SendMessageW(hwnd, WM_COMMAND, 3, 0); // Back preserves the live recording.
+        GetWindowTextW(GetDlgItem(hwnd, 2), label, 64);
+        ok = !wcscmp(label, L"Stop / save") && ok;
+        ok = RecordControlTestStatus().state == State::Recording && ok;
+        SendMessageW(hwnd, WM_CLOSE, 0, 0);
+        SendMessageW(hwnd, WM_COMMAND, save ? 1 : 2, 0);
+        ok = Pump([&] { return !IsWindow(hwnd); }) && !RecordControlTestAlive() && !captures &&
+             std::filesystem::exists(path) == save && ok;
+    }
     hwnd = RecordControlTestStart(capture, {0, 0, 160, 90}, (root / L"discard.mp4").wstring());
     ok = hwnd && Pump([] { return RecordControlTestStatus().state == State::Recording; }) && ok;
     SendMessageW(hwnd, WM_COMMAND, 3, 0);
@@ -91,7 +113,7 @@ int wmain(int argc, wchar_t **argv) {
         ok = !file.path().filename().wstring().starts_with(L".nskry-record-") && ok;
     winrt::uninit_apartment();
     std::cout
-        << (ok ? "Record control UI pause/resume/save/discard, capture exclusion and nested-close lifetime passed.\n"
+        << (ok ? "Record control UI pause/resume/save/discard, capture exclusion and inline-close lifetime passed.\n"
                : "Record control UI regression failed.\n");
     return ok ? 0 : 1;
 }

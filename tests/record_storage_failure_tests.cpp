@@ -1,5 +1,6 @@
 #include "mf_encoder.h"
 #include <atomic>
+#include <cstring>
 #include <iostream>
 #include <memory>
 #include <mfapi.h>
@@ -8,7 +9,7 @@
 
 namespace {
 struct QuotaState {
-    std::atomic<bool> failWrites{false};
+    std::atomic<bool> failIndex{false};
     std::atomic<unsigned> failures{}, alive{};
     std::atomic<uint64_t> limit{2 * 1024 * 1024};
 };
@@ -38,7 +39,11 @@ struct QuotaStream : winrt::implements<QuotaStream, IStream, ISequentialStream> 
         if (FAILED(hr))
             return hr;
         const auto limit = state->limit.load();
-        if (state->failWrites || position.QuadPart > limit || n > limit - position.QuadPart) {
+        // Fail the actual final MP4 index, not still-queued sample data. Arming
+        // unconditional failure after WriteSample raced asynchronous MF writes
+        // and could hang native Finalize rather than testing the intended index.
+        const bool index = n >= 8 && !std::memcmp(static_cast<const uint8_t *>(p) + 4, "moov", 4);
+        if ((state->failIndex && index) || position.QuadPart > limit || n > limit - position.QuadPart) {
             ++state->failures;
             return STG_E_MEDIUMFULL;
         }
@@ -95,21 +100,25 @@ bool Run(bool failAtFinalize) {
         winrt::check_hresult(wrapped->GetCapabilities(&caps));
         std::cout << "Wrapped stream capabilities=" << caps << '\n';
         encoder.OpenStream(wrapped.get(), 320, 180, 20);
+        std::cout << "stream_opened scenario=" << failAtFinalize << '\n';
         std::vector<uint8_t> pixels(320 * 180 * 4, 128);
         if (!failAtFinalize)
             state->limit = 256;
         try {
             for (int i = 0; i < 20; ++i)
                 encoder.Write(pixels.data(), i * 500000LL, 500000);
+            std::cout << "frames_written\n";
             if (failAtFinalize)
-                state->failWrites = true;
+                state->failIndex = true;
             encoder.Finalize();
+            std::cout << "finalize_returned\n";
         } catch (const winrt::hresult_error &e) {
             failed = true;
             std::cout << (failAtFinalize ? "finalize-write" : "quota-full") << " HRESULT=0x" << std::hex
                       << e.code().value << std::dec << '\n';
         }
         finalAttempted = encoder.FinalizationAttempted();
+        std::cout << "leaving encoder, attempted=" << finalAttempted << '\n';
         finalSucceeded = encoder.Finalized();
         if (finalAttempted) {
             try {
@@ -135,6 +144,7 @@ bool Run(bool failAtFinalize) {
 }
 } // namespace
 int main() {
+    std::cout << std::unitbuf;
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
     bool result = false;
     try {

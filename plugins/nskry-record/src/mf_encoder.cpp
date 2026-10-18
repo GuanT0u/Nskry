@@ -1,7 +1,9 @@
 #include "mf_encoder.h"
+#include "pixel_conversion.h"
 #include "record_policy.h"
 #include <algorithm>
 #include <codecapi.h>
+#include <cstring>
 #include <icodecapi.h>
 #include <mfapi.h>
 #include <mferror.h>
@@ -21,8 +23,7 @@ void MfEncoder::ClosePipeline() noexcept {
     m_file = nullptr;
 }
 void MfEncoder::SetFormat(UINT width, UINT height, UINT fps) {
-    if (m_writer || m_file || m_ownsFile || m_finalizationAttempted || width < 2 || height < 2 || (width & 1) ||
-        (height & 1) || uint64_t(width) * height > 1920 * 1080 || fps < 1 || fps > 30)
+    if (m_writer || m_file || m_ownsFile || m_finalizationAttempted || !ValidFrameFormat(width, height, fps))
         winrt::throw_hresult(E_INVALIDARG);
     m_width = width;
     m_height = height;
@@ -35,13 +36,16 @@ void MfEncoder::OpenStream(IMFByteStream *stream, UINT width, UINT height, UINT 
     m_file.copy_from(stream);
     Configure(false);
 }
-void MfEncoder::Open(const std::wstring &path, UINT width, UINT height, UINT fps, bool hardware) {
+void MfEncoder::Open(const std::wstring &path, UINT width, UINT height, UINT fps, bool hardware,
+                     volatile LONG *created) {
     SetFormat(width, height, fps);
     m_path = path;
     // FAIL_IF_EXIST protects unrelated files, including previous partial recordings.
     winrt::check_hresult(
         MFCreateFile(MF_ACCESSMODE_WRITE, MF_OPENMODE_FAIL_IF_EXIST, MF_FILEFLAGS_NONE, path.c_str(), m_file.put()));
     m_ownsFile = true;
+    if (created)
+        InterlockedExchange(created, 1);
     try {
         Configure(hardware);
     } catch (...) {
@@ -52,9 +56,13 @@ void MfEncoder::Open(const std::wstring &path, UINT width, UINT height, UINT fps
         if (!DeleteFileW(m_path.c_str()))
             winrt::throw_last_error();
         m_ownsFile = false;
+        if (created)
+            InterlockedExchange(created, 0);
         winrt::check_hresult(MFCreateFile(MF_ACCESSMODE_WRITE, MF_OPENMODE_FAIL_IF_EXIST, MF_FILEFLAGS_NONE,
                                           path.c_str(), m_file.put()));
         m_ownsFile = true;
+        if (created)
+            InterlockedExchange(created, 1);
         Configure(false);
         m_backend = L"Software H.264 (hardware initialization failed)";
     }
@@ -70,6 +78,12 @@ void MfEncoder::Configure(bool hardware) {
     winrt::check_hresult(MFCreateMediaType(output.put()));
     winrt::check_hresult(output->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
     winrt::check_hresult(output->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264));
+    // Match the actual SDR integer NV12 conversion, including full color
+    // description: incomplete descriptions may be omitted from MP4 by MF.
+    winrt::check_hresult(output->SetUINT32(MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709));
+    winrt::check_hresult(output->SetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235));
+    winrt::check_hresult(output->SetUINT32(MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709));
+    winrt::check_hresult(output->SetUINT32(MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709));
     const auto bitrate = std::clamp(uint64_t(m_width) * m_height * m_fps / 6, uint64_t(500000), uint64_t(8000000));
     winrt::check_hresult(output->SetUINT32(MF_MT_AVG_BITRATE, UINT32(bitrate)));
     winrt::check_hresult(output->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive));
@@ -80,6 +94,10 @@ void MfEncoder::Configure(bool hardware) {
     winrt::check_hresult(MFCreateMediaType(input.put()));
     winrt::check_hresult(input->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
     winrt::check_hresult(input->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12));
+    winrt::check_hresult(input->SetUINT32(MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709));
+    winrt::check_hresult(input->SetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235));
+    winrt::check_hresult(input->SetUINT32(MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709));
+    winrt::check_hresult(input->SetUINT32(MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709));
     winrt::check_hresult(input->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive));
     winrt::check_hresult(MFSetAttributeSize(input.get(), MF_MT_FRAME_SIZE, m_width, m_height));
     winrt::check_hresult(MFSetAttributeRatio(input.get(), MF_MT_FRAME_RATE, m_fps, 1));
@@ -88,12 +106,12 @@ void MfEncoder::Configure(bool hardware) {
     // Optional system encoder setting: do not let software fallback select all CPU cores.
     // Drivers may not expose this; this does not cap Windows' internal helper pools.
     winrt::com_ptr<ICodecAPI> codec;
-    if (SUCCEEDED(m_writer->GetServiceForStream(m_stream, GUID_NULL, __uuidof(ICodecAPI), codec.put_void())) &&
-        codec->IsSupported(&CODECAPI_AVEncNumWorkerThreads) == S_OK) {
+    if (SUCCEEDED(m_writer->GetServiceForStream(m_stream, GUID_NULL, __uuidof(ICodecAPI), codec.put_void()))) {
         VARIANT count{};
         count.vt = VT_UI4;
         count.ulVal = 2;
-        codec->SetValue(&CODECAPI_AVEncNumWorkerThreads, &count);
+        if (codec->IsSupported(&CODECAPI_AVEncNumWorkerThreads) == S_OK)
+            codec->SetValue(&CODECAPI_AVEncNumWorkerThreads, &count);
     }
     winrt::check_hresult(m_writer->BeginWriting());
     DescribeBackend();
@@ -124,7 +142,13 @@ void MfEncoder::DescribeBackend() {
     }
 }
 void MfEncoder::Write(const uint8_t *bgra, int64_t time, int64_t duration) {
-    if (!m_writer || m_finalizationAttempted || !bgra || !ValidSampleTime(time, duration, m_lastEnd))
+    WritePixels(bgra, time, duration, false);
+}
+void MfEncoder::WriteNv12(const uint8_t *pixels, int64_t time, int64_t duration) {
+    WritePixels(pixels, time, duration, true);
+}
+void MfEncoder::WritePixels(const uint8_t *pixels, int64_t time, int64_t duration, bool nv12) {
+    if (!m_writer || m_finalizationAttempted || !pixels || !ValidSampleTime(time, duration, m_lastEnd))
         winrt::throw_hresult(E_INVALIDARG);
     winrt::com_ptr<IMFSample> sample;
     winrt::com_ptr<IMFMediaBuffer> buffer;
@@ -132,30 +156,10 @@ void MfEncoder::Write(const uint8_t *bgra, int64_t time, int64_t duration) {
     winrt::check_hresult(MFCreateMemoryBuffer(length, buffer.put()));
     BYTE *bytes{};
     winrt::check_hresult(buffer->Lock(&bytes, nullptr, nullptr));
-    // Bounded BT.601 limited-range NV12 conversion, no image/D3D context shared with UI.
-    auto clamp = [](int n) { return BYTE(std::clamp(n, 0, 255)); };
-    for (UINT y = 0; y < m_height; ++y)
-        for (UINT x = 0; x < m_width; ++x) {
-            const auto *p = bgra + (uint64_t(y) * m_width + x) * 4;
-            bytes[y * m_width + x] = clamp(((66 * p[2] + 129 * p[1] + 25 * p[0] + 128) >> 8) + 16);
-        }
-    auto *uv = bytes + m_width * m_height;
-    for (UINT y = 0; y < m_height; y += 2)
-        for (UINT x = 0; x < m_width; x += 2) {
-            int r = 0, g = 0, b = 0;
-            for (UINT yy = 0; yy < 2; ++yy)
-                for (UINT xx = 0; xx < 2; ++xx) {
-                    const auto *p = bgra + (uint64_t(y + yy) * m_width + x + xx) * 4;
-                    b += p[0];
-                    g += p[1];
-                    r += p[2];
-                }
-            r /= 4;
-            g /= 4;
-            b /= 4;
-            uv[(y / 2) * m_width + x] = clamp(((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128);
-            uv[(y / 2) * m_width + x + 1] = clamp(((112 * r - 94 * g - 18 * b + 128) >> 8) + 128);
-        }
+    if (nv12)
+        std::memcpy(bytes, pixels, length);
+    else
+        BgraToNv12(pixels, bytes, m_width, m_height);
     winrt::check_hresult(buffer->Unlock());
     winrt::check_hresult(buffer->SetCurrentLength(length));
     winrt::check_hresult(MFCreateSample(sample.put()));

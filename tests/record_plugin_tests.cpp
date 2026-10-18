@@ -43,8 +43,8 @@ int wmain(int argc, wchar_t **argv) {
         }
     } cleanup{manager};
     auto rows = manager.GetShortcutDefinitions();
-    if (rows.size() != 2 || !rows[1].pluginCommand || rows[1].kind != nskry::input::Kind::Global ||
-        GetModuleHandleW(dll.filename().c_str()))
+    if (rows.size() != 3 || !rows[1].pluginCommand || !rows[2].pluginCommand ||
+        rows[1].kind != nskry::input::Kind::Global || GetModuleHandleW(dll.filename().c_str()))
         return 6;
     if (manager.ExecuteCommand(manifest.id, L"stop", error) || manager.IsLoaded(manifest.id))
         return 7;
@@ -57,6 +57,8 @@ int wmain(int argc, wchar_t **argv) {
         return 9;
     if (manager.ExecuteCommand(manifest.id, L"stop", error) || error.empty() || captureCalls)
         return 10;
+    if (manager.ExecuteCommand(manifest.id, L"pause_resume", error) || error.empty() || captureCalls)
+        return 13;
     auto module = GetModuleHandleW(dll.filename().c_str());
     auto connect = reinterpret_cast<NskryConnectCaptureV1>(GetProcAddress(module, "nskry_plugin_connect_capture_v1"));
     service.version = 99;
