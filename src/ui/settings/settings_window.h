@@ -18,6 +18,7 @@ struct SettingsPluginItem {
     std::wstring description, homepage, repository, updateUrl, loadPolicy, minVersion, maxVersion;
     PluginSource source = PluginSource::Local;
     bool enabled = true;
+    bool hasSettings = false;
 };
 
 /// Process-boundary-friendly service contract. The window owns no core state.
@@ -26,6 +27,7 @@ struct SettingsWindowServices {
     // False: failure text; true with nonempty text: applied with warnings.
     std::function<bool(const UserSettings&, std::wstring&)> applySettings;
     std::function<std::vector<SettingsPluginItem>()> getPlugins;
+    std::function<bool(const std::wstring&, HWND)> showPluginSettings;
     std::function<bool(const std::wstring&, bool)> setPluginEnabled;
     std::function<bool(const std::wstring&, std::wstring&)> uninstallPlugin;
     std::function<bool(const std::wstring&, PluginManifest&, std::wstring&)> inspectPluginPackage;
@@ -85,6 +87,7 @@ private:
     std::unique_ptr<InteractionPage> m_interactionPage;
     HWND m_pluginList{}, m_pluginToggle{}, m_pluginUninstall{}, m_pluginInstall{}, m_pluginCheckUpdates{};
     HWND m_pluginDetails{}, m_officialPlugins{}, m_thirdPartyPolicy{};
+    HWND m_pluginSettings{};
     HWND m_aboutText{};
     HWND m_apply{};
     int m_page = 0;

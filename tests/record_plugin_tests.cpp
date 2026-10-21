@@ -14,6 +14,11 @@ HRESULT __cdecl Read(void *, uint8_t *, uint32_t) {
 void __cdecl Close(void *) {
     ++captureCalls;
 }
+HRESULT __cdecl OpenV2(const NskryCaptureRequestV2 *, void **, NskryCaptureDescriptionV1 *, wchar_t *, uint32_t) {
+    ++captureCalls;
+    return E_FAIL;
+}
+HRESULT __cdecl Bounds(void *, RECT *) { return E_FAIL; }
 } // namespace
 int wmain(int argc, wchar_t **argv) {
     if (argc != 4)
@@ -53,12 +58,30 @@ int wmain(int argc, wchar_t **argv) {
         return 8;
     NskryCaptureServiceV1 service{sizeof(service), 1, Open, Read, Close};
     manager.SetCaptureService(service);
+    NskryCaptureServiceV2 service2{sizeof(service2), 2, OpenV2, Read, Bounds, Close};
+    manager.SetCaptureServiceV2(service2);
     if (!manager.EnsureLoaded(manifest.id) || captureCalls)
         return 9;
     if (manager.ExecuteCommand(manifest.id, L"stop", error) || error.empty() || captureCalls)
         return 10;
     if (manager.ExecuteCommand(manifest.id, L"pause_resume", error) || error.empty() || captureCalls)
         return 13;
+    const auto actions = manager.GetEnabledToolbarActions();
+    if (actions.size() != 2 || !actions[0].actionId.empty() || actions[1].actionId != L"gif" ||
+        !manifest.settingsUiApi || manifest.captureApi != 2)
+        return 14;
+    if (manager.ExecutePlugin(manifest.id, context, L"undeclared")) return 15;
+    if (!manager.ShowPluginSettings(manifest.id, nullptr) || captureCalls) return 16;
+    HWND settingsWindow{};
+    EnumThreadWindows(GetCurrentThreadId(), [](HWND h, LPARAM value) -> BOOL {
+        wchar_t name[128]{};
+        GetClassNameW(h, name, 128);
+        if (!wcscmp(name, L"NskryRecordControlV1")) *reinterpret_cast<HWND *>(value) = h;
+        return TRUE;
+    }, LPARAM(&settingsWindow));
+    if (!settingsWindow) return 17;
+    SendMessageW(settingsWindow, WM_CLOSE, 0, 0);
+    if (IsWindow(settingsWindow) || captureCalls) return 18;
     auto module = GetModuleHandleW(dll.filename().c_str());
     auto connect = reinterpret_cast<NskryConnectCaptureV1>(GetProcAddress(module, "nskry_plugin_connect_capture_v1"));
     service.version = 99;

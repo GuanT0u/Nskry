@@ -37,7 +37,10 @@ void MfEncoder::OpenStream(IMFByteStream *stream, UINT width, UINT height, UINT 
     Configure(false);
 }
 void MfEncoder::Open(const std::wstring &path, UINT width, UINT height, UINT fps, bool hardware,
-                     volatile LONG *created) {
+                     volatile LONG *created, uint32_t bitrate) {
+    if (bitrate && (bitrate < 500000 || bitrate > 24000000))
+        winrt::throw_hresult(E_INVALIDARG);
+    m_bitrate = bitrate;
     SetFormat(width, height, fps);
     m_path = path;
     // FAIL_IF_EXIST protects unrelated files, including previous partial recordings.
@@ -85,7 +88,7 @@ void MfEncoder::Configure(bool hardware) {
     winrt::check_hresult(output->SetUINT32(MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709));
     winrt::check_hresult(output->SetUINT32(MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709));
     const auto bitrate = std::clamp(uint64_t(m_width) * m_height * m_fps / 6, uint64_t(500000), uint64_t(8000000));
-    winrt::check_hresult(output->SetUINT32(MF_MT_AVG_BITRATE, UINT32(bitrate)));
+    winrt::check_hresult(output->SetUINT32(MF_MT_AVG_BITRATE, m_bitrate ? m_bitrate : UINT32(bitrate)));
     winrt::check_hresult(output->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive));
     winrt::check_hresult(MFSetAttributeSize(output.get(), MF_MT_FRAME_SIZE, m_width, m_height));
     winrt::check_hresult(MFSetAttributeRatio(output.get(), MF_MT_FRAME_RATE, m_fps, 1));

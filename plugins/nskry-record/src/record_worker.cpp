@@ -1,4 +1,6 @@
+#include "gif_encoder.h"
 #include "mf_encoder.h"
+#include "record_transcode.h"
 #include "record_worker_protocol.h"
 #include <memory>
 
@@ -30,12 +32,12 @@ int wmain(int argc, wchar_t **argv) {
     // Copy only immutable configuration, not the 64 KiB transport header onto
     // the native thread stack. The path's bounded storage is heap-owned.
     struct Configuration {
-        uint32_t width, height, fps, pixelBytes, hardware;
+        uint32_t width, height, fps, pixelBytes, hardware, bitrate, gif;
         std::wstring path;
     };
     const auto *input = static_cast<const wire::Header *>(header.value);
-    const Configuration initial{input->width,      input->height,   input->fps,
-                                input->pixelBytes, input->hardware, input->path};
+    const Configuration initial{input->width,    input->height,  input->fps, input->pixelBytes,
+                                input->hardware, input->bitrate, input->gif, input->path};
     View memory{MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(wire::Header) + initial.pixelBytes)};
     if (!memory.value)
         return 4;
@@ -45,6 +47,7 @@ int wmain(int argc, wchar_t **argv) {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
         apartment = true;
         std::unique_ptr<MfEncoder> encoder;
+        std::unique_ptr<GifEncoder> gif;
         uint64_t sequence = 0;
         while (WaitForSingleObject(request, INFINITE) == WAIT_OBJECT_0) {
             MemoryBarrier();
@@ -57,29 +60,54 @@ int wmain(int argc, wchar_t **argv) {
                     winrt::throw_hresult(E_INVALIDARG);
                 sequence = number;
                 if (command == wire::Command::Open) {
-                    if (encoder)
+                    if (encoder || gif)
                         winrt::throw_hresult(E_UNEXPECTED);
-                    encoder = std::make_unique<MfEncoder>();
-                    encoder->Open(initial.path, initial.width, initial.height, initial.fps, initial.hardware != 0,
-                                  &h.created);
-                    wcsncpy_s(h.backend, encoder->Backend().c_str(), _TRUNCATE);
+                    if (initial.gif) {
+                        gif = std::make_unique<GifEncoder>();
+                        gif->Open(initial.path, initial.width, initial.height, &h.created);
+                        wcscpy_s(h.backend, L"GIF / fixed RGB332 / 10 fps");
+                    } else {
+                        encoder = std::make_unique<MfEncoder>();
+                        encoder->Open(initial.path, initial.width, initial.height, initial.fps, initial.hardware != 0,
+                                      &h.created, initial.bitrate);
+                        wcsncpy_s(h.backend, encoder->Backend().c_str(), _TRUNCATE);
+                    }
                 } else if (command == wire::Command::Close) {
                     encoder.reset();
+                    gif.reset();
                 } else {
-                    if (!encoder)
+                    if (!encoder && !gif)
                         winrt::throw_hresult(E_UNEXPECTED);
-                    if (command == wire::Command::Frame) {
+                    if (command == wire::Command::Trim) {
+                        if (!h.inputPath[0] || h.inputPath[32767] || h.trimStart < 0 || h.trimEnd <= h.trimStart)
+                            winrt::throw_hresult(E_INVALIDARG);
+                        const std::wstring inputPath = h.inputPath;
+                        TrimRecording(inputPath, initial.gif != 0, initial.width, initial.height, h.trimStart,
+                                      h.trimEnd, [&](const uint8_t *pixels, int64_t time, int64_t duration) {
+                                          if (gif)
+                                              gif->Write(pixels, time, duration);
+                                          else
+                                              encoder->Write(pixels, time, duration);
+                                          ++h.samples;
+                                      });
+                    } else if (command == wire::Command::Frame) {
 #if defined(NSKRY_RECORD_TEST_CRASH_WORKER)
                         ExitProcess(99);
 #elif defined(NSKRY_RECORD_TEST_HANG_WORKER)
                         Sleep(INFINITE);
 #endif
-                        encoder->WriteNv12(reinterpret_cast<const uint8_t *>(&h + 1), h.time, h.duration);
+                        if (gif)
+                            gif->Write(reinterpret_cast<const uint8_t *>(&h + 1), h.time, h.duration);
+                        else
+                            encoder->WriteNv12(reinterpret_cast<const uint8_t *>(&h + 1), h.time, h.duration);
                     } else if (command == wire::Command::Finalize) {
 #if defined(NSKRY_RECORD_TEST_FINALIZE_HANG_WORKER)
                         Sleep(INFINITE);
 #endif
-                        encoder->Finalize();
+                        if (gif)
+                            gif->Finalize();
+                        else
+                            encoder->Finalize();
                         InterlockedExchange(&h.finalized, 1);
                     } else
                         winrt::throw_hresult(E_INVALIDARG);

@@ -39,12 +39,35 @@ bool PluginManifest::LoadFromFile(const std::wstring& path, PluginManifest& mani
     result.manifestVersion = static_cast<int>(manifestVersion);
     if (const auto *extensions = root.Find(L"extensions")) {
         if (!extensions->IsObject() ||
+            (extensions->Find(L"settings_ui") &&
+             (!extensions->GetUnsigned(L"settings_ui", result.settingsUiApi) || result.settingsUiApi != 1)) ||
+            (extensions->Find(L"capture_actions") &&
+             (!extensions->GetUnsigned(L"capture_actions", result.actionApi) || result.actionApi != 1)) ||
             (extensions->Find(L"commands") &&
              (!extensions->GetUnsigned(L"commands", result.commandApi) || result.commandApi != 1)) ||
             (extensions->Find(L"region_capture") &&
-             (!extensions->GetUnsigned(L"region_capture", result.captureApi) || result.captureApi != 1))) {
+             (!extensions->GetUnsigned(L"region_capture", result.captureApi) ||
+              (result.captureApi != 1 && result.captureApi != 2)))) {
             SetError(error, L"Unsupported optional extension version.");
             return false;
+        }
+    }
+    if (const auto *actions = root.Find(L"capture_actions")) {
+        const auto *array = actions->AsArray();
+        if (!result.actionApi || !array || array->size() > 8) {
+            SetError(error, L"Invalid capture actions extension.");
+            return false;
+        }
+        for (const auto &item : *array) {
+            PluginManifest::CaptureAction action;
+            if (!item.GetString(L"id", action.id) || !IsSafePluginId(action.id) ||
+                !item.GetString(L"label", action.label) || action.label.empty() || action.label.size() > 40 ||
+                std::any_of(result.captureActions.begin(), result.captureActions.end(),
+                            [&](const auto &a) { return a.id == action.id; })) {
+                SetError(error, L"Invalid or duplicate capture action.");
+                return false;
+            }
+            result.captureActions.push_back(std::move(action));
         }
     }
     // API 2 has no cross-plugin service/dependency resolver. Do not silently

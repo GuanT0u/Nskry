@@ -111,6 +111,12 @@ bool TestManifestDependencyContract() {
     ok &= Expect(load(",\"requires_plugins\":[]"), "empty prerequisites accepted");
     ok &= Expect(load(R"(,"extensions":{"commands":1,"region_capture":1},"shortcuts":[{"id":"stop","label":"Stop","scope":"command","default":"Ctrl+Alt+R"}])"),"optional versioned command/capture metadata accepted");
     ok &= Expect(!load(R"(,"extensions":{"commands":2})"),"unknown command version rejected before DLL load");
+    ok &= Expect(load(R"(,"extensions":{"region_capture":2,"capture_actions":1,"settings_ui":1},"capture_actions":[{"id":"gif","label":"Record GIF"}])"),
+                 "capture v2 and extra metadata actions accepted without loading DLL");
+    ok &= Expect(!load(R"(,"extensions":{"region_capture":3})"), "unknown capture version rejected");
+    ok &= Expect(!load(R"(,"capture_actions":[{"id":"gif","label":"GIF"}])"), "actions require explicit version");
+    ok &= Expect(!load(R"(,"extensions":{"capture_actions":1},"capture_actions":[{"id":"gif","label":"GIF"},{"id":"gif","label":"Again"}])"),
+                 "duplicate extra actions rejected");
     ok &= Expect(!load(R"(,"shortcuts":[{"id":"stop","label":"Stop","scope":"command"}])"),"command scope needs explicit extension negotiation");
     ok &= Expect(!load(",\"requires_plugins\":[\"nskry-scroll\"]"), "unsupported cross-plugin dependency rejected");
     ok &= Expect(!load(",\"requires_plugins\":true"), "malformed dependency field rejected");

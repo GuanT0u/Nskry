@@ -1,6 +1,7 @@
 #include "nskry_commands.h"
 #include "nskry_plugin.h"
 #include "record_session.h"
+#include "nskry_actions.h"
 #include <atomic>
 #include <filesystem>
 #include <functional>
@@ -14,6 +15,9 @@ bool RecordControlTestAlive();
 Snapshot RecordControlTestStatus();
 void RecordControlTestHoldPrompt(bool);
 void RecordControlTestUpdate();
+void RecordControlTestEnableResult(const std::wstring &);
+extern "C" int32_t NSKRY_CALL nskry_plugin_connect_capture_v2(const NskryCaptureServiceV2 *);
+extern "C" int32_t NSKRY_CALL nskry_plugin_capture_action_v1(const NskryCaptureActionV1 *);
 namespace {
 std::atomic<int> captures{};
 HRESULT __cdecl Open(RECT, uint32_t, void **value, NskryCaptureDescriptionV1 *d, wchar_t *, uint32_t) {
@@ -29,6 +33,19 @@ HRESULT __cdecl Read(void *, uint8_t *pixels, uint32_t count) {
 void __cdecl Close(void *value) {
     delete static_cast<int *>(value);
     --captures;
+}
+HRESULT __cdecl OpenV2(const NskryCaptureRequestV2 *r, void **v, NskryCaptureDescriptionV1 *d, wchar_t *e, uint32_t n) {
+    return Open(r->physicalRegion, r->fps, v, d, e, n);
+}
+HRESULT __cdecl Bounds(void *, RECT *r) { *r = {0,0,160,90}; return S_OK; }
+HWND OwnControl() {
+    HWND result{};
+    EnumThreadWindows(GetCurrentThreadId(), [](HWND h, LPARAM p) -> BOOL {
+        wchar_t name[128]{}; GetClassNameW(h, name, 128);
+        if (!wcscmp(name, L"NskryRecordControlV1")) *reinterpret_cast<HWND *>(p) = h;
+        return TRUE;
+    }, LPARAM(&result));
+    return result;
 }
 bool Pump(const std::function<bool()> &done) {
     const auto end = GetTickCount64() + 8000;
@@ -108,6 +125,37 @@ int wmain(int argc, wchar_t **argv) {
         ok = Pump([] { return !RecordControlTestAlive(); }) && !captures && std::filesystem::exists(path) && ok;
         SendMessageW(hwnd, WM_CLOSE, 0, 0);
     }
+    const auto postPath = root / L"post-result.mp4";
+    hwnd = RecordControlTestStart(capture, {0,0,160,90}, postPath.wstring());
+    RecordControlTestEnableResult(postPath.wstring());
+    ok = hwnd && Pump([] { return RecordControlTestStatus().frames >= 2; }) && ok;
+    SendMessageW(hwnd, WM_COMMAND, 2, 0);
+    ok = Pump([] { return !RecordControlTestAlive(); }) && std::filesystem::exists(postPath) && ok;
+    wchar_t resultLabel[64]{};
+    GetWindowTextW(GetDlgItem(hwnd, 1), resultLabel, 64);
+    ok = !wcscmp(resultLabel, L"Save...") && IsWindowVisible(GetDlgItem(hwnd, 4)) && ok;
+    SendMessageW(hwnd, WM_COMMAND, 4, 0);
+    ok = IsWindowVisible(GetDlgItem(hwnd, 12)) && IsWindowVisible(GetDlgItem(hwnd, 13)) && ok;
+    SendMessageW(hwnd, WM_COMMAND, 6, 0);
+    ok = !IsWindowVisible(GetDlgItem(hwnd, 12)) && !IsWindowVisible(GetDlgItem(hwnd, 13)) && ok;
+    SendMessageW(hwnd, WM_COMMAND, 3, 0); // Explicit discard, no native modal dialog.
+    ok = !IsWindow(hwnd) && !std::filesystem::exists(postPath) && ok;
+    NskryCaptureServiceV2 capture2{sizeof(capture2), 2, OpenV2, Read, Bounds, Close};
+    ok = nskry_plugin_connect_capture_v2(&capture2) != 0 && ok;
+    MONITORINFO mi{sizeof(mi)};
+    GetMonitorInfoW(MonitorFromPoint({0,0}, MONITOR_DEFAULTTOPRIMARY), &mi);
+    NskryHostContext context{sizeof(context), 2};
+    context.capturedRegion = {mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.left+160, mi.rcMonitor.top+90};
+    nskry_plugin_execute(&context);
+    hwnd = OwnControl();
+    ok = hwnd && SendMessageW(GetDlgItem(hwnd, 7), CB_GETCOUNT, 0, 0) == 2 &&
+         SendMessageW(GetDlgItem(hwnd, 8), CB_GETCOUNT, 0, 0) == 3 && !captures && ok;
+    SendMessageW(hwnd, WM_COMMAND, 3, 0);
+    NskryCaptureActionV1 gif{sizeof(gif), 1, L"gif", &context};
+    ok = nskry_plugin_capture_action_v1(&gif) != 0 && ok;
+    hwnd = OwnControl();
+    ok = hwnd && !IsWindowEnabled(GetDlgItem(hwnd, 7)) && !IsWindowEnabled(GetDlgItem(hwnd, 8)) && !captures && ok;
+    SendMessageW(hwnd, WM_COMMAND, 3, 0);
     nskry_plugin_shutdown();
     for (const auto &file : std::filesystem::directory_iterator(root))
         ok = !file.path().filename().wstring().starts_with(L".nskry-record-") && ok;

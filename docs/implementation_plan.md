@@ -175,10 +175,12 @@ extern "C" {
 | **OCR 文字识别** | Windows.Media.Ocr（内置 API、按需加载、无外置模型） | `nskry-ocr.dll`（首个实现已交付） |
 | **翻译** | OCR 结果 → 调用翻译 API → 叠加显示 | `nskry-translate.dll` |
 
-### Phase 5：录屏（2026-10-15：MP4 首版已实现，GIF 尚未开发）
+### Phase 5：录屏（2026-10-21：MP4 / GIF、窗口跟随与录后起止裁剪已实现）
 
-当前交付为独立 `nskry-record`，单屏固定物理区域、最高 20fps/1080p、暂停/继续/停止/丢弃。
-不含声音/GIF；不是无条件硬件编码或低配性能承诺。详见 [开发报告](report/devProgress/recording_phase5_20261015.md)。
+当前交付为独立 `nskry-record`，单屏区域/可选窗口跟随、目标30/60fps及1080p上限、暂停/继续/停止/丢弃；
+独立GIF按钮固定10fps及960/540边长上限，录后可保存/复制文件或调整起止范围。
+不含声音；不是无条件硬件编码或低配性能承诺。首版见 [历史报告](report/devProgress/recording_phase5_20261015.md)，
+当前范围和未验收项见 [0.3.0报告](report/devProgress/recording_workflow_20261021.md)。
 
 | 功能 | 说明 | 实现形式 |
 |------|------|----------|

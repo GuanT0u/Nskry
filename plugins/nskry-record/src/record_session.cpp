@@ -1,11 +1,14 @@
 #include "record_session.h"
 #include "isolated_encoder.h"
+#include "record_delivery.h"
 #include <chrono>
 #include <filesystem>
 #include <memory>
 #include <shellscalingapi.h>
 #include <vector>
 #include <winrt/base.h>
+#include <dwmapi.h>
+#pragma comment(lib, "dwmapi.lib")
 
 namespace nskry::record {
 namespace {
@@ -21,9 +24,11 @@ int64_t RecordSession::Now() {
                std::chrono::steady_clock::now().time_since_epoch())
         .count();
 }
-RecordSession::RecordSession(NskryCaptureServiceV1 service, RECT region, std::wstring output, bool preferHardware)
+RecordSession::RecordSession(NskryCaptureServiceV1 service, RECT region, std::wstring output, bool preferHardware,
+                             SessionOptions options)
     : m_service(service), m_region(region), m_output(std::filesystem::absolute(output).wstring()),
-      m_preferHardware(preferHardware) {
+      m_preferHardware(preferHardware), m_options(options) {
+    m_status.region = region;
 }
 RecordSession::~RecordSession() {
     Shutdown();
@@ -91,7 +96,12 @@ Snapshot RecordSession::Status() const {
     return copy;
 }
 void RecordSession::Run() noexcept {
-    constexpr UINT fps = 20;
+    const UINT fps = m_options.fps;
+    // Use one transport for the complete session; never change capture semantics
+    // silently when a source closes or is resized/minimized.
+    const bool v2 = m_options.capture.version == 2;
+    if (v2)
+        m_service = {sizeof(m_service), 1, nullptr, m_options.capture.read, m_options.capture.close};
     struct Capture {
         NskryCaptureServiceV1 &service;
         void *value{};
@@ -124,9 +134,14 @@ void RecordSession::Run() noexcept {
         return encoderExited;
     };
     try {
+        if (fps < 1 || fps > 60 || (!v2 && (fps > 30 || m_options.followWindow)) ||
+            (v2 && (!m_options.capture.open || !m_options.capture.read || !m_options.capture.close ||
+                    !m_options.capture.bounds)))
+            winrt::throw_hresult(E_INVALIDARG);
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
         apartment = true;
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        if (m_options.deliveryCache) PrepareRecordingCache(m_output, m_cancelEvent);
         // Local, on-demand pacing only. No global timeBeginPeriod or busy-spin.
         struct Timer {
             HANDLE value{};
@@ -146,12 +161,39 @@ void RecordSession::Run() noexcept {
         if (!StringFromGUID2(id, guid, 40))
             winrt::throw_hresult(E_FAIL);
         const auto slash = m_output.find_last_of(L"\\/");
-        temporary = m_output.substr(0, slash + 1) + L".nskry-record-" + guid + L".partial.mp4";
+        temporary = m_output.substr(0, slash + 1) + L".nskry-record-" + guid +
+                    (m_options.gif ? L".partial.gif" : L".partial.mp4");
         NskryCaptureDescriptionV1 description{sizeof(description), 1};
         wchar_t error[512]{};
         if (Status().state == State::Discarding)
             winrt::throw_hresult(HRESULT_FROM_WIN32(ERROR_CANCELLED));
-        auto hr = m_service.open(m_region, fps, &capture.value, &description, error, 512);
+        RECT originalWindow{};
+        DWORD sourcePid{};
+        DWORD sourceThread{};
+        if (m_options.followWindow) {
+            sourceThread = GetWindowThreadProcessId(m_options.followWindow, &sourcePid);
+            winrt::check_hresult(DwmGetWindowAttribute(m_options.followWindow, DWMWA_EXTENDED_FRAME_BOUNDS,
+                                                       &originalWindow, sizeof(originalWindow)));
+        }
+        const auto openCapture = [&] {
+            if (!v2)
+                return m_service.open(m_region, fps, &capture.value, &description, error, 512);
+            RECT region = m_region;
+            if (m_options.followWindow) {
+                RECT now{};
+                DWORD pid{};
+                if (GetWindowThreadProcessId(m_options.followWindow, &pid) != sourceThread || pid != sourcePid ||
+                    FAILED(DwmGetWindowAttribute(m_options.followWindow, DWMWA_EXTENDED_FRAME_BOUNDS, &now, sizeof(now))) ||
+                    now.right - now.left != originalWindow.right - originalWindow.left ||
+                    now.bottom - now.top != originalWindow.bottom - originalWindow.top)
+                    return HRESULT_FROM_WIN32(ERROR_INVALID_WINDOW_HANDLE);
+                OffsetRect(&region, now.left - originalWindow.left, now.top - originalWindow.top);
+            }
+            NskryCaptureRequestV2 request{sizeof(request), 2, region, fps, m_options.followWindow,
+                                           m_options.gif ? 960u : 1920u, m_options.gif ? 540u : 1080u};
+            return m_options.capture.open(&request, &capture.value, &description, error, 512);
+        };
+        auto hr = openCapture();
         if (FAILED(hr))
             throw winrt::hresult_error(hr, error);
         const auto expected = description;
@@ -164,10 +206,15 @@ void RecordSession::Run() noexcept {
         std::vector<uint8_t> pixels(uint64_t(description.stride) * description.height);
         std::vector<uint8_t> pending(pixels.size());
         encoder = std::make_unique<IsolatedEncoder>(m_cancelEvent);
-        encoder->Open(temporary, description.width, description.height, fps, m_preferHardware);
+        encoder->Open(temporary, description.width, description.height, fps, m_preferHardware,
+                       m_options.bitrate ? m_options.bitrate : v2 && !m_options.gif
+                           ? Bitrate(description.width, description.height, fps, m_options.quality) : 0, m_options.gif);
         {
             std::lock_guard lock(m_mutex);
             m_status.backend = encoder->Backend();
+            m_status.width = description.width;
+            m_status.height = description.height;
+            m_status.fps = fps;
             m_status.encoderProcessId = encoder->ProcessId();
         }
         FrameSchedule schedule(fps);
@@ -184,6 +231,10 @@ void RecordSession::Run() noexcept {
         winrt::check_hresult(GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &initialDpiX, &initialDpiY));
         while (true) {
             Snapshot snapshot = Status();
+            if (m_options.gif && snapshot.duration >= 119LL * 10000000) {
+                Stop(false); // Bounded animation: at most two minutes, never grow a frame cache.
+                snapshot = Status();
+            }
             if (snapshot.state == State::Stopping || snapshot.state == State::Discarding)
                 break;
             if (snapshot.state == State::Paused) {
@@ -202,7 +253,7 @@ void RecordSession::Run() noexcept {
                     FAILED(GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpiX, &dpiY)) || dpiX != initialDpiX ||
                     dpiY != initialDpiY)
                     winrt::throw_hresult(HRESULT_FROM_WIN32(ERROR_DEVICE_NOT_CONNECTED));
-                winrt::check_hresult(m_service.open(m_region, fps, &capture.value, &description, error, 512));
+                winrt::check_hresult(openCapture());
                 if (description.structSize < sizeof(description) || description.version != expected.version ||
                     description.width != expected.width || description.height != expected.height ||
                     description.stride != expected.stride)
@@ -215,6 +266,12 @@ void RecordSession::Run() noexcept {
                 const HRESULT read = m_service.read(capture.value, pixels.data(), uint32_t(pixels.size()));
                 maxRead = (std::max)(maxRead, Now() - readStarted);
                 winrt::check_hresult(read);
+                if (v2) {
+                    RECT bounds{};
+                    winrt::check_hresult(m_options.capture.bounds(capture.value, &bounds));
+                    std::lock_guard lock(m_mutex);
+                    m_status.region = bounds;
+                }
                 if (read == S_OK)
                     haveFrame = true;
                 if (!haveFrame) {

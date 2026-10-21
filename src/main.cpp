@@ -226,6 +226,7 @@ int WINAPI wWinMain(
     hostCtx.openBitmapEditor = OpenBitmapEditor;
     nskry::PluginRegistry pluginRegistry;
     nskry::PluginManager::Instance().SetCaptureService(nskry::RegionCaptureService());
+    nskry::PluginManager::Instance().SetCaptureServiceV2(nskry::RegionCaptureServiceV2());
     nskry::PluginPackageManager packageManager(pluginRegistry);
     nskry::PluginUpdateManager pluginUpdateManager(pluginRegistry, packageManager);
     nskry::UpdateTask updateTask;
@@ -299,6 +300,7 @@ int WINAPI wWinMain(
         std::vector<nskry::SettingsPluginItem> items;
         for (const nskry::PluginRecord* record : pluginRegistry.GetAll()) {
             nskry::SettingsPluginItem item;
+            item.hasSettings = record->manifest.settingsUiApi == 1;
             item.id = record->manifest.id; item.name = record->manifest.name; item.version = record->manifest.version;
             item.author = record->manifest.author; item.enabled = record->enabled;
             item.description = record->manifest.description;
@@ -316,6 +318,9 @@ int WINAPI wWinMain(
         return items;
     };
     settingsServices.setPluginEnabled = [&pluginRegistry](const std::wstring& id, bool enabled) { return pluginRegistry.SetEnabled(id, enabled); };
+    settingsServices.showPluginSettings = [](const std::wstring &id, HWND owner) {
+        return nskry::PluginManager::Instance().ShowPluginSettings(id, owner);
+    };
     settingsServices.uninstallPlugin = [&packageManager](const std::wstring& id, std::wstring& error) {
         const auto result = packageManager.Uninstall(id); error = result.message; return result.success;
     };
@@ -627,7 +632,7 @@ static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionR
             context.showNotification = ShowPluginNotification;
             context.copyBitmapToClipboard = CopyBitmapToClipboard;
             context.openBitmapEditor = OpenBitmapEditor;
-            if (!nskry::PluginManager::Instance().ExecutePlugin(result.pluginId, context))
+            if (!nskry::PluginManager::Instance().ExecutePlugin(result.pluginId, context, result.pluginActionId))
                 ShowPluginNotification(L"The plugin could not be loaded or did not complete successfully.", 3500);
             ::DeleteObject(result.bitmap);
         }

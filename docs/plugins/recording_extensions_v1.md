@@ -1,5 +1,7 @@
 # 区域采集与已加载插件命令扩展 v1（2026-10-15）
 
+本文仅描述保留兼容的v1契约；当前新增的v2和独立动作/设置扩展见 [v2说明](recording_extensions_v2.md)。
+
 API 2 的 `NskryPluginInfo` / `NskryHostContext` 及 reserved 完全不变。
 这不是 API 3 多动作/跨插件服务，也没有启用 standalone 预留位。
 

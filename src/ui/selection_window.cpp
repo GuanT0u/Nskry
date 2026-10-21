@@ -2,6 +2,7 @@
 #include "ui/selection_window.h"
 #include "ui/precision_loupe.h"
 #include "ui/interaction_visuals.h"
+#include "ui/toolbar_layout.h"
 #include <windowsx.h>
 #pragma comment(lib, "msimg32.lib")
 
@@ -49,6 +50,9 @@ SelectionWindow::SelectionWindow(CompletionCallback onComplete, std::vector<Plug
         kClassName, L"Nskry Selection", WS_POPUP,
         m_vX, m_vY, m_vW, m_vH,
         nullptr, nullptr, ::GetModuleHandleW(nullptr), this);
+    // Snapshot pixels were taken BEFORE this window existed. CaptureSelectedRegion
+    // always reads that snapshot; exclusion additionally protects live capture.
+    if (m_hwnd) ::SetWindowDisplayAffinity(m_hwnd, WDA_EXCLUDEFROMCAPTURE);
 }
 
 SelectionWindow::~SelectionWindow() {
@@ -416,7 +420,7 @@ void SelectionWindow::OnLButtonDown(int x, int y) {
                     return;
 
                 case ToolbarItemType::PluginAction:
-                    FinishWithAction(SelectionAction::Plugin, item.pluginId);
+                    FinishWithAction(SelectionAction::Plugin, item.pluginId, item.pluginActionId);
                     return;
 
                 case ToolbarItemType::ToolToggle:
@@ -654,6 +658,7 @@ void SelectionWindow::BuildToolbar(RECT selRect) {
         item.type = ToolbarItemType::PluginAction;
         item.label = action.label;
         item.pluginId = action.id;
+        item.pluginActionId = action.actionId;
         m_toolbarItems.push_back(std::move(item));
         curX += 76 + gap;
     }
@@ -711,6 +716,19 @@ void SelectionWindow::BuildToolbar(RECT selRect) {
             sx += 22 + gap;
         }
     }
+    RECT physical = selRect;
+    OffsetRect(&physical, m_vX, m_vY);
+    MONITORINFO monitor{sizeof(monitor)};
+    RECT viewport{0, 0, m_vW, m_vH};
+    if (GetMonitorInfoW(MonitorFromRect(&physical, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        viewport = monitor.rcMonitor;
+        OffsetRect(&viewport, -m_vX, -m_vY);
+    }
+    std::vector<int> widths;
+    widths.reserve(m_toolbarItems.size());
+    for (const auto &item : m_toolbarItems) widths.push_back(item.rect.right - item.rect.left);
+    const auto layout = LayoutSelectionToolbar(widths, selRect, viewport, std::size(mainDefs) + m_pluginActions.size());
+    for (size_t i = 0; i < layout.size(); ++i) m_toolbarItems[i].rect = layout[i];
 }
 
 void SelectionWindow::DrawToolbar(HDC hdc) {
@@ -849,7 +867,7 @@ HBITMAP SelectionWindow::CaptureSelectedRegion(RECT localRect) {
 // Finish and invoke callback
 // ============================================================================
 
-void SelectionWindow::FinishWithAction(SelectionAction action, std::wstring pluginId) {
+void SelectionWindow::FinishWithAction(SelectionAction action, std::wstring pluginId, std::wstring actionId) {
     SelectionResult result{};
 
     if (action != SelectionAction::Cancel) {
@@ -867,6 +885,7 @@ void SelectionWindow::FinishWithAction(SelectionAction action, std::wstring plug
 
         result.targetHwnd  = m_targetHwnd;
         result.pluginId = std::move(pluginId);
+        result.pluginActionId = std::move(actionId);
         result.bitmap      = m_capturedBitmap;
         result.bitmapWidth = m_finalRect.right  - m_finalRect.left;
         result.bitmapHeight= m_finalRect.bottom - m_finalRect.top;

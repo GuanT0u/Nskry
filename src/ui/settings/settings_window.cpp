@@ -11,6 +11,7 @@ constexpr int IDC_TAB = 100, IDC_RUN = 101, IDC_NOTIFY = 102, IDC_THEME = 103;
 constexpr int IDC_PLUGIN_LIST = 120, IDC_PLUGIN_TOGGLE = 121;
 constexpr int IDC_PLUGIN_UNINSTALL = 122, IDC_PLUGIN_INSTALL = 123, IDC_PLUGIN_CHECK_UPDATES = 124, IDC_APPLY = 130;
 constexpr int IDC_PLUGIN_DETAILS = 125, IDC_OFFICIAL_PLUGINS = 126, IDC_PLUGIN_POLICY = 127;
+constexpr int IDC_PLUGIN_SETTINGS = 128;
 constexpr const wchar_t* kThirdPartyPolicy =
     L"Official plugins are developed by Nskry's maintainer or explicitly adopted/certified developers or teams.\n\n"
     L"Other plugins are independent third-party software. Listing, installation, HTTPS or a hash does not certify their safety. "
@@ -59,6 +60,14 @@ LRESULT SettingsWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CREATE: CreateControls(); ::DragAcceptFiles(m_hwnd, TRUE); RefreshFromServices(); return 0;
     case WM_NOTIFY: if (reinterpret_cast<NMHDR*>(lp)->idFrom == IDC_TAB && reinterpret_cast<NMHDR*>(lp)->code == TCN_SELCHANGE) SelectPage(TabCtrl_GetCurSel(m_tab)); return 0;
     case WM_COMMAND:
+        if (LOWORD(wp) == IDC_PLUGIN_SETTINGS) {
+            if (m_updateBusy) return 0;
+            const auto i = static_cast<int>(SendMessageW(m_pluginList, LB_GETCURSEL, 0, 0));
+            if (i >= 0 && i < static_cast<int>(m_plugins.size()) && m_services.showPluginSettings &&
+                !m_services.showPluginSettings(m_plugins[i].id, m_hwnd))
+                MessageBoxW(m_hwnd, L"Plugin settings could not be opened.", L"Nskry", MB_ICONWARNING);
+            return 0;
+        }
         if(m_updateBusy && (LOWORD(wp)==IDC_PLUGIN_TOGGLE || LOWORD(wp)==IDC_PLUGIN_UNINSTALL || LOWORD(wp)==IDC_PLUGIN_INSTALL))return 0;
         if (LOWORD(wp) >= 140 && LOWORD(wp) <= 154) { OnVisualControl(LOWORD(wp)); return 0; }
         if (LOWORD(wp) == IDC_APPLY) ApplySettings();
@@ -126,6 +135,7 @@ void SettingsWindow::CreateControls() {
         32, 250, 630, 130, m_hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PLUGIN_DETAILS)), nullptr, nullptr);
     m_officialPlugins = control(BS_PUSHBUTTON, L"Browse official plugins...", IDC_OFFICIAL_PLUGINS, 32, 420, 210, 28);
     m_thirdPartyPolicy = control(BS_PUSHBUTTON, L"Third-party plugin policy...", IDC_PLUGIN_POLICY, 255, 420, 220, 28);
+    m_pluginSettings = control(BS_PUSHBUTTON, L"Plugin settings...", IDC_PLUGIN_SETTINGS, 488, 420, 174, 28);
     m_aboutText = ::CreateWindowExW(0, L"STATIC", L"Nskry\n\nLightweight Windows capture and PiP utility.\n\nVersion 0.5.0\nPlugin API version 2", WS_CHILD | SS_LEFT,
         52, 72, 520, 180, m_hwnd, nullptr, nullptr, nullptr);
     m_apply = control(WS_VISIBLE | BS_DEFPUSHBUTTON, L"Apply", IDC_APPLY, 580, 420, 110, 30);
@@ -181,6 +191,7 @@ void SettingsWindow::LayoutControls() {
     move(m_pluginCheckUpdates, 492, buttonsY, 170, 28);
     move(m_officialPlugins, 32, buttonsY + 38, 210, 28);
     move(m_thirdPartyPolicy, 255, buttonsY + 38, 220, 28);
+    move(m_pluginSettings, 488, buttonsY + 38, 174, 28);
     move(m_apply, client.right - 134, client.bottom - 54, 110, 30);
     if(m_inputPage)move(m_inputPage->Hwnd(),32,108,width,client.bottom-178);
     if(m_jumpPage)move(m_jumpPage->Hwnd(),32,258,width,client.bottom-328);
@@ -199,6 +210,7 @@ void SettingsWindow::SelectPage(int page) {
     ShowControl(m_apply, general || hotkeys || page == 4 || page==5); if (plugins) RefreshPluginList();
     for (auto control : m_visualControls) ShowControl(control, page == 4);
     ShowControl(m_pluginDetails, plugins); ShowControl(m_officialPlugins, plugins); ShowControl(m_thirdPartyPolicy, plugins);
+    ShowControl(m_pluginSettings, plugins);
     for (HWND hwnd : m_generalDecor) ShowControl(hwnd, general);
     for (HWND hwnd : m_hotkeyDecor) ShowControl(hwnd, hotkeys);
     ShowControl(m_aboutText, about);
@@ -230,6 +242,7 @@ void SettingsWindow::RefreshPluginList() {
 void SettingsWindow::RefreshPluginDetails() {
     const int selected = static_cast<int>(::SendMessageW(m_pluginList, LB_GETCURSEL, 0, 0));
     const bool valid = selected >= 0 && selected < static_cast<int>(m_plugins.size());
+    EnableWindow(m_pluginSettings, valid && !m_updateBusy && m_plugins[selected].enabled && m_plugins[selected].hasSettings);
     ::EnableWindow(m_pluginToggle, valid && !m_updateBusy); ::EnableWindow(m_pluginUninstall, valid && !m_updateBusy);
     const auto notice=m_updateNotice.empty()?L"":m_updateNotice+L"\r\n\r\n";
     if (!valid) { SetText(m_pluginDetails, notice+L"No plugin selected. Use Browse official plugins or install a local package."); return; }

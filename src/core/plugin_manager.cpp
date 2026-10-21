@@ -35,6 +35,7 @@ void PluginManager::Shutdown() {
     m_registry = nullptr;
     m_hostContext = {};
     m_captureService = {};
+    m_captureServiceV2 = {};
     m_initialized = false;
 }
 
@@ -70,10 +71,21 @@ bool PluginManager::LoadPlugin(const PluginRecord &record) {
         reinterpret_cast<NskryConfigureInputV2>(::GetProcAddress(module, "nskry_plugin_configure_input_v2"));
     const auto connectCapture =
         reinterpret_cast<NskryConnectCaptureV1>(::GetProcAddress(module, "nskry_plugin_connect_capture_v1"));
+    const auto connectCaptureV2 =
+        reinterpret_cast<NskryConnectCaptureV2>(::GetProcAddress(module, "nskry_plugin_connect_capture_v2"));
     const auto command =
         reinterpret_cast<NskryCommandHandlerV1>(::GetProcAddress(module, "nskry_plugin_command_v1"));
+    const auto captureAction = reinterpret_cast<NskryExecuteCaptureActionV1>(
+        ::GetProcAddress(module, "nskry_plugin_capture_action_v1"));
+    const auto showSettings = reinterpret_cast<NskryShowSettingsV1>(
+        ::GetProcAddress(module, "nskry_plugin_show_settings_v1"));
+    if ((record.manifest.actionApi && !captureAction) || (record.manifest.settingsUiApi && !showSettings)) {
+        ::FreeLibrary(module);
+        return false;
+    }
     if ((record.manifest.commandApi && !command) ||
-        (record.manifest.captureApi && (!connectCapture || m_captureService.version != 1))) {
+        (record.manifest.captureApi == 1 && (!connectCapture || m_captureService.version != 1)) ||
+        (record.manifest.captureApi == 2 && (!connectCaptureV2 || m_captureServiceV2.version != 2))) {
         ::FreeLibrary(module);
         return false;
     }
@@ -101,7 +113,8 @@ bool PluginManager::LoadPlugin(const PluginRecord &record) {
                       record.manifest.version == runtimeInfo->version;
         if (initialized) {
             initAttempted = true;
-            if (record.manifest.captureApi && !connectCapture(&m_captureService))
+            if ((record.manifest.captureApi == 1 && !connectCapture(&m_captureService)) ||
+                (record.manifest.captureApi == 2 && !connectCaptureV2(&m_captureServiceV2)))
                 throw std::runtime_error("Capture extension rejected");
             initialized = fnInit(&m_hostContext) != 0;
         }
@@ -122,6 +135,8 @@ bool PluginManager::LoadPlugin(const PluginRecord &record) {
     }
 
     PluginEntry entry;
+    entry.fnCaptureAction = captureAction;
+    entry.fnShowSettings = showSettings;
     entry.hModule = module;
     entry.id = record.manifest.id;
     entry.fnExecute = fnExecute;
@@ -162,13 +177,24 @@ bool PluginManager::Unload(const std::wstring &pluginId) {
     return true;
 }
 
-bool PluginManager::ExecutePlugin(const std::wstring &pluginId, const NskryHostContext &hostContext) {
+bool PluginManager::ExecutePlugin(const std::wstring &pluginId, const NskryHostContext &hostContext,
+                                  const std::wstring &actionId) {
+    if (!actionId.empty()) {
+        const auto *record = m_registry ? m_registry->Find(pluginId) : nullptr;
+        if (!record || std::none_of(record->manifest.captureActions.begin(), record->manifest.captureActions.end(),
+                                   [&](const auto &a) { return a.id == actionId; }))
+            return false;
+    }
     if (!EnsureLoaded(pluginId))
         return false;
     const auto it = m_plugins.find(pluginId);
     if (it == m_plugins.end() || !it->second.fnExecute)
         return false;
     try {
+        if (!actionId.empty()) {
+            NskryCaptureActionV1 action{sizeof(action), 1, actionId.c_str(), &hostContext};
+            return it->second.fnCaptureAction && it->second.fnCaptureAction(&action) != 0;
+        }
         it->second.fnExecute(&hostContext);
         return true;
     } catch (...) {
@@ -176,6 +202,16 @@ bool PluginManager::ExecutePlugin(const std::wstring &pluginId, const NskryHostC
     }
 }
 
+bool PluginManager::ShowPluginSettings(const std::wstring &id, HWND owner) {
+    const auto *record = m_registry ? m_registry->Find(id) : nullptr;
+    if (!record || !record->enabled || record->manifest.settingsUiApi != 1 || !EnsureLoaded(id))
+        return false;
+    const auto it = m_plugins.find(id);
+    if (it == m_plugins.end() || !it->second.fnShowSettings)
+        return false;
+    try { return it->second.fnShowSettings(owner) != 0; }
+    catch (...) { return false; }
+}
 bool PluginManager::IsLoaded(const std::wstring &pluginId) const {
     return m_plugins.contains(pluginId);
 }
@@ -309,8 +345,11 @@ std::vector<PluginToolbarAction> PluginManager::GetEnabledToolbarActions() const
     if (!m_registry)
         return actions;
     for (const PluginRecord *record : m_registry->GetAll()) {
-        if (record->enabled && record->manifest.toolbarAction && record->manifest.IsCompatibleWithHost())
+        if (record->enabled && record->manifest.toolbarAction && record->manifest.IsCompatibleWithHost()) {
             actions.push_back({record->manifest.id, record->manifest.name});
+            for (const auto &a : record->manifest.captureActions)
+                actions.push_back({record->manifest.id, a.label, a.id});
+        }
     }
     return actions;
 }

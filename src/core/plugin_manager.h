@@ -4,6 +4,7 @@
 #include "sdk/nskry_plugin.h"
 #include "sdk/nskry_capture.h"
 #include "sdk/nskry_commands.h"
+#include "sdk/nskry_actions.h"
 #include <functional>
 #include <string>
 #include <unordered_map>
@@ -18,6 +19,8 @@ struct PluginEntry {
     NskryConfigureInputV1 fnConfigureInput = nullptr;
     NskryConfigureInputV2 fnConfigureInputV2 = nullptr;
     NskryCommandHandlerV1 fnCommand = nullptr;
+    NskryExecuteCaptureActionV1 fnCaptureAction = nullptr;
+    NskryShowSettingsV1 fnShowSettings = nullptr;
     struct InputReport {
         enum class Status {
             NotLoaded,
@@ -34,6 +37,7 @@ struct PluginEntry {
 struct PluginToolbarAction {
     std::wstring id;
     std::wstring label;
+    std::wstring actionId;
 };
 struct PluginImageAction {
     std::wstring id;
@@ -51,10 +55,13 @@ class PluginManager {
 
     bool EnsureLoaded(const std::wstring &pluginId);
     bool Unload(const std::wstring &pluginId);
-    bool ExecutePlugin(const std::wstring &pluginId, const NskryHostContext &hostContext);
+    bool ExecutePlugin(const std::wstring &pluginId, const NskryHostContext &hostContext,
+                       const std::wstring &actionId = {});
     // Does not load idle plugins. Cleanup commands remain usable after disable.
     bool ExecuteCommand(const std::wstring& pluginId, const std::wstring& localId, std::wstring& error);
+    bool ShowPluginSettings(const std::wstring &pluginId, HWND owner);
     void SetCaptureService(const NskryCaptureServiceV1& service) { m_captureService = service; }
+    void SetCaptureServiceV2(const NskryCaptureServiceV2& service) { m_captureServiceV2 = service; }
     bool IsLoaded(const std::wstring &pluginId) const;
     std::vector<PluginToolbarAction> GetEnabledToolbarActions() const;
     std::vector<PluginImageAction> GetEnabledImageActions() const;
@@ -78,6 +85,7 @@ class PluginManager {
     PluginRegistry *m_registry = nullptr;
     NskryHostContext m_hostContext{};
     NskryCaptureServiceV1 m_captureService{};
+    NskryCaptureServiceV2 m_captureServiceV2{};
     std::unordered_map<std::wstring, PluginEntry> m_plugins;
     bool m_initialized = false;
     std::function<std::wstring(const ShortcutDefinition &)> m_shortcutProvider;

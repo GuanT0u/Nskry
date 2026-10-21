@@ -224,7 +224,48 @@ int wmain(int argc, wchar_t **argv) {
         std::wcerr << e.message().c_str() << L" 0x" << std::hex << e.code().value << L"\n";
         ok = false;
     }
-    KillTimer(source, 1);
+    try {
+        SessionOptions options;
+        options.fps = 60;
+        options.capture = nskry::RegionCaptureServiceV2();
+        options.followWindow = source;
+        const auto followedPath = std::filesystem::path(argv[1]) /
+            (L"record-follow-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()) + L".mp4");
+        const RECT selected{region.left + 40, region.top + 20, region.left + 200, region.top + 110};
+        RecordSession followed({}, selected, followedPath.wstring(), true, options);
+        ok = followed.Start() && Pump([&] { return followed.Status().state == State::Recording || Finished(followed); }) && ok;
+        SetWindowPos(source, nullptr, region.left + 50, region.top + 30, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        ok = Pump([&] { const auto s = followed.Status(); return s.region.left == selected.left + 50 || Finished(followed); }) && ok;
+        auto report = followed.Status();
+        ok = report.region.left == selected.left + 50 && report.region.top == selected.top + 30 &&
+             report.width == 160 && report.height == 90 && report.fps == 60 && ok;
+        ok = followed.PauseResume() && ok;
+        const auto paused = GetTickCount64();
+        Pump([&] { return GetTickCount64() - paused > 250; });
+        SetWindowPos(source, nullptr, region.left + 80, region.top + 50, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        ok = followed.PauseResume() && Pump([&] { return followed.Status().region.left == selected.left + 80 || Finished(followed); }) && ok;
+        ok = followed.Status().region.left == selected.left + 80 && followed.Stop(false) &&
+             Pump([&] { return Finished(followed); }) && followed.Status().state == State::Done && ok;
+        std::wcout << L"Follow result: " << followed.Status().message << L"\n";
+        followed.Shutdown();
+        SetWindowPos(source, nullptr, region.left, region.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        const auto resizedPath = followedPath.parent_path() / (followedPath.stem().wstring() + L"-resize.mp4");
+        RecordSession resizing({}, selected, resizedPath.wstring(), true, options);
+        ok = resizing.Start() && Pump([&] { return resizing.Status().state == State::Recording || Finished(resizing); }) && ok;
+        SetWindowPos(source, nullptr, 0, 0, 330, 190, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        ok = Pump([&] { return Finished(resizing); }) && resizing.Status().state == State::Failed && ok;
+        resizing.Shutdown();
+        SetWindowPos(source, nullptr, region.left, region.top, 320, 180, SWP_NOZORDER | SWP_NOACTIVATE);
+        const auto closedPath = followedPath.parent_path() / (followedPath.stem().wstring() + L"-close.mp4");
+        RecordSession closingSource({}, selected, closedPath.wstring(), true, options);
+        ok = closingSource.Start() && Pump([&] { return closingSource.Status().state == State::Recording || Finished(closingSource); }) && ok;
+        DestroyWindow(source); // Only this test's window; never a user process/window.
+        source = nullptr;
+        ok = Pump([&] { return Finished(closingSource); }) && closingSource.Status().state == State::Failed && ok;
+        closingSource.Shutdown();
+        std::cout << "Window follow movement, pause/reopen movement, resize and source-close termination " << (ok ? "passed" : "FAILED") << '\n';
+    } catch (const winrt::hresult_error &e) { std::wcerr << L"Follow: " << e.message().c_str() << '\n'; ok = false; }
+    if (source) KillTimer(source, 1);
     DestroyWindow(excluded);
     DestroyWindow(source);
     UnregisterClassW(wc.lpszClassName, wc.hInstance);

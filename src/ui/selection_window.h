@@ -34,6 +34,7 @@ struct SelectionResult {
     std::vector<uint32_t> overlayPixels;   // Transparent ARGB annotation overlay for PiP
     AnnotationEngine      annotationEngine; // Preserves vector shapes for secondary editing
     std::wstring          pluginId;
+    std::wstring          pluginActionId;
     RECT                  screenRegion{};
 
     SelectionResult() = default;
@@ -48,6 +49,7 @@ struct SelectionResult {
         , overlayPixels(other.overlayPixels)
         , annotationEngine(other.annotationEngine.Clone())
         , pluginId(other.pluginId)
+        , pluginActionId(other.pluginActionId)
         , screenRegion(other.screenRegion)
     {}
     SelectionResult& operator=(const SelectionResult& other) {
@@ -60,6 +62,7 @@ struct SelectionResult {
             overlayPixels = other.overlayPixels;
             annotationEngine = other.annotationEngine.Clone();
             pluginId = other.pluginId;
+            pluginActionId = other.pluginActionId;
             screenRegion = other.screenRegion;
         }
         return *this;
@@ -119,6 +122,7 @@ private:
         int             widthVal = 0;
         std::wstring    label;
         std::wstring    pluginId;
+        std::wstring    pluginActionId;
         bool            hovered  = false;
         bool            selected = false;
         bool            isSeparator = false;
@@ -128,7 +132,7 @@ private:
     void DrawToolbar(HDC hdc);
     void DrawInfoBox(HDC hdc, RECT selectionRect);
     HBITMAP CaptureSelectedRegion(RECT localRect);
-    void FinishWithAction(SelectionAction action, std::wstring pluginId = {});
+    void FinishWithAction(SelectionAction action, std::wstring pluginId = {}, std::wstring actionId = {});
     void CommitTextEdit();
 
     // ---- Members ----

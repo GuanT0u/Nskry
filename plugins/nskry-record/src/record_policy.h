@@ -88,11 +88,11 @@ inline bool ValidSampleTime(int64_t time, int64_t duration, int64_t previousEnd)
 }
 inline bool ValidFrameFormat(uint32_t width, uint32_t height, uint32_t fps) {
     return width >= 2 && height >= 2 && width <= 1920 && height <= 1920 && !(width & 1) && !(height & 1) &&
-           (width <= 1080 || height <= 1080) && uint64_t(width) * height <= 1920 * 1080 && fps >= 1 && fps <= 30;
+           (width <= 1080 || height <= 1080) && uint64_t(width) * height <= 1920 * 1080 && fps >= 1 && fps <= 60;
 }
 // Single pending sample + latest frame: no catch-up burst after a slow encoder.
 struct FrameSchedule {
-    explicit FrameSchedule(unsigned fps = 20) : interval(10000000 / std::clamp(fps, 1u, 30u)) {
+    explicit FrameSchedule(unsigned fps = 20) : interval(10000000 / std::clamp(fps, 1u, 60u)) {
     }
     bool Due(int64_t now) const {
         return now >= next;

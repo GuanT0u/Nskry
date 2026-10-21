@@ -3,6 +3,8 @@
 #include "pch.h"
 #include <cstring>
 #include <shellscalingapi.h>
+#include <dwmapi.h>
+#pragma comment(lib, "dwmapi.lib")
 
 namespace nskry {
 namespace {
@@ -11,6 +13,9 @@ struct RegionStream {
     HMONITOR monitor{};
     MONITORINFOEXW initial{};
     RECT region{};
+    HWND window{};
+    DWORD windowPid{}, windowThread{};
+    RECT windowFrame{}, relative{};
     uint32_t width{}, height{};
     UINT dpiX{}, dpiY{};
     std::shared_ptr<std::atomic<bool>> closed = std::make_shared<std::atomic<bool>>(false);
@@ -42,11 +47,11 @@ void Error(wchar_t *text, uint32_t capacity, const wchar_t *message) {
     if (text && capacity)
         wcsncpy_s(text, capacity, message, _TRUNCATE);
 }
-HRESULT __cdecl Open(RECT region, uint32_t fps, void **handle, NskryCaptureDescriptionV1 *output, wchar_t *error,
-                     uint32_t capacity) {
+HRESULT OpenSource(RECT region, uint32_t fps, HWND window, void **handle, NskryCaptureDescriptionV1 *output,
+                   wchar_t *error, uint32_t capacity, uint32_t maxLong = 1920, uint32_t maxShort = 1080) {
     if (handle)
         *handle = nullptr;
-    if (!handle || !output || output->structSize < sizeof(*output) || output->version != 1 || fps < 1 || fps > 30)
+    if (!handle || !output || output->structSize < sizeof(*output) || output->version != 1 || fps < 1 || fps > 60)
         return E_INVALIDARG;
     try {
         auto stream = std::make_unique<RegionStream>();
@@ -65,8 +70,23 @@ HRESULT __cdecl Open(RECT region, uint32_t fps, void **handle, NskryCaptureDescr
             return E_INVALIDARG;
         }
         stream->region = region;
+        if (window) {
+            RECT frame{};
+            if (!IsWindow(window) || IsIconic(window) ||
+                FAILED(DwmGetWindowAttribute(window, DWMWA_EXTENDED_FRAME_BOUNDS, &frame, sizeof(frame))) ||
+                region.left < frame.left || region.top < frame.top || region.right > frame.right ||
+                region.bottom > frame.bottom) {
+                Error(error, capacity, L"Follow recording needs a region entirely inside one visible window.");
+                return E_INVALIDARG;
+            }
+            stream->window = window;
+            stream->windowThread = GetWindowThreadProcessId(window, &stream->windowPid);
+            stream->windowFrame = frame;
+            stream->relative = {region.left - frame.left, region.top - frame.top,
+                                region.right - frame.left, region.bottom - frame.top};
+        }
         winrt::check_hresult(GetDpiForMonitor(stream->monitor, MDT_EFFECTIVE_DPI, &stream->dpiX, &stream->dpiY));
-        const double scale = (std::min)(1.0, (std::min)(1920.0 / (std::max)(w, h), 1080.0 / (std::min)(w, h)));
+        const double scale = (std::min)(1.0, (std::min)(double(maxLong) / (std::max)(w, h), double(maxShort) / (std::min)(w, h)));
         stream->width = (std::max)(2u, uint32_t(w * scale) & ~1u);
         stream->height = (std::max)(2u, uint32_t(h * scale) & ~1u);
         if (w * scale < 2 || h * scale < 2) {
@@ -76,11 +96,22 @@ HRESULT __cdecl Open(RECT region, uint32_t fps, void **handle, NskryCaptureDescr
         stream->device = std::make_unique<D3DDevice>();
         auto interop = winrt::get_activation_factory<winrt::Windows::Graphics::Capture::GraphicsCaptureItem,
                                                      IGraphicsCaptureItemInterop>();
-        winrt::check_hresult(interop->CreateForMonitor(
+        if (window)
+            winrt::check_hresult(interop->CreateForWindow(
+                window, winrt::guid_of<winrt::Windows::Graphics::Capture::GraphicsCaptureItem>(),
+                winrt::put_abi(stream->item)));
+        else
+            winrt::check_hresult(interop->CreateForMonitor(
             stream->monitor, winrt::guid_of<winrt::Windows::Graphics::Capture::GraphicsCaptureItem>(),
             winrt::put_abi(stream->item)));
         stream->closedToken =
             stream->item.Closed([closed = stream->closed](auto const &, auto const &) { closed->store(true); });
+        const auto sourceSize = stream->item.Size();
+        if (sourceSize.Width < 2 || sourceSize.Height < 2 || sourceSize.Width > 8192 || sourceSize.Height > 8192 ||
+            int64_t(sourceSize.Width) * sourceSize.Height > 16777216) {
+            Error(error, capacity, L"Capture source exceeds the bounded 16-megapixel frame pool.");
+            return E_BOUNDS;
+        }
         stream->pool = winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool::CreateFreeThreaded(
             stream->device->WinRTDevice(),
             winrt::Windows::Graphics::DirectX::DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, stream->item.Size());
@@ -116,6 +147,20 @@ HRESULT __cdecl Read(void *handle, uint8_t *output, uint32_t capacity) {
             wcscmp(now.szDevice, s->initial.szDevice) || s->closed->load() ||
             FAILED(GetDpiForMonitor(s->monitor, MDT_EFFECTIVE_DPI, &dpiX, &dpiY)) || dpiX != s->dpiX || dpiY != s->dpiY)
             return HRESULT_FROM_WIN32(ERROR_DEVICE_NOT_CONNECTED);
+        if (s->window) {
+            RECT frame{};
+            DWORD pid{};
+            if (!IsWindow(s->window) || IsIconic(s->window) ||
+                GetWindowThreadProcessId(s->window, &pid) != s->windowThread || pid != s->windowPid ||
+                FAILED(DwmGetWindowAttribute(s->window, DWMWA_EXTENDED_FRAME_BOUNDS, &frame, sizeof(frame))) ||
+                frame.right - frame.left != s->windowFrame.right - s->windowFrame.left ||
+                frame.bottom - frame.top != s->windowFrame.bottom - s->windowFrame.top ||
+                GetDpiForWindow(s->window) != s->dpiX ||
+                MonitorFromWindow(s->window, MONITOR_DEFAULTTONULL) != s->monitor)
+                return HRESULT_FROM_WIN32(ERROR_DEVICE_NOT_CONNECTED);
+            s->region = {frame.left + s->relative.left, frame.top + s->relative.top,
+                         frame.left + s->relative.right, frame.top + s->relative.bottom};
+        }
         winrt::check_hresult(s->device->Device()->GetDeviceRemovedReason());
         auto frame = s->pool.TryGetNextFrame();
         if (!frame)
@@ -135,8 +180,9 @@ HRESULT __cdecl Read(void *handle, uint8_t *output, uint32_t capacity) {
             frame = std::move(newer);
         }
         const auto size = frame.ContentSize();
-        if (size.Width != now.rcMonitor.right - now.rcMonitor.left ||
-            size.Height != now.rcMonitor.bottom - now.rcMonitor.top)
+        const RECT sourceBounds = s->window ? s->windowFrame : now.rcMonitor;
+        if (size.Width != sourceBounds.right - sourceBounds.left ||
+            size.Height != sourceBounds.bottom - sourceBounds.top)
             return HRESULT_FROM_WIN32(ERROR_DEVICE_NOT_CONNECTED);
         auto access = frame.Surface().as<::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
         winrt::com_ptr<ID3D11Texture2D> source;
@@ -152,7 +198,8 @@ HRESULT __cdecl Read(void *handle, uint8_t *output, uint32_t capacity) {
             desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
             winrt::check_hresult(s->device->Device()->CreateTexture2D(&desc, nullptr, s->staging.put()));
         }
-        const UINT x = s->region.left - now.rcMonitor.left, y = s->region.top - now.rcMonitor.top;
+        const UINT x = s->window ? s->relative.left : s->region.left - now.rcMonitor.left;
+        const UINT y = s->window ? s->relative.top : s->region.top - now.rcMonitor.top;
         D3D11_TEXTURE2D_DESC sourceDesc{};
         source->GetDesc(&sourceDesc);
         if (x + w > sourceDesc.Width || y + h > sourceDesc.Height)
@@ -183,9 +230,36 @@ HRESULT __cdecl Read(void *handle, uint8_t *output, uint32_t capacity) {
 void __cdecl Close(void *handle) {
     delete static_cast<RegionStream *>(handle);
 }
+HRESULT __cdecl Open(RECT r, uint32_t fps, void **h, NskryCaptureDescriptionV1 *d, wchar_t *e, uint32_t n) {
+    if (h) *h = nullptr;
+    if (fps > 30)
+        return E_INVALIDARG; // Preserve v1's documented ceiling.
+    return OpenSource(r, fps, nullptr, h, d, e, n);
+}
+HRESULT __cdecl OpenV2(const NskryCaptureRequestV2 *r, void **h, NskryCaptureDescriptionV1 *d, wchar_t *e, uint32_t n) {
+    if (h) *h = nullptr;
+    if (!r || r->structSize < sizeof(*r) || r->version != 2)
+        return E_INVALIDARG;
+    const auto maxLong = r->maxLongSide ? r->maxLongSide : 1920;
+    const auto maxShort = r->maxShortSide ? r->maxShortSide : 1080;
+    if (maxLong < 2 || maxLong > 1920 || maxShort < 2 || maxShort > 1080 || maxShort > maxLong)
+        return E_INVALIDARG;
+    return OpenSource(r->physicalRegion, r->fps, r->followWindow, h, d, e, n, maxLong, maxShort);
+}
+HRESULT __cdecl Bounds(void *handle, RECT *r) {
+    const auto *s = static_cast<const RegionStream *>(handle);
+    if (!s || !r || s->thread != GetCurrentThreadId())
+        return E_INVALIDARG;
+    *r = s->region;
+    return S_OK;
+}
 } // namespace
 const NskryCaptureServiceV1 &RegionCaptureService() {
     static const NskryCaptureServiceV1 service{sizeof(service), 1, Open, Read, Close};
+    return service;
+}
+const NskryCaptureServiceV2 &RegionCaptureServiceV2() {
+    static const NskryCaptureServiceV2 service{sizeof(service), 2, OpenV2, Read, Bounds, Close};
     return service;
 }
 } // namespace nskry

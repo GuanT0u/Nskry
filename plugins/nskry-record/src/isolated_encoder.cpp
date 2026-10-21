@@ -129,7 +129,10 @@ IsolatedEncoder::IsolatedEncoder(HANDLE canceled, std::filesystem::path executab
     : m_canceled(canceled), m_executable(std::move(executable)), m_timeout(operationTimeout) {
 }
 IsolatedEncoder::~IsolatedEncoder() = default;
-void IsolatedEncoder::Open(const std::wstring &path, UINT width, UINT height, UINT fps, bool hardware) {
+void IsolatedEncoder::Open(const std::wstring &path, UINT width, UINT height, UINT fps, bool hardware, uint32_t bitrate,
+                           bool gif) {
+    if (bitrate && (bitrate < 500000 || bitrate > 24000000))
+        winrt::throw_hresult(E_INVALIDARG);
     if (m_channel || !ValidFrameFormat(width, height, fps) || path.empty() || path.size() >= 32768 ||
         path.find(L'\0') != std::wstring::npos || !m_timeout)
         winrt::throw_hresult(E_INVALIDARG);
@@ -146,7 +149,7 @@ void IsolatedEncoder::Open(const std::wstring &path, UINT width, UINT height, UI
     auto &c = *m_channel;
     c.canceled = m_canceled;
     c.timeout = m_timeout;
-    c.pixelBytes = width * height * 3 / 2;
+    c.pixelBytes = gif ? width * height * 4 : width * height * 3 / 2;
     c.width = width;
     c.height = height;
     c.fps = fps;
@@ -166,6 +169,8 @@ void IsolatedEncoder::Open(const std::wstring &path, UINT width, UINT height, UI
     h.width = width;
     h.height = height;
     h.fps = fps;
+    h.bitrate = bitrate;
+    h.gif = gif;
     h.hardware = hardware;
     h.pixelBytes = c.pixelBytes;
     wcscpy_s(h.path, target.c_str());
@@ -217,7 +222,10 @@ void IsolatedEncoder::Write(const uint8_t *bgra, int64_t time, int64_t duration)
     auto &h = *c.view.value;
     // The sole slot belongs to this worker until Call signals it to the child.
     // Converted NV12 needs 3/8 of the BGRA transfer size, no unbounded pipe queue.
-    BgraToNv12(bgra, reinterpret_cast<uint8_t *>(&h + 1), c.width, c.height);
+    if (h.gif)
+        memcpy(&h + 1, bgra, c.pixelBytes);
+    else
+        BgraToNv12(bgra, reinterpret_cast<uint8_t *>(&h + 1), c.width, c.height);
     h.time = time;
     h.duration = duration;
     c.Call(wire::Command::Frame);
@@ -229,6 +237,22 @@ void IsolatedEncoder::Finalize() {
         winrt::throw_hresult(MF_E_INVALIDREQUEST);
     m_finalizationAttempted = true;
     m_channel->Call(wire::Command::Finalize);
+}
+void IsolatedEncoder::Trim(const std::wstring &input, int64_t start, int64_t end) {
+    if (!m_channel || m_samples || input.empty() || input.size() >= 32768 || start < 0 || end <= start)
+        winrt::throw_hresult(E_INVALIDARG);
+    auto &c = *m_channel;
+    auto &h = *c.view.value;
+    wcscpy_s(h.inputPath, input.c_str());
+    h.trimStart = start;
+    h.trimEnd = end;
+    const auto timeout = c.timeout;
+    c.timeout = 300000; // Explicit bounded export, cancellation interrupts IPC immediately.
+    try { c.Call(wire::Command::Trim); }
+    catch (...) { c.timeout = timeout; throw; }
+    c.timeout = timeout;
+    m_samples = h.samples;
+    m_lastEnd = end - start;
 }
 bool IsolatedEncoder::Close() noexcept {
     return !m_channel || m_channel->Close();

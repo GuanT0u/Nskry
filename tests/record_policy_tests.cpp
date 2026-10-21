@@ -1,7 +1,21 @@
 #include "record_policy.h"
+#include "record_options.h"
+#include "record_trim.h"
 #include <iostream>
 int main() {
     using namespace nskry::record;
+    Options decoded;
+    if (!DecodeDefaults(EncodeDefaults({60, Quality::Hd}), decoded) || decoded.fps != 60 || decoded.quality != Quality::Hd ||
+        DecodeDefaults(0, decoded) || DecodeDefaults((2u << 16) | (30u << 8), decoded))
+        return 19;
+    if (!ValidOptions({30, Quality::High}) || !ValidOptions({60, Quality::Hd}) ||
+        ValidOptions({20, Quality::Medium}) || ValidOptions({30, Quality(3)}) ||
+        !(Bitrate(1920, 1080, 60, Quality::Hd) > Bitrate(1920, 1080, 60, Quality::High)) ||
+        !(Bitrate(1920, 1080, 60, Quality::High) > Bitrate(1920, 1080, 60, Quality::Medium)) ||
+        !ValidTrim(1, 10, 10) || ValidTrim(-1, 2, 3) || ValidTrim(3, 3, 3) || ValidTrim(1, 4, 3) ||
+        ClipSample(5, 10, 8, 12).time != 0 || ClipSample(5, 10, 8, 12).duration != 4 ||
+        ClipSample(INT64_MAX, 1, 0, 10).duration || !ValidFrameFormat(1920, 1080, 60))
+        return 18;
     Timeline t;
     if (!t.Start() || t.Start() || !t.Ready(100) || t.Elapsed(150) != 50)
         return 1;
@@ -36,7 +50,7 @@ int main() {
     if (s.Due(10000001) || s.next != 10500000)
         return 11;
     Timeline publish;
-    if (FrameSchedule(0).interval != 10000000 || FrameSchedule(999).interval != 333333)
+    if (FrameSchedule(0).interval != 10000000 || FrameSchedule(999).interval != 166666)
         return 13;
     publish.Start();
     publish.Ready(0);

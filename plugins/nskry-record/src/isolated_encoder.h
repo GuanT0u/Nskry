@@ -15,9 +15,11 @@ class IsolatedEncoder {
     ~IsolatedEncoder();
     IsolatedEncoder(const IsolatedEncoder &) = delete;
     IsolatedEncoder &operator=(const IsolatedEncoder &) = delete;
-    void Open(const std::wstring &path, UINT width, UINT height, UINT fps, bool hardware = true);
+    void Open(const std::wstring &path, UINT width, UINT height, UINT fps, bool hardware = true, uint32_t bitrate = 0,
+              bool gif = false);
     void Write(const uint8_t *bgra, int64_t time, int64_t duration);
     void Finalize();
+    void Trim(const std::wstring &input, int64_t start, int64_t end);
     bool Close() noexcept; // True only after the child process is signaled/exited.
     bool CreatedFile() const;
     bool Finalized() const;

@@ -15,7 +15,7 @@ class MfEncoder {
     MfEncoder(const MfEncoder &) = delete;
     MfEncoder &operator=(const MfEncoder &) = delete;
     void Open(const std::wstring &temporary, UINT width, UINT height, UINT fps, bool preferHardware = true,
-              volatile LONG *created = nullptr);
+              volatile LONG *created = nullptr, uint32_t bitrate = 0);
     // Internal stream sink (e.g. quota/error regression). AddRefs caller's stream,
     // does not own/delete a path, no destructive automatic retry on caller data.
     void OpenStream(IMFByteStream *stream, UINT width, UINT height, UINT fps);
@@ -50,7 +50,7 @@ class MfEncoder {
     winrt::com_ptr<IMFSinkWriter> m_writer;
     winrt::com_ptr<IMFByteStream> m_file;
     std::wstring m_path, m_backend;
-    UINT m_width{}, m_height{}, m_fps{};
+    UINT m_width{}, m_height{}, m_fps{}, m_bitrate{};
     DWORD m_stream{};
     uint64_t m_samples{};
     bool m_ownsFile = false;

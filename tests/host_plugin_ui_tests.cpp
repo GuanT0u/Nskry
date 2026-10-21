@@ -125,6 +125,24 @@ struct SelectionWindowTestAccess {
             window.m_windows.clear();window.OnLButtonDown(30,40);window.OnLButtonUp(90,100);
         }
         if(!direct)return false;
+        bool extra = false;
+        {
+            SelectionWindow actionWindow([&](SelectionAction action, SelectionResult result) {
+                extra = action == SelectionAction::Plugin && result.pluginId == L"org.test" &&
+                        result.pluginActionId == L"gif";
+                if (result.bitmap) DeleteObject(result.bitmap);
+            }, {{L"org.test", L"GIF", L"gif"}});
+            actionWindow.m_windows.clear();
+            actionWindow.OnLButtonDown(30, 40); actionWindow.OnLButtonUp(130, 140);
+            for (const auto &item : actionWindow.m_toolbarItems) {
+                if (item.pluginActionId == L"gif") {
+                    const int x = item.rect.left + 3, y = item.rect.top + 3;
+                    actionWindow.OnLButtonDown(x, y);
+                    break;
+                }
+            }
+        }
+        if (!extra) return false;
         SelectionWindow window([](SelectionAction, SelectionResult) {});
         // Deterministic empty-space target list, regardless of real desktop apps.
         // The overlay stays hidden; no input is sent to other processes.
@@ -250,7 +268,7 @@ int wmain() {
     std::filesystem::remove(testDirectory / L"Nskry" / L"config" / L"settings.json");
     std::filesystem::remove(testDirectory / L"Nskry" / L"config");
     std::filesystem::remove(testDirectory / L"Nskry"); std::filesystem::remove(testDirectory);
-    int networkCalls = 0;
+    int networkCalls = 0, pluginSettingsCalls = 0;
     SettingsWindowServices services;
     services.getSettings = [] { return UserSettings{}; };
     services.getPlugins = [] {
@@ -258,7 +276,12 @@ int wmain() {
         item.id = L"org.example.image"; item.name = L"Test image plugin";
         item.description = L"Plugin description from manifest only"; item.author = L"Test author";
         item.version = L"1.0.0"; item.status = L"Enabled - Not loaded"; item.loadPolicy = L"on_demand";
+        item.hasSettings = true;
         return std::vector<SettingsPluginItem>{item};
+    };
+    services.showPluginSettings = [&](const std::wstring &id, HWND owner) {
+        ++pluginSettingsCalls;
+        return id == L"org.example.image" && owner;
     };
     UpdateTask::Completion pendingUpdate;int updateCancels=0;
     services.checkPluginUpdates = [&](UpdateTask::Completion completion) { ++networkCalls;pendingUpdate=std::move(completion);return true; };
@@ -276,10 +299,13 @@ int wmain() {
     NMHDR selected{tabs, 100, TCN_SELCHANGE}; SendMessageW(window, WM_NOTIFY, 100, reinterpret_cast<LPARAM>(&selected));
     ok &= Expect(Text(GetDlgItem(window, 125)).find(L"Plugin description from manifest only") != std::wstring::npos, "selected plugin description shown");
     ok &= Expect(Text(GetDlgItem(window, 125)).find(L"Local / unverified") != std::wstring::npos, "source does not imply certified publisher");
-    for (int id : {120, 121, 122, 123, 124, 125, 126, 127})
+    for (int id : {120, 121, 122, 123, 124, 125, 126, 127, 128})
         ok &= Expect(InClient(window, GetDlgItem(window, id)) && IsWindowVisible(GetDlgItem(window, id)), "plugin controls fit default client");
     SetWindowPos(window, nullptr, 0, 0, 1000, 800, SWP_NOMOVE | SWP_NOZORDER);
-    for (int id : {120, 125, 126, 127}) ok &= Expect(InClient(window, GetDlgItem(window, id)), "resized plugin controls fit");
+    for (int id : {120, 125, 126, 127, 128}) ok &= Expect(InClient(window, GetDlgItem(window, id)), "resized plugin controls fit");
+    ok &= Expect(pluginSettingsCalls == 0 && IsWindowEnabled(GetDlgItem(window, 128)), "plugin settings metadata discovery is inert");
+    SendMessageW(window, WM_COMMAND, 128, LPARAM(GetDlgItem(window, 128)));
+    ok &= Expect(pluginSettingsCalls == 1, "plugin settings opens only on explicit click");
     ok &= Expect(networkCalls == 0, "opening plugins page does not request updates");
     SendMessageW(window,WM_COMMAND,124,LPARAM(GetDlgItem(window,124)));
     auto stale=pendingUpdate;
