@@ -68,6 +68,39 @@ void Memory(const char *name) {
     std::cout << name << " private=" << m.PrivateUsage << " working=" << m.WorkingSetSize
               << " peak=" << m.PeakWorkingSetSize << " handles=" << handles << '\n';
 }
+bool VerifyScaledCapture(HWND source, RECT region) {
+    auto service = nskry::RegionCaptureServiceV2();
+    bool ok = true;
+    for (HWND follow : {HWND{}, source}) {
+        NskryCaptureRequestV2 request{sizeof(request), 2, region, 30, follow, 160, 90};
+        NskryCaptureDescriptionV1 description{sizeof(description), 1};
+        void* session{};
+        wchar_t error[512]{};
+        HRESULT status = service.open(&request, &session, &description, error, 512);
+        std::vector<uint8_t> pixels(160 * 90 * 4);
+        if (SUCCEEDED(status) && description.width == 160 && description.height == 90) {
+            bool ready = false;
+            Pump([&] {
+                if (!ready) {
+                    status = service.read(session, pixels.data(), UINT(pixels.size()));
+                    ready = status != S_FALSE;
+                }
+                return ready;
+            }, 5000);
+        } else if (SUCCEEDED(status))
+            status = E_BOUNDS;
+        if (session)
+            service.close(session);
+        size_t green = 0;
+        for (size_t i = 0; i < pixels.size(); i += 4)
+            green += pixels[i] == 50 && pixels[i + 1] == 170 && pixels[i + 2] == 30;
+        const bool passed = status == S_OK && green > 160 * 90 * 9 / 10;
+        std::cout << "Scaled owned capture follow=" << bool(follow) << " status=0x" << std::hex << status
+                  << std::dec << " green_pixels=" << green << " passed=" << passed << '\n';
+        ok = passed && ok;
+    }
+    return ok;
+}
 } // namespace
 int wmain(int argc, wchar_t **argv) {
     if (argc != 2)
@@ -129,6 +162,7 @@ int wmain(int argc, wchar_t **argv) {
                                  error, 512)) &&
              !invalid;
         Memory("idle");
+        ok = VerifyScaledCapture(source, region) && ok;
         const auto start = GetTickCount64();
         const auto cpuStart = Cpu();
         SessionOptions fixed;

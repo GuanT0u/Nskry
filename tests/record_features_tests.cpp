@@ -129,6 +129,7 @@ bool Video(const std::filesystem::path &path, int64_t expected, UINT fps) {
     return frames > 5 && std::abs(length - expected) < 100000 && n == fps * d;
 }
 bool AdaptiveColors(const std::filesystem::path &root, bool complex = false) {
+    constexpr std::array<unsigned, 8> scenes{0, 1, 2, 3, 3, 3, 0, 0};
     constexpr std::array<std::array<uint8_t, 3>, 8> colors{{{31, 31, 31},
                                                             {49, 40, 39},
                                                             {23, 22, 35},
@@ -142,10 +143,10 @@ bool AdaptiveColors(const std::filesystem::path &root, bool complex = false) {
     {
         IsolatedEncoder encoder;
         encoder.Open(path.wstring(), 160, 90, 10, false, 0, true);
-        for (int frame = 0; frame < 2; ++frame) {
+        for (unsigned frame = 0; frame < scenes.size(); ++frame) {
             for (int y = 0; y < 90; ++y)
                 for (int x = 0; x < 160; ++x) {
-                    const auto &c = colors[(x / 20 + frame) % 8];
+                    const auto &c = colors[(x / 20 + scenes[frame]) % 8];
                     auto *p = pixels.data() + (y * 160 + x) * 4;
                     p[0] = c[0];
                     p[1] = c[1];
@@ -157,6 +158,10 @@ bool AdaptiveColors(const std::filesystem::path &root, bool complex = false) {
                         p[2] = uint8_t(x + y);
                     }
                 }
+            if (!complex && frame == 4) {
+                const std::array<uint8_t, 4> changed{11, 45, 88, 255};
+                memcpy(pixels.data() + (10 * 160 + 10) * 4, changed.data(), changed.size());
+            }
             encoder.Write(pixels.data(), frame * 1000000LL, 1000000);
         }
         encoder.Finalize();
@@ -167,7 +172,7 @@ bool AdaptiveColors(const std::filesystem::path &root, bool complex = false) {
     winrt::check_hresult(factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
                                                             WICDecodeMetadataCacheOnDemand, decoder.put()));
     int error = 0;
-    for (UINT f = 0; f < 2; ++f) {
+    for (UINT f = 0; f < scenes.size(); ++f) {
         winrt::com_ptr<IWICBitmapFrameDecode> frame;
         winrt::check_hresult(decoder->GetFrame(f, frame.put()));
         winrt::com_ptr<IWICFormatConverter> converter;
@@ -175,11 +180,16 @@ bool AdaptiveColors(const std::filesystem::path &root, bool complex = false) {
         winrt::check_hresult(converter->Initialize(frame.get(), GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone,
                                                    nullptr, 0, WICBitmapPaletteTypeCustom));
         winrt::check_hresult(converter->CopyPixels(nullptr, 640, UINT(pixels.size()), pixels.data()));
+        if (!complex) {
+            const auto& expected = f == 4 ? std::array<uint8_t, 3>{11, 45, 88} : colors[scenes[f] % 8];
+            for (int c = 0; c < 3; ++c)
+                error = (std::max)(error, std::abs(int(pixels[(10 * 160 + 10) * 4 + c]) - expected[c]));
+        }
         for (int i = 0; i < 8; ++i)
             for (int c = 0; c < 3; ++c)
-                if (!complex || (i + f) % 8 == 0)
+                if (!complex || (i + scenes[f]) % 8 == 0)
                     error = (std::max)(error, std::abs(int(pixels[(45 * 160 + i * 20 + 10) * 4 + c]) -
-                                                       colors[(i + f) % 8][c]));
+                                                       colors[(i + scenes[f]) % 8][c]));
     }
     std::cout << "Adaptive GIF max channel error=" << error << '\n';
     return error <= 6;

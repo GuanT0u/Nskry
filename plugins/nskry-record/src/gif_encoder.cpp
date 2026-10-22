@@ -2,6 +2,7 @@
 #include "gif_palette.h"
 #include "record_policy.h"
 #include <array>
+#include <cstring>
 #include <shlwapi.h>
 namespace nskry::record {
 void GifEncoder::Open(const std::wstring &path, UINT width, UINT height, volatile LONG *created) {
@@ -37,6 +38,51 @@ void GifEncoder::Write(const uint8_t *bgra, int64_t time, int64_t duration) {
     winrt::check_hresult(m_stream->Stat(&stat, STATFLAG_NONAME));
     if (stat.cbSize.QuadPart >= 128ULL * 1024 * 1024)
         winrt::throw_hresult(HRESULT_FROM_WIN32(ERROR_FILE_TOO_LARGE));
+    uint64_t signature = 14695981039346656037ULL;
+    for (size_t i = 0; i < 32; ++i) {
+        uint32_t pixel{};
+        memcpy(&pixel, bgra + (i * (m_indices.size() - 1) / 31) * 4, sizeof(pixel));
+        signature = (signature ^ pixel) * 1099511628211ULL;
+    }
+    const bool similar = m_frames && signature == m_signature;
+    m_signature = signature;
+    // The signature only avoids cache copies in obvious animation. Exact
+    // comparison is always required to reuse a palette; hash collisions cannot
+    // cause incorrect pixels. Cache and indices must belong to the same frame.
+    if (!similar || !m_havePrevious || memcmp(m_previous.data(), bgra, m_previous.size())) {
+        Quantize(bgra);
+        m_havePrevious = similar;
+        if (m_havePrevious) {
+            m_previous.resize(m_indices.size() * 4);
+            memcpy(m_previous.data(), bgra, m_previous.size());
+        }
+    }
+    winrt::com_ptr<IWICBitmapFrameEncode> frame;
+    winrt::check_hresult(m_encoder->CreateNewFrame(frame.put(), nullptr));
+    winrt::check_hresult(frame->Initialize(nullptr));
+    winrt::check_hresult(frame->SetSize(m_width, m_height));
+    WICPixelFormatGUID format = GUID_WICPixelFormat8bppIndexed;
+    winrt::check_hresult(frame->SetPixelFormat(&format));
+    if (format != GUID_WICPixelFormat8bppIndexed)
+        winrt::throw_hresult(E_UNEXPECTED);
+    winrt::check_hresult(frame->SetPalette(m_palette.get()));
+    winrt::com_ptr<IWICMetadataQueryWriter> metadata;
+    winrt::check_hresult(frame->GetMetadataQueryWriter(metadata.put()));
+    const auto end = (time + duration + 50000) / 100000;
+    PROPVARIANT v{};
+    v.vt = VT_UI2;
+    v.uiVal = USHORT(std::clamp(end - m_delayEnd, int64_t(1), int64_t(65535)));
+    winrt::check_hresult(metadata->SetMetadataByName(L"/grctlext/Delay", &v));
+    v.vt = VT_UI1;
+    v.bVal = 1;
+    winrt::check_hresult(metadata->SetMetadataByName(L"/grctlext/Disposal", &v));
+    winrt::check_hresult(frame->WritePixels(m_height, m_width, UINT(m_indices.size()), m_indices.data()));
+    winrt::check_hresult(frame->Commit());
+    m_delayEnd = end;
+    m_end = time + duration;
+    ++m_frames;
+}
+void GifEncoder::Quantize(const uint8_t *bgra) {
     std::array<uint32_t, 256> exact{};
     uint32_t count{};
     if (ExactGifPalette(bgra, m_indices.size(), m_indices.data(), exact, count)) {
@@ -85,30 +131,6 @@ void GifEncoder::Write(const uint8_t *bgra, int64_t time, int64_t duration) {
                 m_indices[i] = grays[p[0]];
         }
     }
-    winrt::com_ptr<IWICBitmapFrameEncode> frame;
-    winrt::check_hresult(m_encoder->CreateNewFrame(frame.put(), nullptr));
-    winrt::check_hresult(frame->Initialize(nullptr));
-    winrt::check_hresult(frame->SetSize(m_width, m_height));
-    WICPixelFormatGUID format = GUID_WICPixelFormat8bppIndexed;
-    winrt::check_hresult(frame->SetPixelFormat(&format));
-    if (format != GUID_WICPixelFormat8bppIndexed)
-        winrt::throw_hresult(E_UNEXPECTED);
-    winrt::check_hresult(frame->SetPalette(m_palette.get()));
-    winrt::com_ptr<IWICMetadataQueryWriter> metadata;
-    winrt::check_hresult(frame->GetMetadataQueryWriter(metadata.put()));
-    const auto end = (time + duration + 50000) / 100000;
-    PROPVARIANT v{};
-    v.vt = VT_UI2;
-    v.uiVal = USHORT(std::clamp(end - m_delayEnd, int64_t(1), int64_t(65535)));
-    winrt::check_hresult(metadata->SetMetadataByName(L"/grctlext/Delay", &v));
-    v.vt = VT_UI1;
-    v.bVal = 1; // Keep full canvas, no transparent disposal artefacts.
-    winrt::check_hresult(metadata->SetMetadataByName(L"/grctlext/Disposal", &v));
-    winrt::check_hresult(frame->WritePixels(m_height, m_width, UINT(m_indices.size()), m_indices.data()));
-    winrt::check_hresult(frame->Commit());
-    m_delayEnd = end;
-    m_end = time + duration;
-    ++m_frames;
 }
 void GifEncoder::Finalize() {
     if (!m_encoder || !m_frames || m_finalized)

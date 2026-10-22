@@ -86,6 +86,14 @@ struct MonitorControllerTestAccess {
             protectedInteraction = false; controller.Evaluate(); ok &= hidden;
             controller.SetOverride(MonitorHideOverride::Disabled); controller.Evaluate();
             ok &= !hidden && !paused && !controller.EventsAvailable();
+            ShowWindow(pip, SW_SHOWMINNOACTIVE);
+            controller.Evaluate();
+            ok &= !hidden && paused && !released;
+            SendMessageW(controller.m_hwnd, WM_TIMER, 1, 0);
+            ok &= controller.m_destroyHook ? released : !released;
+            ShowWindow(pip, SW_SHOWNOACTIVATE);
+            controller.Evaluate();
+            ok &= !IsIconic(pip) && !hidden && !paused && !released;
             controller.SetOverride(MonitorHideOverride::Enabled); controller.Evaluate(); ok &= hidden;
             DestroyWindow(source); controller.Evaluate(); controller.Evaluate(); ok &= closeReports == 1;
         }

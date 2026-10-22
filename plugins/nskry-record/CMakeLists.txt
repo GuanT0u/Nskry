@@ -80,10 +80,11 @@ if(BUILD_TESTING)
     add_test(NAME NskryRecordSessionTests COMMAND NskryRecordSessionTests "${CMAKE_BINARY_DIR}")
     set_tests_properties(NskryRecordSessionTests PROPERTIES TIMEOUT 45)
     add_executable(NskryRecordCaptureTests ${CMAKE_SOURCE_DIR}/tests/record_capture_tests.cpp
-        ${CMAKE_SOURCE_DIR}/src/capture/region_stream.cpp ${CMAKE_SOURCE_DIR}/src/capture/d3d_device.cpp)
+        ${CMAKE_SOURCE_DIR}/src/capture/region_stream.cpp ${CMAKE_SOURCE_DIR}/src/capture/d3d_device.cpp
+        ${CMAKE_SOURCE_DIR}/src/capture/gpu_region_readback.cpp)
     target_include_directories(NskryRecordCaptureTests PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src)
     target_compile_definitions(NskryRecordCaptureTests PRIVATE WINRT_LEAN_AND_MEAN)
-    target_link_libraries(NskryRecordCaptureTests PRIVATE nskry_record_engine propsys psapi user32 gdi32 d3d11 dxgi shcore advapi32)
+    target_link_libraries(NskryRecordCaptureTests PRIVATE nskry_record_engine propsys psapi user32 gdi32 d3d11 dxgi d3dcompiler shcore advapi32)
     add_test(NAME NskryRecordCaptureTests COMMAND NskryRecordCaptureTests "${CMAKE_BINARY_DIR}")
     set_tests_properties(NskryRecordCaptureTests PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE)
     add_executable(NskryRecordPluginTests ${CMAKE_SOURCE_DIR}/tests/record_plugin_tests.cpp

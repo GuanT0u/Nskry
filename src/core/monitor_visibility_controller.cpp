@@ -29,13 +29,12 @@ void MonitorVisibilityController::SetGlobal(bool enabled) { m_global = enabled; 
 void MonitorVisibilityController::SetOverride(MonitorHideOverride choice) { m_override = choice; RegisterEvents(); Refresh(); }
 void MonitorVisibilityController::RegisterEvents() {
     const bool enabled = MonitorHideEnabled(m_global, m_override);
-    if (!enabled) {
-        for (auto& hook : {&m_foregroundHook, &m_destroyHook}) if (*hook) {
-            hooks.erase(*hook); UnhookWinEvent(*hook); *hook = nullptr;
-        }
-        KillTimer(m_hwnd, FallbackTimer); return;
+    if (!enabled && m_foregroundHook) {
+        hooks.erase(m_foregroundHook);
+        UnhookWinEvent(m_foregroundHook);
+        m_foregroundHook = nullptr;
     }
-    if (!m_foregroundHook) {
+    if (enabled && !m_foregroundHook) {
         m_foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
                                           nullptr, EventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
         if (m_foregroundHook) hooks[m_foregroundHook] = this;
@@ -46,7 +45,7 @@ void MonitorVisibilityController::RegisterEvents() {
                                        process, 0, WINEVENT_OUTOFCONTEXT);
         if (m_destroyHook) hooks[m_destroyHook] = this;
     }
-    if (!m_foregroundHook) SetTimer(m_hwnd, FallbackTimer, 250, nullptr);
+    if (enabled && !m_foregroundHook) SetTimer(m_hwnd, FallbackTimer, 250, nullptr);
     else KillTimer(m_hwnd, FallbackTimer);
 }
 void CALLBACK MonitorVisibilityController::EventProc(HWINEVENTHOOK hook, DWORD event, HWND hwnd,
@@ -85,7 +84,7 @@ void MonitorVisibilityController::Evaluate() {
         if (m_update) m_update(m_hidden, m_paused, false);
         KillTimer(m_hwnd, ReleaseTimer);
         // Hard suspension is only safe if target destruction remains tracked.
-        if (m_hidden && !m_released && m_destroyHook) SetTimer(m_hwnd, ReleaseTimer, 1000, nullptr);
+        if (m_paused && !m_released && m_destroyHook) SetTimer(m_hwnd, ReleaseTimer, 1000, nullptr);
     }
 }
 LRESULT CALLBACK MonitorVisibilityController::WndProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
@@ -97,8 +96,9 @@ LRESULT CALLBACK MonitorVisibilityController::WndProc(HWND hwnd, UINT message, W
         if (wp == FallbackTimer) self->Refresh();
         if (wp == ReleaseTimer) {
             KillTimer(hwnd, ReleaseTimer); self->Evaluate();
-            if (self->m_hidden && self->m_paused && self->m_destroyHook && !self->m_released && !self->m_sourceGone) {
-                self->m_released = true; if (self->m_update) self->m_update(true, true, true);
+            if (self->m_paused && self->m_destroyHook && !self->m_released && !self->m_sourceGone) {
+                self->m_released = true;
+                if (self->m_update) self->m_update(self->m_hidden, true, true);
             }
         }
         return 0;

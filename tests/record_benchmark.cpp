@@ -1,10 +1,12 @@
 #include "record_session.h"
+#include "isolated_encoder.h"
 #include <atomic>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
@@ -155,6 +157,76 @@ int64_t Verify(const std::filesystem::path &path, uint64_t expectedFrames) {
 }
 } // namespace
 int wmain(int argc, wchar_t **argv) {
+    if (argc == 4 && !wcscmp(argv[1], L"--gif-compare")) {
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        int result = 0;
+        try {
+            const auto root = std::filesystem::path(argv[2]) /
+                (L"gif-perf-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+            std::filesystem::create_directory(root);
+            std::ofstream metrics(root / L"metrics.csv");
+            if (!metrics) winrt::throw_hresult(E_FAIL);
+            metrics << "changes,current,wall_ms,child_cpu_ms,child_private_bytes\n";
+            for (UINT changes : {1u, 6u, 30u}) {
+                std::vector<uint8_t> baseline;
+                for (bool current : {false, true}) {
+                    const auto output = root / (std::to_wstring(changes) + (current ? L"-new.gif" : L"-old.gif"));
+                    IsolatedEncoder encoder(nullptr, current ? std::filesystem::path{} : argv[3]);
+                    encoder.Open(output.wstring(), 960, 540, 10, false, 0, true);
+                    std::vector<uint8_t> pixels(960 * 540 * 4);
+                    const auto start = GetTickCount64();
+                    for (UINT frame = 0; frame < 30; ++frame) {
+                        if (!(frame % (30 / changes)))
+                            for (UINT y = 0; y < 540; ++y)
+                                for (UINT x = 0; x < 960; ++x) {
+                                    auto* p = pixels.data() + (y * 960 + x) * 4;
+                                    p[0] = BYTE(x * 13 + y * 17 + frame);
+                                    p[1] = BYTE(x * 11 + frame);
+                                    p[2] = BYTE(y * 23 + frame);
+                                    p[3] = 255;
+                                }
+                        encoder.Write(pixels.data(), frame * 1000000LL, 1000000);
+                    }
+                    encoder.Finalize();
+                    PROCESS_MEMORY_COUNTERS_EX memory{};
+                    memory.cb = sizeof(memory);
+                    HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE,
+                                                  encoder.ProcessId());
+                    if (process) {
+                        GetProcessMemoryInfo(process, reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory), sizeof(memory));
+                        CloseHandle(process);
+                    }
+                    encoder.Close();
+                    const auto wall = GetTickCount64() - start;
+                    const auto cpu = encoder.CpuTime() / 10000.0;
+                    std::cout << "gif changes=" << changes << " current=" << current << " wall_ms="
+                              << wall << " child_cpu_ms=" << cpu
+                              << " child_private_bytes=" << memory.PrivateUsage << '\n';
+                    metrics << changes << ',' << current << ',' << wall << ',' << cpu << ',' << memory.PrivateUsage << '\n';
+                    std::ifstream stream(output, std::ios::binary);
+                    const std::vector<uint8_t> bytes{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+                    stream.close();
+                    if (!current)
+                        baseline = bytes;
+                    else {
+                        const bool equal = !bytes.empty() && bytes == baseline;
+                        std::cout << "gif bytes_equal=" << equal << " output_bytes=" << bytes.size() << '\n';
+                        if (!equal) result = 1;
+                        else {
+                            std::filesystem::remove(output);
+                            std::filesystem::remove(root / (std::to_wstring(changes) + L"-old.gif"));
+                        }
+                    }
+                }
+            }
+            std::wcout << L"GIF comparison artifacts: " << root.wstring() << '\n';
+        } catch (const winrt::hresult_error& error) {
+            std::cerr << "GIF comparison failure=0x" << std::hex << error.code().value << '\n';
+            result = 1;
+        }
+        winrt::uninit_apartment();
+        return result;
+    }
     // Revalidate a retained file without recording or overwriting anything.
     if (argc == 5 && !wcscmp(argv[1], L"--verify")) {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);

@@ -27,6 +27,8 @@ struct RegionStream {
     winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool pool{nullptr};
     winrt::Windows::Graphics::Capture::GraphicsCaptureSession capture{nullptr};
     winrt::com_ptr<ID3D11Texture2D> staging;
+    std::unique_ptr<GpuRegionReadback> gpuReadback;
+    bool gpuUnavailable = false;
     ~RegionStream() {
         try {
             if (item)
@@ -198,6 +200,27 @@ HRESULT __cdecl Read(void *handle, uint8_t *output, uint32_t capacity) {
         winrt::com_ptr<ID3D11Texture2D> source;
         winrt::check_hresult(access->GetInterface(__uuidof(ID3D11Texture2D), source.put_void()));
         const UINT w = s->region.right - s->region.left, h = s->region.bottom - s->region.top;
+        const UINT x = s->window ? s->relative.left : s->region.left - now.rcMonitor.left;
+        const UINT y = s->window ? s->relative.top : s->region.top - now.rcMonitor.top;
+        D3D11_TEXTURE2D_DESC sourceDesc{};
+        source->GetDesc(&sourceDesc);
+        if (x + w > sourceDesc.Width || y + h > sourceDesc.Height)
+            return E_BOUNDS;
+        D3D11_BOX box{x, y, 0, x + w, y + h, 1};
+        auto *context = s->device->Context();
+        if ((w != s->width || h != s->height) && !s->gpuUnavailable) {
+            try {
+                if (!s->gpuReadback)
+                    s->gpuReadback = std::make_unique<GpuRegionReadback>(s->device->Device(), context, w, h,
+                        s->width, s->height, DXGI_MODE_ROTATION_IDENTITY);
+                s->gpuReadback->Read(source.get(), box, output, capacity);
+                return S_OK;
+            } catch (const winrt::hresult_error&) {
+                s->gpuReadback.reset();
+                winrt::check_hresult(s->device->Device()->GetDeviceRemovedReason());
+                s->gpuUnavailable = true;
+            }
+        }
         if (!s->staging) {
             D3D11_TEXTURE2D_DESC desc{};
             desc.Width = w;
@@ -208,14 +231,6 @@ HRESULT __cdecl Read(void *handle, uint8_t *output, uint32_t capacity) {
             desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
             winrt::check_hresult(s->device->Device()->CreateTexture2D(&desc, nullptr, s->staging.put()));
         }
-        const UINT x = s->window ? s->relative.left : s->region.left - now.rcMonitor.left;
-        const UINT y = s->window ? s->relative.top : s->region.top - now.rcMonitor.top;
-        D3D11_TEXTURE2D_DESC sourceDesc{};
-        source->GetDesc(&sourceDesc);
-        if (x + w > sourceDesc.Width || y + h > sourceDesc.Height)
-            return E_BOUNDS;
-        D3D11_BOX box{x, y, 0, x + w, y + h, 1};
-        auto *context = s->device->Context();
         context->CopySubresourceRegion(s->staging.get(), 0, 0, 0, 0, source.get(), 0, &box);
         D3D11_MAPPED_SUBRESOURCE mapped{};
         winrt::check_hresult(context->Map(s->staging.get(), 0, D3D11_MAP_READ, 0, &mapped));

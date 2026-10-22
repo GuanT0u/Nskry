@@ -1,6 +1,8 @@
 #pragma once
+#include "capture/gpu_region_readback.h"
 #include <algorithm>
 #include <cstring>
+#include <memory>
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <vector>
@@ -107,6 +109,20 @@ class DesktopRegion {
                       UINT((std::max)(first.x, last.x) + 1), UINT((std::max)(first.y, last.y) + 1), 1};
         if (box.right > texture.Width || box.bottom > texture.Height)
             winrt::throw_hresult(E_BOUNDS);
+        if ((m_width != UINT(w) || m_height != UINT(h)) && !m_gpuUnavailable) {
+            try {
+                if (!m_gpu)
+                    m_gpu = std::make_unique<GpuRegionReadback>(m_device.get(), m_context.get(), box.right - box.left,
+                        box.bottom - box.top, m_width, m_height, m_desc.Rotation);
+                m_gpu->Read(source.get(), box, pixels, m_width * m_height * 4);
+                DrawPointer(pixels, x, y, w, h);
+                return S_OK;
+            } catch (const winrt::hresult_error&) {
+                m_gpu.reset();
+                winrt::check_hresult(m_device->GetDeviceRemovedReason());
+                m_gpuUnavailable = true;
+            }
+        }
         if (!m_staging) {
             texture.Width = box.right - box.left;
             texture.Height = box.bottom - box.top;
@@ -198,5 +214,7 @@ class DesktopRegion {
     winrt::com_ptr<ID3D11DeviceContext> m_context;
     winrt::com_ptr<IDXGIOutputDuplication> m_duplication;
     winrt::com_ptr<ID3D11Texture2D> m_staging;
+    std::unique_ptr<GpuRegionReadback> m_gpu;
+    bool m_gpuUnavailable = false;
 };
 } // namespace nskry
