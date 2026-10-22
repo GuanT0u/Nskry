@@ -22,7 +22,7 @@ class PreviewTask {
     void Finish();
     void Cancel();
     bool Done() const;
-    bool Take(PreviewFrame &frame);
+    bool Take(PreviewFrame &frame, bool &done);
 
   private:
     void Run(std::wstring path, UINT sourceWidth, UINT sourceHeight, bool gif) noexcept;

@@ -36,3 +36,13 @@ Desktop Duplication不可用（部分远程桌面/驱动/会话限制）时明�
 ## 实现依据
 
 Desktop Duplication的旋转及独立光标元数据约束依据 [Microsoft文档](https://learn.microsoft.com/en-us/windows/desktop/direct3ddxgi/desktop-dup-api)；自适应调色板使用 [WIC InitializeFromBitmap](https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicpalette-initializefrombitmap)。本轮未请求关闭WGC系统边框的特殊权限。
+
+## 后续代码复审修正（2026-10-22）
+
+- 修剪模式在导出期间统一切换到非编辑布局，范围控件同时禁用指针输入；避免导出尚在读取源文件时又启动一条预览解码请求。关闭窗口时清理待执行的关闭/丢弃/导出意图，避免销毁后回调继续驱动操作。
+- 预览结果和完成状态在同一把锁内读取，修复“已读走最后一帧、尚未来得及观察 Done”造成的丢帧/卡住竞态；相同时间点请求合并。预览 worker 在一次拖动手势中复用同一个私有 WIC/MF 解码器，仍只缓存单张低分辨率结果，手势结束后关闭 worker、解码器和线程；没有常驻解码资源。旧的每次请求重开文件/解码器路径已移除。
+- 会话快照记录实际传给编码器的目标码率；修剪重编码沿用它，不再落回自动码率。默认码率夹限公式成为纯逻辑函数并有边界测试。注意：系统 H.264 encoder 对静态测试画面的实际平均码率会低于目标值，因此不以媒体实际平均码率等同编码目标；输出时长、帧率和可解码性仍由集成测试核对。
+- 录制前选项条在窄工作区改为紧凑宽度，极窄时继续按比例压缩控件，按钮下拉仍显示完整选项；纯逻辑测试覆盖常见窄宽度。移除一个会被随即覆盖的重复状态文本更新。
+- GIF 时间累计测试容许一个 100ms 帧粒度，避免系统调度造成的单帧量化抖动被误判为输出错误。
+
+复审后完整 Release 构建通过。修正后录屏 Feature 与纯逻辑 Policy 两项定向测试通过；最终完整 CTest 为 **27/30**。未通过项：`NskryUpdateTaskTests` 的真实网络超时/取消检查、`NskryInputSettingsTests` 的测试热键无法注册（系统返回错误 5）、`NskryRecordCaptureTests` 的窗口跟随采集返回 `0x80070005`。录屏捕获测试在当前会话无法启动采集（0帧），因此无法借此轮验证真实窗口跟随；未把它算作通过。需要在允许热键注册、WinHTTP 本地超时测试和屏幕采集的交互式 Windows 会话复验。其余 27 项通过，含全部 OCR、录屏编码/协议/生命周期/控制测试。

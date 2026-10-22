@@ -20,6 +20,7 @@ struct Snapshot {
     int64_t maxRead100ns{}, maxEncode100ns{}; // Wall spans, not CPU attribution.
     RECT region{};
     uint32_t width{}, height{}, fps{};
+    uint32_t bitrate{};
 };
 struct SessionOptions {
     uint32_t fps = 20;

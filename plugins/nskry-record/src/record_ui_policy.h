@@ -3,6 +3,23 @@
 #include <cstdint>
 #include <windows.h>
 namespace nskry::record {
+struct RecordingSetupWidths {
+    bool compact{};
+    int left{}, status{}, fps{}, quality{}, follow{}, defaults{}, start{}, cancel{}, gap{};
+    int Required() const {
+        return left + status + fps + quality + follow + defaults + start + cancel + gap * (compact ? 4 : 5);
+    }
+};
+inline RecordingSetupWidths SetupWidths(int available) {
+    const bool compact = available < 640;
+    if (!compact)
+        return {false, 14, (std::max)(45, available - 570), 64, 84, 122, 94, 64, 72, 6};
+    constexpr int fps = 45, quality = 55, follow = 65, start = 50, cancel = 52;
+    constexpr int fields = fps + quality + follow + start + cancel;
+    const double scale = std::clamp((available - 8.0 - 12.0) / fields, 0.6, 1.0);
+    return {true, 8, 0, int(fps * scale), int(quality * scale), int(follow * scale), 0, int(start * scale),
+            int(cancel * scale), 3};
+}
 inline RECT RecordingBarBounds(RECT region, RECT work, int width, int height) {
     width = (std::min)(width, int(work.right - work.left) - 8);
     height = (std::min)(height, int(work.bottom - work.top) - 8);

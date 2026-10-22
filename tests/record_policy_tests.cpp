@@ -4,6 +4,8 @@
 #include <iostream>
 int main() {
     using namespace nskry::record;
+    if (DefaultVideoBitrate(320, 180, 30) != 500000 || DefaultVideoBitrate(1920, 1080, 60) != 8000000)
+        return 1;
     Options decoded;
     if (!DecodeDefaults(EncodeDefaults({60, Quality::Hd}), decoded) || decoded.fps != 60 || decoded.quality != Quality::Hd ||
         DecodeDefaults(0, decoded) || DecodeDefaults((2u << 16) | (30u << 8), decoded))

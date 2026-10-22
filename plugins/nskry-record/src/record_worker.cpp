@@ -49,6 +49,7 @@ int wmain(int argc, wchar_t **argv) {
         apartment = true;
         std::unique_ptr<MfEncoder> encoder;
         std::unique_ptr<GifEncoder> gif;
+        std::unique_ptr<PreviewDecoder> preview;
         uint64_t sequence = 0;
         while (WaitForSingleObject(request, INFINITE) == WAIT_OBJECT_0) {
             MemoryBarrier();
@@ -76,14 +77,18 @@ int wmain(int argc, wchar_t **argv) {
                         wcsncpy_s(h.backend, encoder->Backend().c_str(), _TRUNCATE);
                     }
                 } else if (command == wire::Command::Close) {
+                    preview.reset();
                     encoder.reset();
                     gif.reset();
                 } else {
                     if (initial.preview) {
                         if (command != wire::Command::Preview || h.time < 0 || h.time > INT64_MAX - 1000000)
                             winrt::throw_hresult(E_INVALIDARG);
-                        PreviewRecording(initial.path, initial.gif != 0, initial.sourceWidth, initial.sourceHeight,
-                                         h.time, initial.width, initial.height, reinterpret_cast<uint8_t *>(&h + 1));
+                        if (!preview)
+                            preview = std::make_unique<PreviewDecoder>(initial.path, initial.gif != 0,
+                                                                       initial.sourceWidth, initial.sourceHeight);
+                        preview->Read(h.time, initial.width, initial.height,
+                                      reinterpret_cast<uint8_t *>(&h + 1));
                     } else if (!encoder && !gif)
                         winrt::throw_hresult(E_UNEXPECTED);
                     else if (command == wire::Command::Trim) {

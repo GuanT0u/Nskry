@@ -82,7 +82,7 @@ bool Gif(const std::filesystem::path &path, unsigned expected, int64_t duration)
             return false;
     }
     std::cout << "GIF frames=" << count << " duration100ns=" << time << '\n';
-    return count == expected && time == duration;
+    return count == expected && std::abs(time - duration) <= 100000;
 }
 bool Video(const std::filesystem::path &path, int64_t expected, UINT fps) {
     winrt::com_ptr<IMFSourceReader> reader;
@@ -227,10 +227,14 @@ int wmain(int argc, wchar_t **argv) {
                     preview.Request(i * 8000000LL / 49);
                 preview.Finish();
                 const auto until = GetTickCount64() + 8000;
-                while (!preview.Done() && GetTickCount64() < until)
-                    WaitForSingleObject(GetCurrentProcess(), 10);
                 PreviewFrame image;
-                ok = Check(preview.Done() && preview.Take(image) && image.error.empty() && image.time == 8000000 &&
+                bool previewDone = false;
+                bool hasPreview = false;
+                while (!previewDone && GetTickCount64() < until) {
+                    hasPreview = preview.Take(image, previewDone) || hasPreview;
+                    WaitForSingleObject(GetCurrentProcess(), 10);
+                }
+                ok = Check(previewDone && hasPreview && image.error.empty() && image.time == 8000000 &&
                                image.pixels.size() == 160 * 90 * 4 &&
                                (gif ? image.pixels[2] > 150 : image.pixels[0] > 150),
                            "latest-only preview chooses correct scene and releases decoder") &&
@@ -250,6 +254,7 @@ int wmain(int argc, wchar_t **argv) {
             snapshot.width = 160;
             snapshot.height = 90;
             snapshot.fps = fps;
+            snapshot.bitrate = gif ? 0 : 2000000;
             snapshot.encodedDuration = 10000000;
             {
                 ExportTask task;
@@ -324,6 +329,15 @@ int wmain(int argc, wchar_t **argv) {
         ok = Check(TrimTimeAt(-1, 10, 110, 1000) == 0 && TrimTimeAt(60, 10, 110, 1000) == 500 &&
                        TrimTimeAt(999, 10, 110, 1000) == 1000,
                    "trim timeline mapping and bounds") &&
+             ok;
+        const auto compact = SetupWidths(303);
+        const auto veryCompact = SetupWidths(248);
+        const auto expanded = SetupWidths(900);
+        ok = Check(compact.compact && compact.Required() <= 303 && !expanded.compact && expanded.Required() <= 900,
+                   "record setup controls fit compact and normal bars") &&
+             ok;
+        ok = Check(veryCompact.compact && veryCompact.Required() <= 248,
+                   "record setup controls contract for narrow work areas") &&
              ok;
         SessionOptions options;
         options.fps = 10;

@@ -29,6 +29,8 @@ bool PreviewTask::Request(int64_t time) {
     std::lock_guard lock(m_mutex);
     if (m_done || m_finishing || time < 0)
         return false;
+    if (m_serial && time == m_time)
+        return true;
     m_time = time;
     ++m_serial;
     SetEvent(m_request);
@@ -46,13 +48,15 @@ bool PreviewTask::Done() const {
     std::lock_guard lock(m_mutex);
     return m_done;
 }
-bool PreviewTask::Take(PreviewFrame &frame) {
+bool PreviewTask::Take(PreviewFrame &frame, bool &done) {
     std::lock_guard lock(m_mutex);
-    if (!m_ready)
-        return false;
-    frame = std::move(m_frame);
-    m_ready = false;
-    return true;
+    done = m_done;
+    if (m_ready) {
+        frame = std::move(m_frame);
+        m_ready = false;
+        return true;
+    }
+    return false;
 }
 void PreviewTask::Run(std::wstring path, UINT sourceWidth, UINT sourceHeight, bool gif) noexcept {
     bool apartment = false;
@@ -83,6 +87,8 @@ void PreviewTask::Run(std::wstring path, UINT sourceWidth, UINT sourceHeight, bo
                 serial = m_serial;
             }
             if (!serial)
+                continue;
+            if (serial == processed)
                 continue;
             if (!decoder) {
                 decoder = std::make_unique<IsolatedEncoder>(m_cancel);

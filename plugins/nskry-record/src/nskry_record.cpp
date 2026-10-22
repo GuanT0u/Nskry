@@ -90,12 +90,14 @@ void PreviewTick() {
         return;
     }
     PreviewFrame frame;
-    if (previewTask->Take(frame) && trimMode) {
+    bool previewDone{};
+    const bool hasPreview = previewTask->Take(frame, previewDone);
+    if (hasPreview && trimMode) {
         previewFrame = std::move(frame);
         previewFailed = !previewFrame.error.empty();
         InvalidateRect(window, nullptr, FALSE);
     }
-    if (!previewTask->Done())
+    if (!previewDone)
         return;
     previewTask.reset();
     KillTimer(window, PreviewPoll);
@@ -131,6 +133,13 @@ LRESULT CALLBACK RangeProcedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     const int a = left + int((long double)rangeStart * (right - left) / duration);
     const int b = left + int((long double)rangeEnd * (right - left) / duration);
     try {
+        if (exportTask && (msg == WM_LBUTTONDOWN || msg == WM_MOUSEMOVE || msg == WM_SETCURSOR)) {
+            if (msg == WM_SETCURSOR) {
+                SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+                return TRUE;
+            }
+            return 0;
+        }
         switch (msg) {
         case WM_ERASEBKGND:
             return 1;
@@ -274,7 +283,8 @@ void LayoutControl() {
     MONITORINFO mi{sizeof(mi)};
     if (!GetMonitorInfoW(MonitorFromRect(&setupRegion, MONITOR_DEFAULTTONEAREST), &mi))
         return;
-    const int mode = setup ? (preferencesOnly ? 4 : 0) : completed ? (trimMode ? 3 : 2) : 1;
+    const bool showTrim = trimMode && !exportTask;
+    const int mode = setup ? (preferencesOnly ? 4 : 0) : completed ? (showTrim ? 3 : 2) : 1;
     const auto bounds =
         RecordingBarBounds(setupRegion, mi.rcWork, mode == 0 || mode == 4 ? 900 : 800, mode == 3 ? 370 : 52);
     if (mode == layoutMode && EqualRect(&bounds, &layoutBounds))
@@ -292,21 +302,36 @@ void LayoutControl() {
         ShowWindow(h, visible ? SW_SHOW : SW_HIDE);
     };
     const bool pre = mode == 0 || mode == 4;
-    const int statusWidth = (std::max)(45L, client.right - (pre ? 570 : 420));
-    place(statusLabel, true, 8, 10, statusWidth, 28);
-    int x = 14 + statusWidth;
+    const auto setupWidths = SetupWidths(client.right);
+    const bool compact = pre && setupWidths.compact;
+    const int statusWidth = compact ? 0 : (std::max)(45L, client.right - (pre ? 570 : 420));
+    place(statusLabel, !compact, 8, 10, compact ? 0 : statusWidth, 28);
+    int x = compact ? setupWidths.left : setupWidths.left + statusWidth;
     if (pre) {
-        place(fpsChoice, true, x, 8, 64, 180);
-        x += 70;
-        place(qualityChoice, true, x, 8, 84, 180);
-        x += 90;
-        place(followChoice, mode == 0, x, 8, 122);
-        x += 128;
-        place(defaultsButton, true, x, 8, 94);
-        x += 100;
-        place(pauseButton, mode == 0, x, 8, 64);
-        x += 70;
-        place(discardButton, true, x, 8, 72);
+        place(fpsChoice, true, x, 8, setupWidths.fps, 180);
+        if (compact)
+            SendMessageW(fpsChoice, CB_SETDROPPEDWIDTH, 90, 0);
+        x += setupWidths.fps + setupWidths.gap;
+        place(qualityChoice, true, x, 8, setupWidths.quality, 180);
+        if (compact)
+            SendMessageW(qualityChoice, CB_SETDROPPEDWIDTH, 100, 0);
+        x += setupWidths.quality + setupWidths.gap;
+        if (compact)
+            SetWindowTextW(followChoice, L"Follow");
+        else
+            SetWindowTextW(followChoice, L"Follow selected window");
+        place(followChoice, mode == 0, x, 8, setupWidths.follow);
+        x += setupWidths.follow + setupWidths.gap;
+        place(defaultsButton, !compact, x, 8, setupWidths.defaults);
+        if (!compact)
+            x += setupWidths.defaults + setupWidths.gap;
+        place(pauseButton, mode == 0, x, 8, setupWidths.start);
+        if (compact)
+            SetWindowTextW(pauseButton, L"Start");
+        x += setupWidths.start + setupWidths.gap;
+        if (compact)
+            SetWindowTextW(discardButton, L"Cancel");
+        place(discardButton, true, x, 8, setupWidths.cancel);
         place(stopButton, false, 0, 0, 1);
         place(trimButton, false, 0, 0, 1);
     } else {
@@ -320,11 +345,11 @@ void LayoutControl() {
         x += 116;
         place(trimButton, completed, x, 8, 72);
     }
-    place(rangeWindow, mode == 3, 12, 282, client.right - 24, 36);
-    place(trimStart, mode == 3, 12, 328, 100);
-    place(trimEnd, mode == 3, 124, 328, 100);
-    place(trimApply, mode == 3, 252, 328, 104);
-    place(trimCancel, mode == 3, 368, 328, 104);
+    place(rangeWindow, showTrim, 12, 282, client.right - 24, 36);
+    place(trimStart, showTrim, 12, 328, 100);
+    place(trimEnd, showTrim, 124, 328, 100);
+    place(trimApply, showTrim, 252, 328, 104);
+    place(trimCancel, showTrim, 368, 328, 104);
     InvalidateRect(window, nullptr, FALSE);
 }
 void ResultControls() {
@@ -742,6 +767,9 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             previewTask.reset();
         previewFrame = {};
         KillTimer(hwnd, PreviewPoll);
+        pendingClose = pendingDiscard = false;
+        pendingExport = -1;
+        rangeDragging = false;
         Area({}, false);
         if (areaWindow)
             DestroyWindow(areaWindow);
@@ -902,11 +930,6 @@ NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext *ctx) {
         EnableWindow(fpsChoice, !gifMode);
         EnableWindow(qualityChoice, !gifMode);
         EnableWindow(defaultsButton, !gifMode);
-        SetWindowTextW(statusLabel,
-                       gifMode ? L"GIF: fixed 10 fps / up to 960 x 540 pixels / up to 2 minutes.\nChoose window follow "
-                                 L"(optional), then Start."
-                               : L"Video settings: FPS (left), quality (right). Choose optional window follow.\nSave "
-                                 L"defaults remembers these options; no encoder starts before Start.");
         SetWindowTextW(pauseButton, L"Start");
         SetWindowTextW(stopButton, L"Stop");
         EnableWindow(stopButton, FALSE);

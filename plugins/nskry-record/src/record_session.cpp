@@ -205,16 +205,20 @@ void RecordSession::Run() noexcept {
             winrt::throw_hresult(HRESULT_FROM_WIN32(ERROR_CANCELLED));
         std::vector<uint8_t> pixels(uint64_t(description.stride) * description.height);
         std::vector<uint8_t> pending(pixels.size());
+        const uint32_t targetBitrate = m_options.gif ? 0
+            : m_options.bitrate ? m_options.bitrate
+            : v2 ? Bitrate(description.width, description.height, fps, m_options.quality)
+                 : DefaultVideoBitrate(description.width, description.height, fps);
         encoder = std::make_unique<IsolatedEncoder>(m_cancelEvent);
         encoder->Open(temporary, description.width, description.height, fps, m_preferHardware,
-                       m_options.bitrate ? m_options.bitrate : v2 && !m_options.gif
-                           ? Bitrate(description.width, description.height, fps, m_options.quality) : 0, m_options.gif);
+                      targetBitrate, m_options.gif);
         {
             std::lock_guard lock(m_mutex);
             m_status.backend = encoder->Backend();
             m_status.width = description.width;
             m_status.height = description.height;
             m_status.fps = fps;
+            m_status.bitrate = targetBitrate;
             m_status.encoderProcessId = encoder->ProcessId();
         }
         FrameSchedule schedule(fps);

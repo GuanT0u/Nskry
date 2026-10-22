@@ -31,4 +31,7 @@ inline uint32_t Bitrate(uint32_t w, uint32_t h, uint32_t fps, Quality quality) {
     const uint32_t divisor = quality == Quality::Hd ? 4 : quality == Quality::High ? 7 : 12;
     return uint32_t(std::clamp(uint64_t(w) * h * fps / divisor, uint64_t(500000), uint64_t(24000000)));
 }
+inline uint32_t DefaultVideoBitrate(uint32_t w, uint32_t h, uint32_t fps) {
+    return uint32_t(std::clamp(uint64_t(w) * h * fps / 6, uint64_t(500000), uint64_t(8000000)));
+}
 } // namespace nskry::record

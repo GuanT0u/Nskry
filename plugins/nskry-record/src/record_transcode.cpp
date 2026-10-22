@@ -3,6 +3,9 @@
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
+#include <algorithm>
+#include <cstring>
+#include <memory>
 #include <vector>
 #include <wincodec.h>
 #include <winrt/base.h>
@@ -158,28 +161,192 @@ void TrimRecording(const std::wstring &input, bool gif, UINT width, UINT height,
             break;
     }
 }
-void PreviewRecording(const std::wstring &input, bool gif, UINT sourceWidth, UINT sourceHeight, int64_t time,
-                      UINT width, UINT height, uint8_t *pixels) {
-    struct Ready {};
-    bool found = false;
-    const auto start = (std::max)(int64_t(0), time - 1000000);
-    try {
-        TrimRecording(input, gif, sourceWidth, sourceHeight, start, time + 1000000,
-                      [&](const uint8_t *source, int64_t stamp, int64_t duration) {
-                          for (UINT y = 0; y < height; ++y)
-                              for (UINT x = 0; x < width; ++x)
-                                  memcpy(pixels + (uint64_t(y) * width + x) * 4,
-                                         source + ((uint64_t(y) * sourceHeight / height) * sourceWidth +
-                                                   uint64_t(x) * sourceWidth / width) *
-                                                      4,
-                                         4);
-                          found = true;
-                          if (start + stamp + duration > time)
-                              throw Ready{};
-                      });
-    } catch (const Ready &) {
+namespace {
+struct MfLifetime {
+    MfLifetime() { winrt::check_hresult(MFStartup(MF_VERSION, MFSTARTUP_LITE)); }
+    ~MfLifetime() { MFShutdown(); }
+};
+constexpr DWORD PreviewStream = static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
+}
+
+struct PreviewDecoder::Impl {
+    std::unique_ptr<MfLifetime> mf;
+    winrt::com_ptr<IWICImagingFactory> wic;
+    winrt::com_ptr<IWICBitmapDecoder> gifDecoder;
+    std::vector<int64_t> gifEnds;
+    winrt::com_ptr<IMFSourceReader> reader;
+    UINT width{}, height{}, storageWidth{}, storageHeight{};
+    std::vector<uint8_t> sourcePixels;
+
+    Impl(const std::wstring &input, bool gif, UINT sourceWidth, UINT sourceHeight)
+        : width(sourceWidth), height(sourceHeight), storageWidth(sourceWidth), storageHeight(sourceHeight),
+          sourcePixels(uint64_t(sourceWidth) * sourceHeight * 4) {
+        if (gif) {
+            wic = winrt::create_instance<IWICImagingFactory>(CLSID_WICImagingFactory);
+            winrt::check_hresult(wic->CreateDecoderFromFilename(input.c_str(), nullptr, GENERIC_READ,
+                                                                 WICDecodeMetadataCacheOnDemand, gifDecoder.put()));
+            UINT count{};
+            winrt::check_hresult(gifDecoder->GetFrameCount(&count));
+            if (!count || count > 1200)
+                winrt::throw_hresult(E_BOUNDS);
+            gifEnds.reserve(count);
+            int64_t end = 0;
+            for (UINT i = 0; i < count; ++i) {
+                winrt::com_ptr<IWICBitmapFrameDecode> frame;
+                winrt::check_hresult(gifDecoder->GetFrame(i, frame.put()));
+                UINT w{}, h{};
+                winrt::check_hresult(frame->GetSize(&w, &h));
+                if (w != width || h != height)
+                    winrt::throw_hresult(E_BOUNDS);
+                winrt::com_ptr<IWICMetadataQueryReader> metadata;
+                winrt::check_hresult(frame->GetMetadataQueryReader(metadata.put()));
+                PROPVARIANT delay{};
+                winrt::check_hresult(metadata->GetMetadataByName(L"/grctlext/Delay", &delay));
+                const int64_t span = delay.vt == VT_UI2 ? int64_t(delay.uiVal) * 100000 : 0;
+                PropVariantClear(&delay);
+                if (span <= 0 || end > INT64_MAX - span)
+                    winrt::throw_hresult(E_INVALIDARG);
+                end += span;
+                gifEnds.push_back(end);
+            }
+            return;
+        }
+        mf = std::make_unique<MfLifetime>();
+        winrt::com_ptr<IMFAttributes> attributes;
+        winrt::check_hresult(MFCreateAttributes(attributes.put(), 2));
+        winrt::check_hresult(attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE));
+        winrt::check_hresult(MFCreateSourceReaderFromURL(input.c_str(), attributes.get(), reader.put()));
+        constexpr DWORD allStreams = static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS);
+        winrt::check_hresult(reader->SetStreamSelection(allStreams, FALSE));
+        winrt::check_hresult(reader->SetStreamSelection(PreviewStream, TRUE));
+        winrt::com_ptr<IMFMediaType> requested;
+        winrt::check_hresult(MFCreateMediaType(requested.put()));
+        winrt::check_hresult(requested->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
+        winrt::check_hresult(requested->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32));
+        winrt::check_hresult(MFSetAttributeSize(requested.get(), MF_MT_FRAME_SIZE, width, height));
+        winrt::check_hresult(reader->SetCurrentMediaType(PreviewStream, nullptr, requested.get()));
+        winrt::com_ptr<IMFMediaType> actual;
+        winrt::check_hresult(reader->GetCurrentMediaType(PreviewStream, actual.put()));
+        UINT actualWidth{}, actualHeight{};
+        winrt::check_hresult(MFGetAttributeSize(actual.get(), MF_MT_FRAME_SIZE, &actualWidth, &actualHeight));
+        if (actualWidth != width || actualHeight != height)
+            winrt::throw_hresult(E_BOUNDS);
     }
-    if (!found)
+
+    void ReadGif(int64_t time) {
+        const auto found = std::upper_bound(gifEnds.begin(), gifEnds.end(), time);
+        const UINT index = found == gifEnds.end() ? UINT(gifEnds.size() - 1) : UINT(found - gifEnds.begin());
+        winrt::com_ptr<IWICBitmapFrameDecode> frame;
+        winrt::check_hresult(gifDecoder->GetFrame(index, frame.put()));
+        winrt::com_ptr<IWICFormatConverter> converter;
+        winrt::check_hresult(wic->CreateFormatConverter(converter.put()));
+        winrt::check_hresult(converter->Initialize(frame.get(), GUID_WICPixelFormat32bppBGRA,
+                                                   WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom));
+        winrt::check_hresult(converter->CopyPixels(nullptr, width * 4, UINT(sourcePixels.size()), sourcePixels.data()));
+    }
+
+    void ReadVideo(int64_t time) {
+        PROPVARIANT position{};
+        position.vt = VT_I8;
+        position.hVal.QuadPart = (std::max)(int64_t(0), time - 10000000);
+        winrt::check_hresult(reader->SetCurrentPosition(GUID_NULL, position));
+        storageWidth = width;
+        storageHeight = height;
+        while (true) {
+            DWORD flags{};
+            LONGLONG timestamp{};
+            winrt::com_ptr<IMFSample> sample;
+            winrt::check_hresult(reader->ReadSample(PreviewStream, 0, nullptr, &flags, &timestamp, sample.put()));
+            if (flags & MF_SOURCE_READERF_ERROR)
+                throw winrt::hresult_error(E_FAIL, L"Preview decoder reported a source error.");
+            if (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) {
+                winrt::com_ptr<IMFMediaType> changed;
+                winrt::check_hresult(reader->GetCurrentMediaType(PreviewStream, changed.put()));
+                UINT cw{}, ch{};
+                GUID subtype{};
+                winrt::check_hresult(MFGetAttributeSize(changed.get(), MF_MT_FRAME_SIZE, &cw, &ch));
+                winrt::check_hresult(changed->GetGUID(MF_MT_SUBTYPE, &subtype));
+                bool aperture = cw == width && ch == height;
+                if (!aperture && cw >= width && ch >= height && cw - width < 16 && ch - height < 16) {
+                    MFVideoArea area{};
+                    UINT bytes{};
+                    auto hr = changed->GetBlob(MF_MT_MINIMUM_DISPLAY_APERTURE, reinterpret_cast<UINT8 *>(&area),
+                                               sizeof(area), &bytes);
+                    if (FAILED(hr))
+                        hr = changed->GetBlob(MF_MT_GEOMETRIC_APERTURE, reinterpret_cast<UINT8 *>(&area), sizeof(area),
+                                             &bytes);
+                    aperture = SUCCEEDED(hr) && bytes == sizeof(area) && area.Area.cx == LONG(width) &&
+                               area.Area.cy == LONG(height) && !area.OffsetX.value && !area.OffsetX.fract &&
+                               !area.OffsetY.value && !area.OffsetY.fract;
+                }
+                if (!aperture || subtype != MFVideoFormat_RGB32)
+                    throw winrt::hresult_error(E_BOUNDS, L"Preview decoder changed image size or format.");
+                storageWidth = cw;
+                storageHeight = ch;
+            }
+            if (sample) {
+                LONGLONG duration{};
+                winrt::check_hresult(sample->GetSampleDuration(&duration));
+                if (duration <= 0 || timestamp > INT64_MAX - duration)
+                    winrt::throw_hresult(E_BOUNDS);
+                if (timestamp + duration > time) {
+                    winrt::com_ptr<IMFMediaBuffer> buffer;
+                    winrt::check_hresult(sample->ConvertToContiguousBuffer(buffer.put()));
+                    if (auto surface = buffer.try_as<IMF2DBuffer>()) {
+                        BYTE *top{};
+                        LONG stride{};
+                        winrt::check_hresult(surface->Lock2D(&top, &stride));
+                        const bool valid = int64_t(stride) >= int64_t(width) * 4 ||
+                                           int64_t(stride) <= -int64_t(width) * 4;
+                        if (valid)
+                            for (UINT row = 0; row < height; ++row)
+                                memcpy(sourcePixels.data() + uint64_t(row) * width * 4,
+                                       top + int64_t(row) * stride, width * 4);
+                        surface->Unlock2D();
+                        if (!valid)
+                            winrt::throw_hresult(E_BOUNDS);
+                    } else {
+                        BYTE *data{};
+                        DWORD size{};
+                        winrt::check_hresult(buffer->Lock(&data, nullptr, &size));
+                        const bool valid = size >= uint64_t(storageWidth) * storageHeight * 4;
+                        if (valid)
+                            for (UINT row = 0; row < height; ++row)
+                                memcpy(sourcePixels.data() + uint64_t(row) * width * 4,
+                                       data + uint64_t(row) * storageWidth * 4, width * 4);
+                        buffer->Unlock();
+                        if (!valid)
+                            winrt::throw_hresult(E_BOUNDS);
+                    }
+                    return;
+                }
+            }
+            if (flags & MF_SOURCE_READERF_ENDOFSTREAM)
+                break;
+        }
         throw winrt::hresult_error(E_FAIL, L"No preview frame at this time.");
+    }
+
+    void Read(int64_t time, UINT outputWidth, UINT outputHeight, uint8_t *pixels, bool gif) {
+        if (time < 0 || !outputWidth || !outputHeight || outputWidth > 640 || outputHeight > 360 || !pixels)
+            winrt::throw_hresult(E_INVALIDARG);
+        if (gif)
+            ReadGif(time);
+        else
+            ReadVideo(time);
+        for (UINT y = 0; y < outputHeight; ++y)
+            for (UINT x = 0; x < outputWidth; ++x)
+                memcpy(pixels + (uint64_t(y) * outputWidth + x) * 4,
+                       sourcePixels.data() + ((uint64_t(y) * height / outputHeight) * width +
+                                              uint64_t(x) * width / outputWidth) * 4,
+                       4);
+    }
+};
+
+PreviewDecoder::PreviewDecoder(std::wstring input, bool gif, UINT width, UINT height)
+    : m_impl(std::make_unique<Impl>(input, gif, width, height)), m_gif(gif) {}
+PreviewDecoder::~PreviewDecoder() = default;
+void PreviewDecoder::Read(int64_t time, UINT outputWidth, UINT outputHeight, uint8_t *pixels) {
+    m_impl->Read(time, outputWidth, outputHeight, pixels, m_gif);
 }
 } // namespace nskry::record
