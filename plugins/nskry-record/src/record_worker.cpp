@@ -32,12 +32,13 @@ int wmain(int argc, wchar_t **argv) {
     // Copy only immutable configuration, not the 64 KiB transport header onto
     // the native thread stack. The path's bounded storage is heap-owned.
     struct Configuration {
-        uint32_t width, height, fps, pixelBytes, hardware, bitrate, gif;
+        uint32_t width, height, fps, pixelBytes, hardware, bitrate, gif, preview, sourceWidth, sourceHeight;
         std::wstring path;
     };
     const auto *input = static_cast<const wire::Header *>(header.value);
-    const Configuration initial{input->width,    input->height,  input->fps, input->pixelBytes,
-                                input->hardware, input->bitrate, input->gif, input->path};
+    const Configuration initial{input->width,       input->height,       input->fps, input->pixelBytes,
+                                input->hardware,    input->bitrate,      input->gif, input->preview,
+                                input->sourceWidth, input->sourceHeight, input->path};
     View memory{MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(wire::Header) + initial.pixelBytes)};
     if (!memory.value)
         return 4;
@@ -62,10 +63,12 @@ int wmain(int argc, wchar_t **argv) {
                 if (command == wire::Command::Open) {
                     if (encoder || gif)
                         winrt::throw_hresult(E_UNEXPECTED);
-                    if (initial.gif) {
+                    if (initial.preview) {
+                        wcscpy_s(h.backend, L"On-demand frame preview");
+                    } else if (initial.gif) {
                         gif = std::make_unique<GifEncoder>();
                         gif->Open(initial.path, initial.width, initial.height, &h.created);
-                        wcscpy_s(h.backend, L"GIF / fixed RGB332 / 10 fps");
+                        wcscpy_s(h.backend, L"GIF / adaptive 256 colors / 10 fps");
                     } else {
                         encoder = std::make_unique<MfEncoder>();
                         encoder->Open(initial.path, initial.width, initial.height, initial.fps, initial.hardware != 0,
@@ -76,9 +79,14 @@ int wmain(int argc, wchar_t **argv) {
                     encoder.reset();
                     gif.reset();
                 } else {
-                    if (!encoder && !gif)
+                    if (initial.preview) {
+                        if (command != wire::Command::Preview || h.time < 0 || h.time > INT64_MAX - 1000000)
+                            winrt::throw_hresult(E_INVALIDARG);
+                        PreviewRecording(initial.path, initial.gif != 0, initial.sourceWidth, initial.sourceHeight,
+                                         h.time, initial.width, initial.height, reinterpret_cast<uint8_t *>(&h + 1));
+                    } else if (!encoder && !gif)
                         winrt::throw_hresult(E_UNEXPECTED);
-                    if (command == wire::Command::Trim) {
+                    else if (command == wire::Command::Trim) {
                         if (!h.inputPath[0] || h.inputPath[32767] || h.trimStart < 0 || h.trimEnd <= h.trimStart)
                             winrt::throw_hresult(E_INVALIDARG);
                         const std::wstring inputPath = h.inputPath;

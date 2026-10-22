@@ -1,4 +1,5 @@
 #include "gif_encoder.h"
+#include "gif_palette.h"
 #include "record_policy.h"
 #include <array>
 #include <shlwapi.h>
@@ -13,11 +14,6 @@ void GifEncoder::Open(const std::wstring &path, UINT width, UINT height, volatil
     winrt::check_hresult(m_factory->CreateEncoder(GUID_ContainerFormatGif, nullptr, m_encoder.put()));
     winrt::check_hresult(m_encoder->Initialize(m_stream.get(), WICBitmapEncoderNoCache));
     winrt::check_hresult(m_factory->CreatePalette(m_palette.put()));
-    std::array<WICColor, 256> colors{};
-    for (UINT i = 0; i < 256; ++i)
-        colors[i] = 0xff000000 | (((i >> 5) * 255 / 7) << 16) | ((((i >> 2) & 7) * 255 / 7) << 8) | ((i & 3) * 255 / 3);
-    winrt::check_hresult(m_palette->InitializeCustom(colors.data(), UINT(colors.size())));
-    winrt::check_hresult(m_encoder->SetPalette(m_palette.get()));
     winrt::com_ptr<IWICMetadataQueryWriter> metadata;
     winrt::check_hresult(m_encoder->GetMetadataQueryWriter(metadata.put()));
     // Netscape looping extension, copied synchronously by WIC.
@@ -41,9 +37,53 @@ void GifEncoder::Write(const uint8_t *bgra, int64_t time, int64_t duration) {
     winrt::check_hresult(m_stream->Stat(&stat, STATFLAG_NONAME));
     if (stat.cbSize.QuadPart >= 128ULL * 1024 * 1024)
         winrt::throw_hresult(HRESULT_FROM_WIN32(ERROR_FILE_TOO_LARGE));
-    for (size_t i = 0; i < m_indices.size(); ++i) {
-        const auto *p = bgra + i * 4;
-        m_indices[i] = (p[2] & 0xe0) | ((p[1] >> 3) & 0x1c) | (p[0] >> 6);
+    std::array<uint32_t, 256> exact{};
+    uint32_t count{};
+    if (ExactGifPalette(bgra, m_indices.size(), m_indices.data(), exact, count)) {
+        winrt::check_hresult(m_palette->InitializeCustom(exact.data(), count));
+    } else {
+        winrt::com_ptr<IWICBitmap> bitmap;
+        winrt::check_hresult(m_factory->CreateBitmapFromMemory(m_width, m_height, GUID_WICPixelFormat32bppBGRA,
+                                                               m_width * 4, m_width * m_height * 4,
+                                                               const_cast<BYTE *>(bgra), bitmap.put()));
+        // Bound palette analysis to 256x256; mapping still uses original pixels.
+        // Local palettes preserve dark neutral tones and scene-specific colors,
+        // unlike the old RGB332 truncation (only four blue values).
+        winrt::com_ptr<IWICBitmapScaler> sample;
+        winrt::check_hresult(m_factory->CreateBitmapScaler(sample.put()));
+        const double scale = (std::min)(1.0, 256.0 / (std::max)(m_width, m_height));
+        winrt::check_hresult(sample->Initialize(bitmap.get(), (std::max)(1u, UINT(m_width * scale)),
+                                                (std::max)(1u, UINT(m_height * scale)),
+                                                WICBitmapInterpolationModeFant));
+        winrt::check_hresult(m_palette->InitializeFromBitmap(sample.get(), 256, FALSE));
+        winrt::com_ptr<IWICFormatConverter> indexed;
+        winrt::check_hresult(m_factory->CreateFormatConverter(indexed.put()));
+        winrt::check_hresult(indexed->Initialize(bitmap.get(), GUID_WICPixelFormat8bppIndexed, WICBitmapDitherTypeNone,
+                                                 m_palette.get(), 0, WICBitmapPaletteTypeCustom));
+        winrt::check_hresult(indexed->CopyPixels(nullptr, m_width, UINT(m_indices.size()), m_indices.data()));
+        // WIC's indexed converter can collapse exact neutral grays to another
+        // palette entry. Map neutral grays explicitly using the actual local palette.
+        std::array<WICColor, 256> colors{};
+        UINT actual{};
+        winrt::check_hresult(m_palette->GetColors(256, colors.data(), &actual));
+        std::array<uint8_t, 256> grays{};
+        for (UINT value = 0; value < 256; ++value) {
+            unsigned best = UINT_MAX;
+            for (UINT j = 0; j < actual; ++j) {
+                const int b = int(colors[j] & 255) - int(value), g = int((colors[j] >> 8) & 255) - int(value),
+                          r = int((colors[j] >> 16) & 255) - int(value);
+                const unsigned error = b * b + g * g + r * r;
+                if (error < best) {
+                    best = error;
+                    grays[value] = uint8_t(j);
+                }
+            }
+        }
+        for (size_t i = 0; i < m_indices.size(); ++i) {
+            const auto *p = bgra + i * 4;
+            if (p[0] == p[1] && p[1] == p[2])
+                m_indices[i] = grays[p[0]];
+        }
     }
     winrt::com_ptr<IWICBitmapFrameEncode> frame;
     winrt::check_hresult(m_encoder->CreateNewFrame(frame.put(), nullptr));

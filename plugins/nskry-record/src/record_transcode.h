@@ -8,4 +8,6 @@ namespace nskry::record {
 // this plugin has no audio; this is an explicit re-encode, not keyframe remux.
 void TrimRecording(const std::wstring &input, bool gif, UINT width, UINT height, int64_t start, int64_t end,
                    const std::function<void(const uint8_t *, int64_t, int64_t)> &write);
+void PreviewRecording(const std::wstring &input, bool gif, UINT sourceWidth, UINT sourceHeight, int64_t time,
+                      UINT width, UINT height, uint8_t *pixels);
 } // namespace nskry::record

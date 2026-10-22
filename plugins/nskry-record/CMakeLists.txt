@@ -5,7 +5,7 @@ target_link_libraries(nskry_record_codec PUBLIC mfplat mfreadwrite mfuuid ole32 
 add_executable(nskry_record_worker src/record_worker.cpp)
 target_link_libraries(nskry_record_worker PRIVATE nskry_record_codec)
 set_target_properties(nskry_record_worker PROPERTIES OUTPUT_NAME "nskry-record-worker")
-add_library(nskry_record_engine STATIC src/isolated_encoder.cpp src/record_session.cpp src/record_delivery.cpp src/record_export.cpp)
+add_library(nskry_record_engine STATIC src/isolated_encoder.cpp src/record_session.cpp src/record_delivery.cpp src/record_export.cpp src/record_preview.cpp)
 add_dependencies(nskry_record_engine nskry_record_worker)
 target_include_directories(nskry_record_engine PUBLIC src ${CMAKE_SOURCE_DIR}/sdk)
 target_compile_definitions(nskry_record_engine PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)

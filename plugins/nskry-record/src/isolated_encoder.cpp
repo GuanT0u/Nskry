@@ -130,11 +130,12 @@ IsolatedEncoder::IsolatedEncoder(HANDLE canceled, std::filesystem::path executab
 }
 IsolatedEncoder::~IsolatedEncoder() = default;
 void IsolatedEncoder::Open(const std::wstring &path, UINT width, UINT height, UINT fps, bool hardware, uint32_t bitrate,
-                           bool gif) {
+                           bool gif, bool preview, UINT sourceWidth, UINT sourceHeight) {
     if (bitrate && (bitrate < 500000 || bitrate > 24000000))
         winrt::throw_hresult(E_INVALIDARG);
     if (m_channel || !ValidFrameFormat(width, height, fps) || path.empty() || path.size() >= 32768 ||
-        path.find(L'\0') != std::wstring::npos || !m_timeout)
+        path.find(L'\0') != std::wstring::npos || !m_timeout ||
+        (preview && (width > 640 || height > 360 || !ValidFrameFormat(sourceWidth, sourceHeight, fps))))
         winrt::throw_hresult(E_INVALIDARG);
     if (m_canceled && WaitForSingleObject(m_canceled, 0) == WAIT_OBJECT_0)
         winrt::throw_hresult(HRESULT_FROM_WIN32(ERROR_CANCELLED));
@@ -149,7 +150,7 @@ void IsolatedEncoder::Open(const std::wstring &path, UINT width, UINT height, UI
     auto &c = *m_channel;
     c.canceled = m_canceled;
     c.timeout = m_timeout;
-    c.pixelBytes = gif ? width * height * 4 : width * height * 3 / 2;
+    c.pixelBytes = gif || preview ? width * height * 4 : width * height * 3 / 2;
     c.width = width;
     c.height = height;
     c.fps = fps;
@@ -171,6 +172,9 @@ void IsolatedEncoder::Open(const std::wstring &path, UINT width, UINT height, UI
     h.fps = fps;
     h.bitrate = bitrate;
     h.gif = gif;
+    h.preview = preview;
+    h.sourceWidth = sourceWidth;
+    h.sourceHeight = sourceHeight;
     h.hardware = hardware;
     h.pixelBytes = c.pixelBytes;
     wcscpy_s(h.path, target.c_str());
@@ -214,7 +218,8 @@ void IsolatedEncoder::Open(const std::wstring &path, UINT width, UINT height, UI
     m_backend = h.backend;
 }
 void IsolatedEncoder::Write(const uint8_t *bgra, int64_t time, int64_t duration) {
-    if (!m_channel || !bgra || m_finalizationAttempted || !ValidSampleTime(time, duration, m_lastEnd))
+    if (!m_channel || !bgra || m_channel->view.value->preview || m_finalizationAttempted ||
+        !ValidSampleTime(time, duration, m_lastEnd))
         winrt::throw_hresult(E_INVALIDARG);
     auto &c = *m_channel;
     if (c.broken || c.closed)
@@ -232,6 +237,14 @@ void IsolatedEncoder::Write(const uint8_t *bgra, int64_t time, int64_t duration)
     ++m_samples;
     m_lastEnd = time + duration;
 }
+void IsolatedEncoder::Preview(int64_t time, uint8_t *pixels, uint32_t capacity) {
+    if (!m_channel || !m_channel->view.value->preview || time < 0 || !pixels || capacity < m_channel->pixelBytes)
+        winrt::throw_hresult(E_INVALIDARG);
+    auto &h = *m_channel->view.value;
+    h.time = time;
+    m_channel->Call(wire::Command::Preview);
+    memcpy(pixels, &h + 1, m_channel->pixelBytes);
+}
 void IsolatedEncoder::Finalize() {
     if (!m_channel || !m_samples || m_finalizationAttempted)
         winrt::throw_hresult(MF_E_INVALIDREQUEST);
@@ -248,8 +261,12 @@ void IsolatedEncoder::Trim(const std::wstring &input, int64_t start, int64_t end
     h.trimEnd = end;
     const auto timeout = c.timeout;
     c.timeout = 300000; // Explicit bounded export, cancellation interrupts IPC immediately.
-    try { c.Call(wire::Command::Trim); }
-    catch (...) { c.timeout = timeout; throw; }
+    try {
+        c.Call(wire::Command::Trim);
+    } catch (...) {
+        c.timeout = timeout;
+        throw;
+    }
     c.timeout = timeout;
     m_samples = h.samples;
     m_lastEnd = end - start;

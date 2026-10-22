@@ -1,6 +1,6 @@
-# Screen recording 0.3.0
+# Screen recording 0.4.0
 
-独立按需插件，WGC + Media Foundation / WIC，离线、无声音。不依赖 OCR、Scroll、FFmpeg 或外置运行时。
+独立按需插件，Desktop Duplication / WGC + Media Foundation / WIC，离线、无声音。不依赖 OCR、Scroll、FFmpeg 或外置运行时。
 随包提供 GPL-3.0-or-later、COPYING 和 PLUGIN_EXCEPTION。
 
 ## 使用
@@ -10,7 +10,9 @@
 
 - 框选 → Screen recording → 30/60 fps、高清/高/中、可选 Follow selected window → Start。
 - GIF 是工具栏上独立的 Record GIF，不在视频入口增加格式选择。
-- Stop 后可 Save、Copy file 或 Trim。Trim 输入保留的起止秒数，Apply 后仍可保存/复制。
+- 开始前显示实际选区红框，选项水平排列在选区下方；空间不足时放到上方或屏幕内。
+- Stop 后可 Save、Copy file 或 Trim。Trim 可拖动时间轴首尾手柄，也保留起止秒数输入，Apply 后仍可保存/复制。
+- 拖动手柄时按需显示对应帧预览，不自动播放。预览最多8次/秒、640×360，松手后回收解码任务。
 - 裁剪是重新编码，不是无损关键帧剪切；有再次编码的耗时/质量损失。GIF 时间以百分之一秒量化。
 - Settings → Plugins → 选中本插件 → Plugin settings，可设置默认质量和帧率；录前 Save defaults 同样有效。
 - 默认 30 fps / High，私有配置位于 HKCU/Software/Nskry/Plugins/nskry-record，使用单个版本化 DWORD 原子写入。
@@ -39,8 +41,9 @@ Follow 用窗口 WGC 源，保留相对 DWM 可见边界的选区，移动和暂
 
 输入总像素≤3840×2160、单边≤3840；视频输出最长边≤1920、短边≤1080，近似等比、偶数对齐。
 控制窗及红色实际录制范围框都排除在采集中；红框穿透鼠标。
-**Windows 自带 WGC 边框仍标记整个显示器/窗口源，可能比选区大，本轮未消除该系统边框。**
-红框不等于已修复 Windows 全屏提示，详见开发报告中的权限限制。
+固定区域 v2 改用 Desktop Duplication，不创建显示器 WGC 会话，因此不出现它的全屏黄色边框。
+窗口跟随仍使用窗口 WGC，Windows 可显示该窗口源的系统提示。没有绕过系统权限或全局关闭采集指示。
+Desktop Duplication 不可用时明确失败，不悄悄改成其他来源。旧 v1 客户端维持原 WGC 行为。
 
 ## 参数与资源
 
@@ -49,11 +52,12 @@ Follow 用窗口 WGC 源，保留相对 DWM 可见边界的选区，移动和暂
 优先硬件编码，失败退回软件；实际后端显示 confirmed / not confirmed，不承诺普遍硬编。
 颜色保持 BT.709 limited NV12，x64 基础 SSE2 路径，无需 AVX。
 
-GIF 固定 10 fps、最长边960/短边540、256色 RGB332、约两分钟；写帧前检查128 MiB文件上限。
-GIF 不提供帧率/码率配置，固定调色板可能有色阶损失，不缓存全部动画。
+GIF 固定 10 fps、最长边960/短边540、每帧最多256色、约两分钟；写帧前检查128 MiB文件上限。
+最多256种颜色的帧使用精确调色板，否则采用采样面积最多256×256的自适应调色板并修正中性灰映射。
+GIF 不提供帧率/码率配置；复杂场景仍存在GIF量化损失，不缓存全部动画。
 
 init/设置页不预热采集或编码；活动录制只有一个采集线程、一个私有编码进程。
-WGC双缓冲、两张BGRA、单个传输槽；视频NV12槽最多3,110,400字节，GIF BGRA槽最多2,073,600字节。
+窗口WGC双缓冲；固定区域使用一个DXGI获取帧和选区staging纹理。两张BGRA、单个传输槽；视频NV12槽最多3,110,400字节，GIF BGRA槽最多2,073,600字节。
 慢编码不补帧排队，真实有效时间写入 duration；暂停关闭采集并事件等待，不把暂停时间录成空白。
 编码进程限制512 MiB提交量、单进程Job、只继承三个匿名通信句柄。不是恶意插件沙箱或显存上限。
 
@@ -64,7 +68,7 @@ Trim 在同类一次性编码进程中解码/重新编码，单帧缓冲，最�
 
 ## 验证和历史
 
-最新范围、兼容性、实测与未验收项见 [0.3.0报告](../../docs/report/devProgress/recording_workflow_20261021.md)。
+最新范围、兼容性、实测与未验收项见 [0.4.0报告](../../docs/report/devProgress/recording_ux_20261022.md)。
 [0.2.0编码隔离实测](../../docs/report/devProgress/recording_isolation_20261019.md)是旧20fps配置，不能当作本版60fps/GIF资源数据。
 私有 worker EXE 必须随包提供，不是公开 SDK 或跨插件前置。
 

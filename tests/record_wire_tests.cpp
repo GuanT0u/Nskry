@@ -98,6 +98,26 @@ int main(int argc, char **argv) {
         if (wire::ValidHeader(bad))
             return 2;
     }
+    auto preview = h;
+    preview.preview = 1;
+    preview.sourceWidth = 1920;
+    preview.sourceHeight = 1080;
+    preview.pixelBytes = preview.width * preview.height * 4;
+    if (!wire::ValidHeader(preview))
+        return 10;
+    for (int fault = 0; fault < 4; ++fault) {
+        auto bad = preview;
+        if (fault == 0)
+            bad.preview = 2;
+        if (fault == 1)
+            bad.width = 642;
+        if (fault == 2)
+            bad.height = 362;
+        if (fault == 3)
+            bad.sourceWidth = 0;
+        if (wire::ValidHeader(bad))
+            return 11;
+    }
     HANDLE handle{};
     if (!wire::ParseHandle(L"123", handle) || reinterpret_cast<uintptr_t>(handle) != 123)
         return 3;

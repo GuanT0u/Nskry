@@ -131,7 +131,10 @@ int wmain(int argc, wchar_t **argv) {
         Memory("idle");
         const auto start = GetTickCount64();
         const auto cpuStart = Cpu();
-        RecordSession recording(service, region, path.wstring());
+        SessionOptions fixed;
+        fixed.capture = nskry::RegionCaptureServiceV2();
+        fixed.fps = 30;
+        RecordSession recording(service, region, path.wstring(), true, fixed);
         ok = recording.Start() && ok;
         ok = Pump([&] { return recording.Status().state == State::Recording || Finished(recording); }) && ok;
         if (Finished(recording))

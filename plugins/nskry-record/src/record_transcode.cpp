@@ -158,4 +158,28 @@ void TrimRecording(const std::wstring &input, bool gif, UINT width, UINT height,
             break;
     }
 }
+void PreviewRecording(const std::wstring &input, bool gif, UINT sourceWidth, UINT sourceHeight, int64_t time,
+                      UINT width, UINT height, uint8_t *pixels) {
+    struct Ready {};
+    bool found = false;
+    const auto start = (std::max)(int64_t(0), time - 1000000);
+    try {
+        TrimRecording(input, gif, sourceWidth, sourceHeight, start, time + 1000000,
+                      [&](const uint8_t *source, int64_t stamp, int64_t duration) {
+                          for (UINT y = 0; y < height; ++y)
+                              for (UINT x = 0; x < width; ++x)
+                                  memcpy(pixels + (uint64_t(y) * width + x) * 4,
+                                         source + ((uint64_t(y) * sourceHeight / height) * sourceWidth +
+                                                   uint64_t(x) * sourceWidth / width) *
+                                                      4,
+                                         4);
+                          found = true;
+                          if (start + stamp + duration > time)
+                              throw Ready{};
+                      });
+    } catch (const Ready &) {
+    }
+    if (!found)
+        throw winrt::hresult_error(E_FAIL, L"No preview frame at this time.");
+}
 } // namespace nskry::record

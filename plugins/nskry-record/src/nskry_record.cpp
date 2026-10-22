@@ -3,7 +3,9 @@
 #include "nskry_plugin.h"
 #include "record_delivery.h"
 #include "record_export.h"
+#include "record_preview.h"
 #include "record_session.h"
+#include "record_ui_policy.h"
 #include <cmath>
 #include <commdlg.h>
 #include <filesystem>
@@ -21,6 +23,16 @@ HWND window{}, statusLabel{}, pauseButton{}, stopButton{}, discardButton{};
 HWND fpsChoice{}, qualityChoice{}, followChoice{}, defaultsButton{}, trimButton{}, trimStart{}, trimEnd{}, trimApply{},
     trimCancel{};
 HWND areaWindow{};
+HWND rangeWindow{};
+std::unique_ptr<PreviewTask> previewTask;
+PreviewFrame previewFrame;
+int64_t rangeStart{}, rangeEnd{}, wantedPreview{};
+bool rangeDragging = false, rangeTail = false, syncingRange = false;
+bool previewFailed = false;
+bool previewRetry = false;
+bool pendingClose = false, pendingDiscard = false;
+int pendingExport = -1, layoutMode = -1;
+RECT layoutBounds{};
 RECT areaBounds{}, setupRegion{};
 HWND setupSource{};
 bool setup = false, gifMode = false, copied = false, delivered = false, completed = false, trimMode = false;
@@ -40,17 +52,156 @@ NskryPluginInfo info{sizeof(info),
                      NSKRY_PLUGIN_API_VERSION,
                      L"Screen recording",
                      L"nskry-record",
-                     L"0.3.0",
+                     L"0.4.0",
                      L"Nskry Team",
                      L"On-demand MP4/GIF region recording with optional window follow. No audio.",
                      nullptr,
                      NSKRY_CAP_TOOLBAR_ACTION,
                      {}};
 constexpr UINT Poll = 1;
+constexpr UINT PreviewPoll = 2;
 constexpr wchar_t ClassName[] = L"NskryRecordControlV1";
 void Update();
 void Error(const wchar_t *text);
+void LayoutControl();
+void BeginExport(bool trim);
+void QueuePreview(int64_t time) {
+    if (previewFailed)
+        return;
+    wantedPreview = (std::max)(int64_t(0), time);
+    if (previewTask && previewTask->Done())
+        previewTask.reset();
+    if (!previewTask)
+        previewTask = std::make_unique<PreviewTask>(resultPath, resultSnapshot.width, resultSnapshot.height, gifMode);
+    previewRetry = !previewTask->Request(wantedPreview);
+    SetTimer(window, PreviewPoll, 40, nullptr);
+}
+void CancelPreview() {
+    previewRetry = false;
+    if (previewTask) {
+        previewTask->Cancel();
+        SetTimer(window, PreviewPoll, 40, nullptr);
+    }
+    previewFrame = {};
+}
+void PreviewTick() {
+    if (!previewTask) {
+        KillTimer(window, PreviewPoll);
+        return;
+    }
+    PreviewFrame frame;
+    if (previewTask->Take(frame) && trimMode) {
+        previewFrame = std::move(frame);
+        previewFailed = !previewFrame.error.empty();
+        InvalidateRect(window, nullptr, FALSE);
+    }
+    if (!previewTask->Done())
+        return;
+    previewTask.reset();
+    KillTimer(window, PreviewPoll);
+    if (pendingClose || pendingDiscard) {
+        const bool discard = pendingDiscard;
+        pendingClose = pendingDiscard = false;
+        if (discard) {
+            SendMessageW(window, WM_COMMAND, 3, 0);
+        } else
+            SendMessageW(window, WM_CLOSE, 0, 0);
+    } else if (pendingExport >= 0) {
+        const bool trim = pendingExport != 0;
+        pendingExport = -1;
+        BeginExport(trim);
+    } else if ((rangeDragging || previewRetry) && trimMode && !previewFailed) {
+        QueuePreview(wantedPreview);
+        if (!rangeDragging && previewTask)
+            previewTask->Finish();
+    }
+}
+void SyncRangeEdits() {
+    syncingRange = true;
+    SetWindowTextW(trimStart, std::to_wstring((rangeStart / 10000) / 1000.0).c_str());
+    SetWindowTextW(trimEnd, std::to_wstring((rangeEnd / 10000) / 1000.0).c_str());
+    syncingRange = false;
+    InvalidateRect(rangeWindow, nullptr, FALSE);
+}
+LRESULT CALLBACK RangeProcedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    const int left = 12, right = (std::max)(13L, client.right - 12);
+    const auto duration = (std::max)(int64_t(1), resultSnapshot.encodedDuration);
+    const int a = left + int((long double)rangeStart * (right - left) / duration);
+    const int b = left + int((long double)rangeEnd * (right - left) / duration);
+    try {
+        switch (msg) {
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_SETCURSOR:
+            SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+            return TRUE;
+        case WM_LBUTTONDOWN:
+            previewFailed = false;
+            rangeTail = std::abs(GET_X_LPARAM(lp) - b) < std::abs(GET_X_LPARAM(lp) - a);
+            rangeDragging = true;
+            SetCapture(hwnd);
+            [[fallthrough]];
+        case WM_MOUSEMOVE:
+            if (rangeDragging && (wp & MK_LBUTTON || msg == WM_LBUTTONDOWN)) {
+                const auto value = TrimTimeAt(GET_X_LPARAM(lp), left, right, duration);
+                const auto gap = (std::min)(int64_t(10000), duration);
+                if (rangeTail)
+                    rangeEnd = std::clamp(value, rangeStart + gap, duration);
+                else
+                    rangeStart = std::clamp(value, int64_t(0), rangeEnd - gap);
+                SyncRangeEdits();
+                QueuePreview(rangeTail ? rangeEnd - 1 : rangeStart);
+            }
+            return 0;
+        case WM_LBUTTONUP:
+        case WM_CAPTURECHANGED:
+        case WM_CANCELMODE:
+            if (rangeDragging) {
+                rangeDragging = false;
+                if (previewTask)
+                    previewTask->Finish();
+                if (GetCapture() == hwnd)
+                    ReleaseCapture();
+            }
+            return 0;
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            auto dc = BeginPaint(hwnd, &ps);
+            auto memory = CreateCompatibleDC(dc);
+            auto bitmap = CreateCompatibleBitmap(dc, client.right, client.bottom);
+            auto old = SelectObject(memory, bitmap);
+            FillRect(memory, &client, HBRUSH(COLOR_WINDOW + 1));
+            RECT track{left, 10, right, 24};
+            auto gray = CreateSolidBrush(RGB(160, 160, 160));
+            FillRect(memory, &track, gray);
+            DeleteObject(gray);
+            RECT selected{a, 10, b, 24};
+            auto blue = CreateSolidBrush(RGB(40, 140, 220));
+            FillRect(memory, &selected, blue);
+            DeleteObject(blue);
+            for (int x : {a, b}) {
+                RECT handle{x - 5, 3, x + 5, 31};
+                FillRect(memory, &handle, HBRUSH(COLOR_BTNTEXT + 1));
+            }
+            BitBlt(dc, 0, 0, client.right, client.bottom, memory, 0, 0, SRCCOPY);
+            SelectObject(memory, old);
+            DeleteObject(bitmap);
+            DeleteDC(memory);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        }
+    } catch (...) {
+        rangeDragging = false;
+        if (GetCapture() == hwnd)
+            ReleaseCapture();
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
 void ClearResult() {
+    CancelPreview();
     if (!resultPath.empty() && !copied)
         DeleteFileW(resultPath.c_str());
     resultPath.clear();
@@ -111,6 +262,70 @@ void Area(RECT region, bool visible) {
 void SetTrimVisible(bool visible) {
     for (HWND h : {trimStart, trimEnd, trimApply, trimCancel})
         ShowWindow(h, visible ? SW_SHOW : SW_HIDE);
+    ShowWindow(rangeWindow, visible ? SW_SHOW : SW_HIDE);
+    if (!visible)
+        CancelPreview();
+    layoutMode = -1;
+    LayoutControl();
+}
+void LayoutControl() {
+    if (!window)
+        return;
+    MONITORINFO mi{sizeof(mi)};
+    if (!GetMonitorInfoW(MonitorFromRect(&setupRegion, MONITOR_DEFAULTTONEAREST), &mi))
+        return;
+    const int mode = setup ? (preferencesOnly ? 4 : 0) : completed ? (trimMode ? 3 : 2) : 1;
+    const auto bounds =
+        RecordingBarBounds(setupRegion, mi.rcWork, mode == 0 || mode == 4 ? 900 : 800, mode == 3 ? 370 : 52);
+    if (mode == layoutMode && EqualRect(&bounds, &layoutBounds))
+        return;
+    layoutMode = mode;
+    layoutBounds = bounds;
+    SetWindowPos(window, HWND_TOPMOST, bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
+                 SWP_NOACTIVATE);
+    RECT client{};
+    GetClientRect(window, &client);
+    const auto place = [](HWND h, bool visible, int x, int y, int w, int height = 30) {
+        if (!h)
+            return;
+        SetWindowPos(h, nullptr, x, y, w, height, SWP_NOZORDER | SWP_NOACTIVATE);
+        ShowWindow(h, visible ? SW_SHOW : SW_HIDE);
+    };
+    const bool pre = mode == 0 || mode == 4;
+    const int statusWidth = (std::max)(45L, client.right - (pre ? 570 : 420));
+    place(statusLabel, true, 8, 10, statusWidth, 28);
+    int x = 14 + statusWidth;
+    if (pre) {
+        place(fpsChoice, true, x, 8, 64, 180);
+        x += 70;
+        place(qualityChoice, true, x, 8, 84, 180);
+        x += 90;
+        place(followChoice, mode == 0, x, 8, 122);
+        x += 128;
+        place(defaultsButton, true, x, 8, 94);
+        x += 100;
+        place(pauseButton, mode == 0, x, 8, 64);
+        x += 70;
+        place(discardButton, true, x, 8, 72);
+        place(stopButton, false, 0, 0, 1);
+        place(trimButton, false, 0, 0, 1);
+    } else {
+        for (HWND h : {fpsChoice, qualityChoice, followChoice, defaultsButton})
+            ShowWindow(h, SW_HIDE);
+        place(pauseButton, true, x, 8, 100);
+        x += 106;
+        place(stopButton, true, x, 8, 100);
+        x += 106;
+        place(discardButton, true, x, 8, 110);
+        x += 116;
+        place(trimButton, completed, x, 8, 72);
+    }
+    place(rangeWindow, mode == 3, 12, 282, client.right - 24, 36);
+    place(trimStart, mode == 3, 12, 328, 100);
+    place(trimEnd, mode == 3, 124, 328, 100);
+    place(trimApply, mode == 3, 252, 328, 104);
+    place(trimCancel, mode == 3, 368, 328, 104);
+    InvalidateRect(window, nullptr, FALSE);
 }
 void ResultControls() {
     SetWindowTextW(pauseButton, L"Save...");
@@ -121,6 +336,7 @@ void ResultControls() {
     ShowWindow(trimButton, SW_SHOW);
     SetWindowTextW(statusLabel, L"Recording finished. Save it, copy the file, or trim its beginning/end.\nCopy retains "
                                 L"a local file for clipboard/history; paste support depends on the destination app.");
+    LayoutControl();
 }
 bool ReadSeconds(HWND edit, int64_t &ticks) {
     wchar_t text[64]{};
@@ -135,6 +351,12 @@ bool ReadSeconds(HWND edit, int64_t &ticks) {
 void BeginExport(bool trim) {
     if (exportTask || !completed)
         return;
+    if (previewTask && !previewTask->Done()) {
+        pendingExport = trim ? 1 : 0;
+        rangeDragging = false;
+        CancelPreview();
+        return;
+    }
     exportStart = 0;
     exportEnd = resultSnapshot.encodedDuration;
     if (trim) {
@@ -203,6 +425,10 @@ void Update() {
         return;
     const auto s = session->Status();
     const bool finished = s.state == State::Done || s.state == State::Failed;
+    if (!finished) {
+        setupRegion = s.region;
+        LayoutControl();
+    }
     Area(s.region, !finished && (s.state == State::Recording || s.state == State::Starting));
     const wchar_t *state = s.state == State::Starting     ? L"Starting"
                            : s.state == State::Recording  ? L"Recording"
@@ -219,8 +445,7 @@ void Update() {
         L"  " + std::to_wstring(seconds / 60) + L":" + (seconds % 60 < 10 ? L"0" : L"") +
         std::to_wstring(seconds % 60) +
         (s.fps ? L"  (" + std::to_wstring(rate) + L" / " + std::to_wstring(s.fps) + L" fps)" : L"") + L"\n" +
-        (finished ? s.message : s.backend) +
-        (finished ? L"" : L"\nRed outline: recorded crop. Windows outline: capture source.");
+        (finished ? s.message : s.backend);
     SetWindowTextW(statusLabel, text.c_str());
     if (closePromptActive) {
         // Confirmation stays INSIDE the capture-excluded control window. No
@@ -264,7 +489,60 @@ void Update() {
 }
 LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps{};
+        HDC dc = BeginPaint(hwnd, &ps);
+        RECT r{};
+        GetClientRect(hwnd, &r);
+        auto memory = CreateCompatibleDC(dc);
+        auto bitmap = CreateCompatibleBitmap(dc, r.right, r.bottom);
+        auto old = SelectObject(memory, bitmap);
+        FillRect(memory, &r, HBRUSH(COLOR_WINDOW + 1));
+        if (trimMode) {
+            RECT view{12, 48, r.right - 12, 272};
+            auto dark = CreateSolidBrush(RGB(32, 33, 36));
+            FillRect(memory, &view, dark);
+            DeleteObject(dark);
+            if (!previewFrame.pixels.empty()) {
+                const double scale = (std::min)(double(view.right - view.left) / previewFrame.width,
+                                                double(view.bottom - view.top) / previewFrame.height);
+                const int w = int(previewFrame.width * scale), h = int(previewFrame.height * scale);
+                BITMAPINFO info{};
+                info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+                info.bmiHeader.biWidth = previewFrame.width;
+                info.bmiHeader.biHeight = -LONG(previewFrame.height);
+                info.bmiHeader.biPlanes = 1;
+                info.bmiHeader.biBitCount = 32;
+                SetStretchBltMode(memory, HALFTONE);
+                StretchDIBits(memory, view.left + (view.right - view.left - w) / 2,
+                              view.top + (view.bottom - view.top - h) / 2, w, h, 0, 0, previewFrame.width,
+                              previewFrame.height, previewFrame.pixels.data(), &info, DIB_RGB_COLORS, SRCCOPY);
+            } else {
+                SetBkMode(memory, TRANSPARENT);
+                SetTextColor(memory, RGB(230, 230, 230));
+                const auto *hint = previewFrame.error.empty() ? L"Drag the start/end handle to preview a frame"
+                                                              : L"Preview unavailable; you can still trim by time";
+                DrawTextW(memory, hint, -1, &view, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+        }
+        BitBlt(dc, 0, 0, r.right, r.bottom, memory, 0, 0, SRCCOPY);
+        SelectObject(memory, old);
+        DeleteObject(bitmap);
+        DeleteDC(memory);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
     case WM_TIMER:
+        if (wp == PreviewPoll) {
+            try {
+                PreviewTick();
+            } catch (...) {
+                CancelPreview();
+            }
+            return 0;
+        }
         Update();
         return 0;
     case WM_COMMAND:
@@ -317,6 +595,16 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             }
             if (completed) {
+                if (trimMode && !syncingRange && HIWORD(wp) == EN_CHANGE && (LOWORD(wp) == 12 || LOWORD(wp) == 13)) {
+                    int64_t a{}, b{};
+                    if (ReadSeconds(trimStart, a) && ReadSeconds(trimEnd, b) && a >= 0 && b > a &&
+                        b <= resultSnapshot.encodedDuration) {
+                        rangeStart = a;
+                        rangeEnd = b;
+                        InvalidateRect(rangeWindow, nullptr, FALSE);
+                    }
+                    return 0;
+                }
                 if (exportTask) {
                     if (LOWORD(wp) == 3)
                         exportTask->Cancel();
@@ -338,14 +626,19 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     }
                     break;
                 case 3:
+                    if (previewTask && !previewTask->Done()) {
+                        pendingDiscard = true;
+                        CancelPreview();
+                        return 0;
+                    }
                     ClearResult();
                     DestroyWindow(hwnd);
                     break;
                 case 4:
                     trimMode = true;
-                    SetWindowTextW(trimStart, L"0");
-                    SetWindowTextW(trimEnd,
-                                   (std::to_wstring((resultSnapshot.encodedDuration / 10000) / 1000.0)).c_str());
+                    rangeStart = 0;
+                    rangeEnd = resultSnapshot.encodedDuration;
+                    SyncRangeEdits();
                     SetTrimVisible(true);
                     SetWindowTextW(statusLabel, L"Trim range in seconds: Start (left), End (right). Apply creates a "
                                                 L"new recording; original is unchanged on failure.");
@@ -410,6 +703,11 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             session->Stop(false);
         return 0;
     case WM_CLOSE:
+        if (previewTask && !previewTask->Done()) {
+            pendingClose = true;
+            CancelPreview();
+            return 0;
+        }
         if (exportTask) {
             exportTask->Cancel();
             return 0;
@@ -440,6 +738,10 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             DestroyWindow(hwnd);
         return 0;
     case WM_DESTROY:
+        if (previewTask && previewTask->Done())
+            previewTask.reset();
+        previewFrame = {};
+        KillTimer(hwnd, PreviewPoll);
         Area({}, false);
         if (areaWindow)
             DestroyWindow(areaWindow);
@@ -463,9 +765,13 @@ bool ShowControl(RECT region) {
     MONITORINFO mi{sizeof(mi)};
     if (!monitor || !GetMonitorInfoW(monitor, &mi))
         return false;
-    window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, ClassName, L"Nskry — Recording / settings",
-                             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, mi.rcWork.right - 560, mi.rcWork.top + 12, 540,
-                             240, nullptr, nullptr, module, nullptr);
+    setupRegion = region;
+    layoutMode = -1;
+    const auto initial = RecordingBarBounds(region, mi.rcWork, 800, 52);
+    window =
+        CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, ClassName, L"Nskry — Recording / settings",
+                        WS_POPUP | WS_BORDER | WS_CLIPCHILDREN, initial.left, initial.top, initial.right - initial.left,
+                        initial.bottom - initial.top, nullptr, nullptr, module, nullptr);
     if (!window)
         return false;
     // Refuse recording if the OS cannot exclude this control window. No black UI box in output.
@@ -473,8 +779,8 @@ bool ShowControl(RECT region) {
         DestroyWindow(window);
         return false;
     }
-    statusLabel = CreateWindowExW(0, L"STATIC", L"Starting...", WS_CHILD | WS_VISIBLE, 12, 10, 510, 60, window, nullptr,
-                                  module, nullptr);
+    statusLabel = CreateWindowExW(0, L"STATIC", L"Starting...", WS_CHILD | WS_VISIBLE | SS_ENDELLIPSIS, 12, 10, 510, 60,
+                                  window, nullptr, module, nullptr);
     pauseButton = CreateWindowExW(0, L"BUTTON", L"Pause", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 12, 78, 100, 28, window,
                                   HMENU(1), module, nullptr);
     stopButton = CreateWindowExW(0, L"BUTTON", L"Stop / save", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 124, 78, 115, 28,
@@ -487,7 +793,7 @@ bool ShowControl(RECT region) {
     };
     fpsChoice = child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP, 12, 122, 100, 160, 7);
     qualityChoice = child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP, 124, 122, 120, 160, 8);
-    followChoice = child(L"BUTTON", L"Follow selected window", BS_AUTOCHECKBOX, 12, 168, 225, 28, 9);
+    followChoice = child(L"BUTTON", L"Follow window", BS_AUTOCHECKBOX, 12, 168, 225, 28, 9);
     defaultsButton = child(L"BUTTON", L"Save defaults", WS_TABSTOP, 252, 122, 140, 28, 11);
     for (const auto *text : {L"30 fps", L"60 fps"})
         SendMessageW(fpsChoice, CB_ADDSTRING, 0, LPARAM(text));
@@ -498,12 +804,22 @@ bool ShowControl(RECT region) {
     trimEnd = child(L"EDIT", L"0", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, 124, 130, 120, 28, 13);
     trimApply = child(L"BUTTON", L"Apply trim", WS_TABSTOP, 252, 130, 100, 28, 5);
     trimCancel = child(L"BUTTON", L"Cancel trim", WS_TABSTOP, 364, 130, 100, 28, 6);
+    WNDCLASSW rangeClass{};
+    rangeClass.lpfnWndProc = RangeProcedure;
+    rangeClass.hInstance = module;
+    rangeClass.lpszClassName = L"NskryRecordTrimRangeV1";
+    RegisterClassW(&rangeClass);
+    rangeWindow = child(rangeClass.lpszClassName, L"", 0, 12, 282, 760, 36, 14);
     if (!statusLabel || !pauseButton || !stopButton || !discardButton || !fpsChoice || !qualityChoice ||
-        !followChoice || !defaultsButton || !trimButton || !trimStart || !trimEnd || !trimApply || !trimCancel) {
+        !followChoice || !defaultsButton || !trimButton || !trimStart || !trimEnd || !trimApply || !trimCancel ||
+        !rangeWindow) {
         DestroyWindow(window);
         return false;
     }
     closing = false;
+    pendingClose = pendingDiscard = false;
+    pendingExport = -1;
+    LayoutControl();
     closePromptActive = false;
     ShowWindow(window, SW_SHOWNOACTIVATE);
     if (!SetTimer(window, Poll, 250, nullptr)) {
@@ -595,6 +911,11 @@ NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext *ctx) {
         SetWindowTextW(stopButton, L"Stop");
         EnableWindow(stopButton, FALSE);
         SetWindowTextW(discardButton, L"Cancel");
+        SetWindowTextW(statusLabel, (std::wstring(gifMode ? L"GIF " : L"Video ") + std::to_wstring(r.right - r.left) +
+                                     L" x " + std::to_wstring(r.bottom - r.top))
+                                        .c_str());
+        LayoutControl();
+        Area(r, true);
     } catch (...) {
         Error(L"Could not start recording.");
         if (window && !session)
@@ -608,6 +929,7 @@ NSKRY_API int32_t NSKRY_CALL nskry_plugin_capture_action_v1(const NskryCaptureAc
     if (session || setup || completed || exportTask) {
         if (window)
             SetForegroundWindow(window);
+        LayoutControl();
         return 1;
     }
     requestingGif = true;
@@ -642,6 +964,7 @@ NSKRY_API int32_t NSKRY_CALL nskry_plugin_show_settings_v1(HWND owner) {
         SetWindowTextW(discardButton, L"Close");
         SetWindowTextW(statusLabel, L"Default video frame rate (left) and bitrate quality (right).\nThese defaults do "
                                     L"not change GIF's fixed settings. Save defaults to apply.");
+        LayoutControl();
         if (window)
             SetForegroundWindow(window);
         return 1;
@@ -674,6 +997,8 @@ NSKRY_API void NSKRY_CALL nskry_plugin_shutdown() {
         session->Shutdown();
         session.reset();
     }
+    previewTask.reset();
+    previewFrame = {};
     if (exportTask) {
         exportTask->Shutdown();
         if (exportingTrim && exportTask->Status().success)
@@ -685,6 +1010,7 @@ NSKRY_API void NSKRY_CALL nskry_plugin_shutdown() {
     if (window)
         DestroyWindow(window);
     UnregisterClassW(ClassName, module);
+    UnregisterClassW(L"NskryRecordTrimRangeV1", module);
     if (areaWindow)
         DestroyWindow(areaWindow);
     areaWindow = nullptr;
@@ -727,5 +1053,11 @@ void RecordControlTestHoldPrompt(bool value) {
 }
 void RecordControlTestUpdate() {
     Update();
+}
+bool RecordControlTestPreviewReady() {
+    return !previewFrame.pixels.empty();
+}
+bool RecordControlTestPreviewAlive() {
+    return bool(previewTask);
 }
 #endif

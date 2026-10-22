@@ -5,7 +5,7 @@
 #include <winrt/base.h>
 namespace nskry::record {
 // Private worker-only streaming encoder. One indexed frame, no animation cache.
-// Fixed RGB332 palette avoids per-frame quantizer/model allocations.
+// Bounded adaptive local palette; no animation/frame cache or external model.
 class GifEncoder {
   public:
     void Open(const std::wstring &path, UINT width, UINT height, volatile LONG *created);

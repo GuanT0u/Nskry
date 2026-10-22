@@ -1,5 +1,6 @@
 #include "capture/region_stream.h"
 #include "capture/d3d_device.h"
+#include "capture/desktop_region.h"
 #include "pch.h"
 #include <cstring>
 #include <shellscalingapi.h>
@@ -21,6 +22,7 @@ struct RegionStream {
     std::shared_ptr<std::atomic<bool>> closed = std::make_shared<std::atomic<bool>>(false);
     winrt::event_token closedToken{};
     std::unique_ptr<D3DDevice> device;
+    std::unique_ptr<DesktopRegion> desktop;
     winrt::Windows::Graphics::Capture::GraphicsCaptureItem item{nullptr};
     winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool pool{nullptr};
     winrt::Windows::Graphics::Capture::GraphicsCaptureSession capture{nullptr};
@@ -48,7 +50,8 @@ void Error(wchar_t *text, uint32_t capacity, const wchar_t *message) {
         wcsncpy_s(text, capacity, message, _TRUNCATE);
 }
 HRESULT OpenSource(RECT region, uint32_t fps, HWND window, void **handle, NskryCaptureDescriptionV1 *output,
-                   wchar_t *error, uint32_t capacity, uint32_t maxLong = 1920, uint32_t maxShort = 1080) {
+                   wchar_t *error, uint32_t capacity, uint32_t maxLong = 1920, uint32_t maxShort = 1080,
+                   bool desktopDuplication = false) {
     if (handle)
         *handle = nullptr;
     if (!handle || !output || output->structSize < sizeof(*output) || output->version != 1 || fps < 1 || fps > 60)
@@ -92,6 +95,12 @@ HRESULT OpenSource(RECT region, uint32_t fps, HWND window, void **handle, NskryC
         if (w * scale < 2 || h * scale < 2) {
             Error(error, capacity, L"This region is too thin after downscaling. Select a larger height/width.");
             return E_INVALIDARG;
+        }
+        if (!window && desktopDuplication) {
+            stream->desktop = std::make_unique<DesktopRegion>(stream->monitor, region, stream->width, stream->height);
+            *output = {sizeof(*output), 1, stream->width, stream->height, stream->width * 4};
+            *handle = stream.release();
+            return S_OK;
         }
         stream->device = std::make_unique<D3DDevice>();
         auto interop = winrt::get_activation_factory<winrt::Windows::Graphics::Capture::GraphicsCaptureItem,
@@ -161,6 +170,7 @@ HRESULT __cdecl Read(void *handle, uint8_t *output, uint32_t capacity) {
             s->region = {frame.left + s->relative.left, frame.top + s->relative.top,
                          frame.left + s->relative.right, frame.top + s->relative.bottom};
         }
+        if (s->desktop) return s->desktop->Read(output);
         winrt::check_hresult(s->device->Device()->GetDeviceRemovedReason());
         auto frame = s->pool.TryGetNextFrame();
         if (!frame)
@@ -244,7 +254,7 @@ HRESULT __cdecl OpenV2(const NskryCaptureRequestV2 *r, void **h, NskryCaptureDes
     const auto maxShort = r->maxShortSide ? r->maxShortSide : 1080;
     if (maxLong < 2 || maxLong > 1920 || maxShort < 2 || maxShort > 1080 || maxShort > maxLong)
         return E_INVALIDARG;
-    return OpenSource(r->physicalRegion, r->fps, r->followWindow, h, d, e, n, maxLong, maxShort);
+    return OpenSource(r->physicalRegion, r->fps, r->followWindow, h, d, e, n, maxLong, maxShort, true);
 }
 HRESULT __cdecl Bounds(void *handle, RECT *r) {
     const auto *s = static_cast<const RegionStream *>(handle);
