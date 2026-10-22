@@ -16,22 +16,24 @@ struct PreviewFrame {
 // one isolated decoder process. Finish drains the final seek then exits.
 class PreviewTask {
   public:
-    PreviewTask(std::wstring path, UINT sourceWidth, UINT sourceHeight, bool gif);
+    PreviewTask(std::wstring path, UINT sourceWidth, UINT sourceHeight, bool gif, std::wstring workerPath = {});
     ~PreviewTask();
     bool Request(int64_t time);
     void Finish();
     void Cancel();
     bool Done() const;
     bool Take(PreviewFrame &frame, bool &done);
+    DWORD WorkerProcessId() const;
 
   private:
-    void Run(std::wstring path, UINT sourceWidth, UINT sourceHeight, bool gif) noexcept;
+    void Run(std::wstring path, UINT sourceWidth, UINT sourceHeight, bool gif, std::wstring workerPath) noexcept;
     HANDLE m_cancel{}, m_request{};
     std::thread m_thread;
     mutable std::mutex m_mutex;
     int64_t m_time{};
     uint64_t m_serial{};
     bool m_finishing = false, m_done = false, m_ready = false;
+    DWORD m_workerProcessId{};
     PreviewFrame m_frame;
 };
 } // namespace nskry::record

@@ -3,13 +3,16 @@
 #include <algorithm>
 #include <winrt/base.h>
 namespace nskry::record {
-PreviewTask::PreviewTask(std::wstring path, UINT width, UINT height, bool gif) {
+PreviewTask::PreviewTask(std::wstring path, UINT width, UINT height, bool gif, std::wstring workerPath) {
     m_cancel = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     m_request = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     try {
         if (!m_cancel || !m_request)
             winrt::throw_last_error();
-        m_thread = std::thread([this, path = std::move(path), width, height, gif] { Run(path, width, height, gif); });
+        m_thread = std::thread([this, path = std::move(path), width, height, gif,
+                                workerPath = std::move(workerPath)] {
+            Run(path, width, height, gif, workerPath);
+        });
     } catch (...) {
         if (m_cancel)
             CloseHandle(m_cancel);
@@ -58,7 +61,12 @@ bool PreviewTask::Take(PreviewFrame &frame, bool &done) {
     }
     return false;
 }
-void PreviewTask::Run(std::wstring path, UINT sourceWidth, UINT sourceHeight, bool gif) noexcept {
+DWORD PreviewTask::WorkerProcessId() const {
+    std::lock_guard lock(m_mutex);
+    return m_workerProcessId;
+}
+void PreviewTask::Run(std::wstring path, UINT sourceWidth, UINT sourceHeight, bool gif,
+                      std::wstring workerPath) noexcept {
     bool apartment = false;
     std::unique_ptr<IsolatedEncoder> decoder;
     try {
@@ -91,8 +99,12 @@ void PreviewTask::Run(std::wstring path, UINT sourceWidth, UINT sourceHeight, bo
             if (serial == processed)
                 continue;
             if (!decoder) {
-                decoder = std::make_unique<IsolatedEncoder>(m_cancel);
+                decoder = std::make_unique<IsolatedEncoder>(m_cancel, std::filesystem::path(workerPath));
                 decoder->Open(path, width, height, gif ? 10 : 30, false, 0, gif, true, sourceWidth, sourceHeight);
+                {
+                    std::lock_guard lock(m_mutex);
+                    m_workerProcessId = decoder->ProcessId();
+                }
             }
             lastStarted = GetTickCount64();
             PreviewFrame frame{width, height, time, std::vector<uint8_t>(uint64_t(width) * height * 4)};

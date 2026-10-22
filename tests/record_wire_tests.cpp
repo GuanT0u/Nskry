@@ -115,6 +115,8 @@ int main(int argc, char **argv) {
             bad.height = 362;
         if (fault == 3)
             bad.sourceWidth = 0;
+        if (fault == 1 || fault == 2)
+            bad.pixelBytes = bad.width * bad.height * 4;
         if (wire::ValidHeader(bad))
             return 11;
     }

@@ -84,6 +84,9 @@ int wmain(int argc, wchar_t **argv) {
                     if (initial.preview) {
                         if (command != wire::Command::Preview || h.time < 0 || h.time > INT64_MAX - 1000000)
                             winrt::throw_hresult(E_INVALIDARG);
+#if defined(NSKRY_RECORD_TEST_HANG_WORKER)
+                        Sleep(INFINITE);
+#endif
                         if (!preview)
                             preview = std::make_unique<PreviewDecoder>(initial.path, initial.gif != 0,
                                                                        initial.sourceWidth, initial.sourceHeight);

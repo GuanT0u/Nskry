@@ -8,7 +8,9 @@
 #include <array>
 #include <atomic>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
@@ -44,6 +46,12 @@ void __cdecl CaptureClose(void *h) {
 bool Check(bool value, const char *name) {
     std::cout << (value ? "PASS " : "FAIL ") << name << '\n';
     return value;
+}
+std::vector<uint8_t> ReadFileBytes(const std::filesystem::path &path) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream)
+        return {};
+    return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
 }
 void Message(const std::wstring &text) {
     const int size = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), int(text.size()), nullptr, 0, nullptr, nullptr);
@@ -178,7 +186,7 @@ bool AdaptiveColors(const std::filesystem::path &root, bool complex = false) {
 }
 } // namespace
 int wmain(int argc, wchar_t **argv) {
-    if (argc != 2)
+    if (argc != 3)
         return 2;
     const auto root = std::filesystem::path(argv[1]) / (L"record-features-" + std::to_wstring(GetCurrentProcessId()) +
                                                         L"-" + std::to_wstring(GetTickCount64()));
@@ -220,7 +228,7 @@ int wmain(int argc, wchar_t **argv) {
                 ok = Check(encoder.Close(), "encoder exits") && ok;
             }
             ok = Check(gif ? Gif(path, 10, 10000000) : Video(path, 10000000, fps), "new format decodes") && ok;
-            const auto before = std::filesystem::file_size(path);
+            const auto before = ReadFileBytes(path);
             {
                 PreviewTask preview(path.wstring(), 160, 90, gif);
                 for (int i = 0; i < 50; ++i)
@@ -240,15 +248,29 @@ int wmain(int argc, wchar_t **argv) {
                            "latest-only preview chooses correct scene and releases decoder") &&
                      ok;
             }
-            ok = Check(std::filesystem::file_size(path) == before, "preview never overwrites its input") && ok;
+            const auto after = ReadFileBytes(path);
+            ok = Check(after == before, "preview never mutates input bytes") && ok;
             {
-                PreviewTask preview(path.wstring(), 160, 90, gif);
+                PreviewTask preview(path.wstring(), 160, 90, gif, argv[2]);
                 preview.Request(0);
+                const auto launchedBy = GetTickCount64() + 5000;
+                while (!preview.WorkerProcessId() && !preview.Done() && GetTickCount64() < launchedBy)
+                    WaitForSingleObject(GetCurrentProcess(), 10);
+                const DWORD workerPid = preview.WorkerProcessId();
+                HANDLE worker = workerPid ? OpenProcess(SYNCHRONIZE, FALSE, workerPid) : nullptr;
+                const bool childWasActive = worker && WaitForSingleObject(worker, 0) == WAIT_TIMEOUT;
+                if (childWasActive)
+                    Sleep(100); // Let the test-only worker enter its blocked Preview command.
                 preview.Cancel();
                 const auto until = GetTickCount64() + 5000;
                 while (!preview.Done() && GetTickCount64() < until)
                     WaitForSingleObject(GetCurrentProcess(), 10);
-                ok = Check(preview.Done(), "cancel preview releases child and thread work") && ok;
+                const bool childExited = worker && WaitForSingleObject(worker, 0) == WAIT_OBJECT_0;
+                if (worker)
+                    CloseHandle(worker);
+                ok = Check(childWasActive && preview.Done() && childExited,
+                           "cancel interrupts an active preview child and joins its thread") &&
+                     ok;
             }
             Snapshot snapshot;
             snapshot.width = 160;
@@ -306,6 +328,13 @@ int wmain(int argc, wchar_t **argv) {
                     seen[p.y * 6 + p.x] = true;
                 }
         }
+        const auto identityOrigin = nskry::DesktopSurfacePoint(0, 0, 6, 4, DXGI_MODE_ROTATION_IDENTITY);
+        const auto r90Origin = nskry::DesktopSurfacePoint(0, 0, 6, 4, DXGI_MODE_ROTATION_ROTATE90);
+        const auto r180Origin = nskry::DesktopSurfacePoint(0, 0, 6, 4, DXGI_MODE_ROTATION_ROTATE180);
+        const auto r270Origin = nskry::DesktopSurfacePoint(0, 0, 6, 4, DXGI_MODE_ROTATION_ROTATE270);
+        rotations = rotations && identityOrigin.x == 0 && identityOrigin.y == 0 && r90Origin.x == 0 &&
+                    r90Origin.y == 3 && r180Origin.x == 5 && r180Origin.y == 3 && r270Origin.x == 5 &&
+                    r270Origin.y == 0;
         ok = Check(rotations, "rotation mapping is bounded and bijective") && ok;
         ok = Check(AdaptiveColors(root), "adaptive GIF preserves dark/neutral colors across local palettes") && ok;
         ok = Check(AdaptiveColors(root, true), "adaptive GIF fallback preserves grays in gradient scenes") && ok;
