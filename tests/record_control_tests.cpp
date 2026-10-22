@@ -20,6 +20,7 @@ bool RecordControlTestPreviewReady();
 bool RecordControlTestPreviewAlive();
 extern "C" int32_t NSKRY_CALL nskry_plugin_connect_capture_v2(const NskryCaptureServiceV2 *);
 extern "C" int32_t NSKRY_CALL nskry_plugin_capture_action_v1(const NskryCaptureActionV1 *);
+extern "C" int32_t NSKRY_CALL nskry_plugin_show_settings_v1(HWND);
 namespace {
 std::atomic<int> captures{};
 HRESULT __cdecl Open(RECT, uint32_t, void **value, NskryCaptureDescriptionV1 *d, wchar_t *, uint32_t) {
@@ -196,6 +197,11 @@ int wmain(int argc, wchar_t **argv) {
     ok = nskry_plugin_capture_action_v1(&gif) != 0 && ok;
     hwnd = OwnControl();
     ok = hwnd && !IsWindowEnabled(GetDlgItem(hwnd, 7)) && !IsWindowEnabled(GetDlgItem(hwnd, 8)) && !captures && ok;
+    SendMessageW(hwnd, WM_COMMAND, 3, 0);
+    ok = nskry_plugin_show_settings_v1(nullptr) != 0 && ok;
+    hwnd = OwnControl();
+    ok = hwnd && IsWindowVisible(GetDlgItem(hwnd, 15)) && !IsWindowVisible(GetDlgItem(hwnd, 9)) && !captures && ok;
+    // Do not invoke Explorer or touch the user's recording cache in this regression.
     SendMessageW(hwnd, WM_COMMAND, 3, 0);
     nskry_plugin_shutdown();
     for (const auto &file : std::filesystem::directory_iterator(root))

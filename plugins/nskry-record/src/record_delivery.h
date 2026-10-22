@@ -6,6 +6,7 @@ namespace nskry::record {
 Options LoadDefaults();
 bool SaveDefaults(Options options);
 std::wstring NewRecordingPath(bool gif);
+bool OpenRecordingCache(HWND owner); // Explicit user action; never scans or deletes files.
 void PrepareRecordingCache(const std::wstring &output, HANDLE canceled = nullptr); // Worker only, no idle janitor.
 bool CopyRecordingFile(HWND owner, const std::wstring &path);
 } // namespace nskry::record

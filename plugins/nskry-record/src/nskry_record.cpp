@@ -22,6 +22,7 @@ std::unique_ptr<RecordSession> session;
 HWND window{}, statusLabel{}, pauseButton{}, stopButton{}, discardButton{};
 HWND fpsChoice{}, qualityChoice{}, followChoice{}, defaultsButton{}, trimButton{}, trimStart{}, trimEnd{}, trimApply{},
     trimCancel{};
+HWND cacheButton{};
 HWND areaWindow{};
 HWND rangeWindow{};
 std::unique_ptr<PreviewTask> previewTask;
@@ -321,6 +322,7 @@ void LayoutControl() {
         else
             SetWindowTextW(followChoice, L"Follow selected window");
         place(followChoice, mode == 0, x, 8, setupWidths.follow);
+        place(cacheButton, mode == 4, x, 8, setupWidths.follow);
         x += setupWidths.follow + setupWidths.gap;
         place(defaultsButton, !compact, x, 8, setupWidths.defaults);
         if (!compact)
@@ -335,7 +337,7 @@ void LayoutControl() {
         place(stopButton, false, 0, 0, 1);
         place(trimButton, false, 0, 0, 1);
     } else {
-        for (HWND h : {fpsChoice, qualityChoice, followChoice, defaultsButton})
+        for (HWND h : {fpsChoice, qualityChoice, followChoice, defaultsButton, cacheButton})
             ShowWindow(h, SW_HIDE);
         place(pauseButton, true, x, 8, 100);
         x += 106;
@@ -573,6 +575,16 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_COMMAND:
         try {
             if (setup) {
+                if (preferencesOnly && LOWORD(wp) == 15) {
+                    if (MessageBoxW(hwnd,
+                            L"Copied recordings remain here so clipboard paste and history can use them.\n"
+                            L"Deleting a file may break later paste. Save anything you need before deleting it.\n\n"
+                            L"Open the cache folder to manage files yourself?",
+                            L"Recording cache", MB_OKCANCEL | MB_ICONINFORMATION) == IDOK &&
+                        !OpenRecordingCache(hwnd))
+                        Error(L"Could not open the recording cache folder.");
+                    return 0;
+                }
                 if (LOWORD(wp) == 3) {
                     setup = false;
                     DestroyWindow(hwnd);
@@ -823,6 +835,7 @@ bool ShowControl(RECT region) {
     qualityChoice = child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP, 124, 122, 120, 160, 8);
     followChoice = child(L"BUTTON", L"Follow window", BS_AUTOCHECKBOX, 12, 168, 225, 28, 9);
     defaultsButton = child(L"BUTTON", L"Save defaults", WS_TABSTOP, 252, 122, 140, 28, 11);
+    cacheButton = child(L"BUTTON", L"Cache folder...", WS_TABSTOP, 12, 168, 225, 28, 15);
     for (const auto *text : {L"30 fps", L"60 fps"})
         SendMessageW(fpsChoice, CB_ADDSTRING, 0, LPARAM(text));
     for (const auto *text : {L"中 / Medium", L"高 / High", L"高清 / HD"})
@@ -839,8 +852,8 @@ bool ShowControl(RECT region) {
     RegisterClassW(&rangeClass);
     rangeWindow = child(rangeClass.lpszClassName, L"", 0, 12, 282, 760, 36, 14);
     if (!statusLabel || !pauseButton || !stopButton || !discardButton || !fpsChoice || !qualityChoice ||
-        !followChoice || !defaultsButton || !trimButton || !trimStart || !trimEnd || !trimApply || !trimCancel ||
-        !rangeWindow) {
+        !followChoice || !defaultsButton || !cacheButton || !trimButton || !trimStart || !trimEnd || !trimApply ||
+        !trimCancel || !rangeWindow) {
         DestroyWindow(window);
         return false;
     }

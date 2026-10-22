@@ -46,6 +46,12 @@ class RecordSession {
     static int64_t Now();
 
   private:
+    struct Timing {
+        State state;
+        int64_t duration;
+    };
+    // Sampling/pacing must not copy diagnostic strings on every frame.
+    Timing ReadTiming() const;
     void Run() noexcept;
     NskryCaptureServiceV1 m_service;
     RECT m_region{};

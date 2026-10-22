@@ -43,7 +43,8 @@ bool SaveDefaults(Options o) {
     RegCloseKey(key);
     return ok;
 }
-std::wstring NewRecordingPath(bool gif) {
+namespace {
+std::filesystem::path RecordingCacheDirectory() {
     PWSTR local{};
     winrt::check_hresult(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &local));
     std::filesystem::path root;
@@ -54,6 +55,21 @@ std::wstring NewRecordingPath(bool gif) {
         throw;
     }
     CoTaskMemFree(local);
+    return root;
+}
+} // namespace
+bool OpenRecordingCache(HWND owner) {
+    try {
+        const auto root = RecordingCacheDirectory();
+        std::filesystem::create_directories(root);
+        return reinterpret_cast<INT_PTR>(ShellExecuteW(owner, L"open", root.c_str(), nullptr, nullptr,
+                                                       SW_SHOWNORMAL)) > 32;
+    } catch (...) {
+        return false;
+    }
+}
+std::wstring NewRecordingPath(bool gif) {
+    const auto root = RecordingCacheDirectory();
     GUID guid{};
     winrt::check_hresult(CoCreateGuid(&guid));
     wchar_t text[40]{};

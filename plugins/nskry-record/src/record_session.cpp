@@ -95,6 +95,10 @@ Snapshot RecordSession::Status() const {
     copy.duration = m_timeline.Elapsed(Now());
     return copy;
 }
+RecordSession::Timing RecordSession::ReadTiming() const {
+    std::lock_guard lock(m_mutex);
+    return {m_timeline.state, m_timeline.Elapsed(Now())};
+}
 void RecordSession::Run() noexcept {
     const UINT fps = m_options.fps;
     // Use one transport for the complete session; never change capture semantics
@@ -165,7 +169,7 @@ void RecordSession::Run() noexcept {
                     (m_options.gif ? L".partial.gif" : L".partial.mp4");
         NskryCaptureDescriptionV1 description{sizeof(description), 1};
         wchar_t error[512]{};
-        if (Status().state == State::Discarding)
+        if (ReadTiming().state == State::Discarding)
             winrt::throw_hresult(HRESULT_FROM_WIN32(ERROR_CANCELLED));
         RECT originalWindow{};
         DWORD sourcePid{};
@@ -201,7 +205,7 @@ void RecordSession::Run() noexcept {
             !ValidFrameFormat(description.width, description.height, fps) ||
             description.stride != description.width * 4)
             winrt::throw_hresult(E_BOUNDS);
-        if (Status().state == State::Discarding)
+        if (ReadTiming().state == State::Discarding)
             winrt::throw_hresult(HRESULT_FROM_WIN32(ERROR_CANCELLED));
         std::vector<uint8_t> pixels(uint64_t(description.stride) * description.height);
         std::vector<uint8_t> pending(pixels.size());
@@ -234,10 +238,10 @@ void RecordSession::Run() noexcept {
         UINT initialDpiX{}, initialDpiY{};
         winrt::check_hresult(GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &initialDpiX, &initialDpiY));
         while (true) {
-            Snapshot snapshot = Status();
+            auto snapshot = ReadTiming();
             if (m_options.gif && snapshot.duration >= 119LL * 10000000) {
                 Stop(false); // Bounded animation: at most two minutes, never grow a frame cache.
-                snapshot = Status();
+                snapshot = ReadTiming();
             }
             if (snapshot.state == State::Stopping || snapshot.state == State::Discarding)
                 break;
@@ -292,7 +296,7 @@ void RecordSession::Run() noexcept {
                     // Fixed screen region: source HWND closing/minimizing is ordinary desktop content.
                     // Static desktops may legitimately have no new frames. Service checks item,
                     // layout and device health even on S_FALSE; repeat last pixels at real timestamps.
-                    const auto at = first ? int64_t(0) : Status().duration;
+                    const auto at = first ? int64_t(0) : ReadTiming().duration;
                     if (havePending && at > pendingTime) {
                         const auto encodeStarted = Now();
                         encoder->Write(pending.data(), pendingTime, at - pendingTime);
@@ -314,7 +318,7 @@ void RecordSession::Run() noexcept {
                     schedule.Submitted(at);
                 }
             }
-            const auto elapsed = Status().duration;
+            const auto elapsed = ReadTiming().duration;
             const auto delay =
                 ready && haveFrame ? (std::max)(int64_t(10000), schedule.next - elapsed) : int64_t(100000);
             LARGE_INTEGER due{};
@@ -329,7 +333,7 @@ void RecordSession::Run() noexcept {
                 CancelWaitableTimer(timer.value);
         }
         capture.Close();
-        const auto final = Status();
+        const auto final = ReadTiming();
         owned = encoder->CreatedFile();
         if (final.state == State::Discarding) {
             if (!releaseEncoder())
@@ -408,7 +412,7 @@ void RecordSession::Run() noexcept {
     // finalize or publish a truncated recording as a successful full recording.
     bool finalized = owned && (finalizedFile || (encoder && encoder->Finalized()));
     if (owned && encoder && encoder->Samples() && !encoder->FinalizationAttempted() &&
-        Status().state != State::Discarding) {
+        ReadTiming().state != State::Discarding) {
         try {
             encoder->Finalize();
             finalized = true;
@@ -443,7 +447,7 @@ void RecordSession::Run() noexcept {
             m_status.recoveryPath = temporary;
             m_status.recoveryFinalized = finalized;
         }
-    } else if (Status().state == State::Discarding && !success && encoderExited) {
+    } else if (ReadTiming().state == State::Discarding && !success && encoderExited) {
         outcome = L"Recording discarded.";
         success = true;
     }
