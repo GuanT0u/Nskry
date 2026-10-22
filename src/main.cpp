@@ -15,6 +15,7 @@
 #include "core/plugin_update_manager.h"
 #include "core/plugin_registry.h"
 #include "core/settings_manager.h"
+#include "core/single_instance.h"
 #include "core/monitor_visibility_controller.h"
 
 // GDI+ for PNG saving (needs min/max workaround with NOMINMAX)
@@ -166,6 +167,17 @@ int WINAPI wWinMain(
 {
     int packageCliExitCode = 0;
     if (RunPluginPackageCli(packageCliExitCode)) return packageCliExitCode;
+
+    // Gate before COM, GPU, plugin state, tray and global shortcut registration.
+    nskry::SingleInstanceGuard instance;
+    if (instance.Status() == nskry::SingleInstanceGuard::Result::AlreadyRunning)
+        return 0;
+    if (instance.Status() == nskry::SingleInstanceGuard::Result::Failed) {
+        const auto message = L"Unable to check whether Nskry is already running. Windows error: " +
+                             std::to_wstring(instance.Error());
+        ::MessageBoxW(nullptr, message.c_str(), L"Nskry", MB_ICONERROR);
+        return 1;
+    }
 
     winrt::init_apartment(winrt::apartment_type::single_threaded);
     ::SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);

@@ -24,6 +24,7 @@ add_executable(Nskry WIN32
     src/core/plugin_update_policy.cpp
     src/core/plugin_registry.cpp
     src/core/settings_manager.cpp
+    src/core/single_instance.cpp
     src/core/image_edit_model.cpp
     src/core/monitor_visibility_controller.cpp
     src/interop/window_enumerator.cpp
@@ -85,6 +86,13 @@ add_subdirectory(plugins/nskry-ocr)
 add_subdirectory(plugins/nskry-record)
 
 if (BUILD_TESTING)
+    add_executable(NskrySingleInstanceTests tests/single_instance_tests.cpp src/core/single_instance.cpp)
+    target_include_directories(NskrySingleInstanceTests PRIVATE src)
+    target_compile_definitions(NskrySingleInstanceTests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(NskrySingleInstanceTests PRIVATE advapi32)
+    add_dependencies(NskrySingleInstanceTests Nskry)
+    add_test(NAME NskrySingleInstanceTests COMMAND NskrySingleInstanceTests $<TARGET_FILE:Nskry>)
+    set_tests_properties(NskrySingleInstanceTests PROPERTIES TIMEOUT 20)
     add_executable(NskryRecordPolicyTests tests/record_policy_tests.cpp)
     target_include_directories(NskryRecordPolicyTests PRIVATE plugins/nskry-record/src)
     add_test(NAME NskryRecordPolicyTests COMMAND NskryRecordPolicyTests)
