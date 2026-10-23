@@ -17,7 +17,8 @@
 | 滚动采集、拼接、自动滚动与采集预览 | nskry-scroll | 无该可选动作 | toolbar_action；完成后交给宿主编辑器 |
 | OCR 引擎、模型、识别结果页与文字选择 | nskry-ocr | 无该可选动作 | toolbar_action + post_capture；Edit 使用 Core |
 | 区域/窗口跟随 MP4 与 GIF、录后起止裁剪 | nskry-record | 无该可选动作 | toolbar_action + 区域采集v2/命令v1/额外动作v1；控制/编码/文件归插件 |
-| 翻译、上传等专项功能 | 后续插件 | 尚未提供 | 单独包、按需资源；不得偷用 OCR/Scroll 私有 UI |
+| 中英离线翻译 | nskry-translate 开发 MVP | 无该可选动作 | 独立 Windows OCR + 自含按需 worker；未正式发行，无 OCR/Scroll 前置 |
+| 在线翻译、上传等专项功能 | 后续插件/引擎 | 尚未提供 | 单独包、按需资源；不得偷用 OCR/Scroll 私有 UI |
 
 裁剪/标注是多种图像功能共有的能力，确定并入 Core，不再拆一个“必须安装的编辑插件”。
 不为已确定的基础编辑窗口增加前置安装链；这不禁止其他独立、边界清晰的服务插件成为前置。

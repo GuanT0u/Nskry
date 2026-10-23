@@ -20,6 +20,8 @@ cmake-build-*/
 *.ilk
 *.exp
 *.lib
+__pycache__/
+*.pyc
 installer/bundled/*.nskryplugin
 
 # OS
