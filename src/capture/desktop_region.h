@@ -90,6 +90,12 @@ class DesktopRegion {
                 (m_shapeInfo.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME && (m_shapeInfo.Height & 1)))
                 winrt::throw_hresult(E_BOUNDS);
         }
+        // DuplicateOutput can first report only a pointer update (present=0,
+        // accumulated=0), with no desktop image yet. Preserve pointer metadata,
+        // release this frame, and let the caller's bounded startup wait retry.
+        // After a real image, keep accepting pointer-only updates for the cursor.
+        if (!m_haveDesktopImage && !info.LastPresentTime.QuadPart)
+            return S_FALSE;
         auto source = resource.as<ID3D11Texture2D>();
         D3D11_TEXTURE2D_DESC texture{};
         source->GetDesc(&texture);
@@ -116,6 +122,7 @@ class DesktopRegion {
                         box.bottom - box.top, m_width, m_height, m_desc.Rotation);
                 m_gpu->Read(source.get(), box, pixels, m_width * m_height * 4);
                 DrawPointer(pixels, x, y, w, h);
+                m_haveDesktopImage = true;
                 return S_OK;
             } catch (const winrt::hresult_error&) {
                 m_gpu.reset();
@@ -161,6 +168,7 @@ class DesktopRegion {
         }
         m_context->Unmap(m_staging.get(), 0);
         DrawPointer(pixels, x, y, w, h);
+        m_haveDesktopImage = true;
         return S_OK;
     }
 
@@ -215,6 +223,7 @@ class DesktopRegion {
     winrt::com_ptr<IDXGIOutputDuplication> m_duplication;
     winrt::com_ptr<ID3D11Texture2D> m_staging;
     std::unique_ptr<GpuRegionReadback> m_gpu;
+    bool m_haveDesktopImage = false;
     bool m_gpuUnavailable = false;
 };
 } // namespace nskry
