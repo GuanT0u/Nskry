@@ -227,13 +227,31 @@ void IsolatedEncoder::Write(const uint8_t *bgra, int64_t time, int64_t duration)
     auto &h = *c.view.value;
     // The sole slot belongs to this worker until Call signals it to the child.
     // Converted NV12 needs 3/8 of the BGRA transfer size, no unbounded pipe queue.
+    m_payloadReady = false;
     if (h.gif)
         memcpy(&h + 1, bgra, c.pixelBytes);
     else
         BgraToNv12(bgra, reinterpret_cast<uint8_t *>(&h + 1), c.width, c.height);
+    SubmitFrame(time, duration);
+}
+void IsolatedEncoder::Repeat(int64_t time, int64_t duration) {
+    if (!m_payloadReady)
+        winrt::throw_hresult(E_INVALIDARG);
+    SubmitFrame(time, duration);
+}
+void IsolatedEncoder::SubmitFrame(int64_t time, int64_t duration) {
+    if (!m_channel || m_channel->view.value->preview || m_finalizationAttempted ||
+        !ValidSampleTime(time, duration, m_lastEnd))
+        winrt::throw_hresult(E_INVALIDARG);
+    auto &c = *m_channel;
+    if (c.broken || c.closed)
+        winrt::throw_hresult(HRESULT_FROM_WIN32(ERROR_BROKEN_PIPE));
+    auto &h = *c.view.value;
+    m_payloadReady = false;
     h.time = time;
     h.duration = duration;
     c.Call(wire::Command::Frame);
+    m_payloadReady = true;
     ++m_samples;
     m_lastEnd = time + duration;
 }

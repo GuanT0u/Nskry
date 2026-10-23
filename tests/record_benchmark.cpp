@@ -157,6 +157,60 @@ int64_t Verify(const std::filesystem::path &path, uint64_t expectedFrames) {
 }
 } // namespace
 int wmain(int argc, wchar_t **argv) {
+    if (argc == 3 && !wcscmp(argv[1], L"--repeat-compare")) {
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        int result = 0;
+        try {
+            const auto root = std::filesystem::absolute(argv[2]) /
+                (L"repeat-perf-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+            if (!std::filesystem::create_directory(root))
+                winrt::throw_hresult(E_FAIL);
+            std::ofstream metrics(root / L"metrics.csv");
+            if (!metrics)
+                winrt::throw_hresult(E_FAIL);
+            metrics << "round,reuse,parent_frame_cpu_ms,frame_wall_ms,child_total_cpu_ms\n";
+            std::vector<uint8_t> pixels(1920 * 1080 * 4, 100);
+            for (int round = 0; round < 3; ++round) {
+                for (int order = 0; order < 2; ++order) {
+                    const bool reuse = (round + order) % 2 != 0;
+                    const auto output = root / (std::to_wstring(round) + (reuse ? L"-reuse.mp4" : L"-baseline.mp4"));
+                    IsolatedEncoder encoder;
+                    encoder.Open(output.wstring(), 1920, 1080, 30, true);
+                    const auto cpu = Cpu();
+                    const auto start = GetTickCount64();
+                    for (int frame = 0; frame < 90; ++frame) {
+                        const auto time = frame * 10000000LL / 30;
+                        const auto duration = (frame + 1) * 10000000LL / 30 - time;
+                        if (reuse && frame)
+                            encoder.Repeat(time, duration);
+                        else
+                            encoder.Write(pixels.data(), time, duration);
+                    }
+                    const auto parentCpu = (Cpu() - cpu) / 10000.0;
+                    const auto wall = GetTickCount64() - start;
+                    encoder.Finalize();
+                    if (!encoder.Close())
+                        winrt::throw_hresult(E_FAIL);
+                    const auto childCpu = encoder.CpuTime() / 10000.0;
+                    std::cout << "repeat round=" << round << " reuse=" << reuse << " parent_frame_cpu_ms="
+                              << parentCpu << " frame_wall_ms=" << wall << " child_total_cpu_ms=" << childCpu << '\n';
+                    metrics << round << ',' << reuse << ',' << parentCpu << ',' << wall << ',' << childCpu << '\n';
+                    if (std::abs(Verify(output, 90) - 30000000) > 100000)
+                        winrt::throw_hresult(E_FAIL);
+                    std::filesystem::remove(output); // Only this successful, test-owned media.
+                }
+            }
+            std::wcout << L"Repeat metrics: " << root.wstring() << '\n';
+        } catch (const winrt::hresult_error &error) {
+            std::cerr << "Repeat comparison failure=0x" << std::hex << error.code().value << '\n';
+            result = 1;
+        } catch (const std::exception &error) {
+            std::cerr << error.what() << '\n';
+            result = 1;
+        }
+        winrt::uninit_apartment();
+        return result;
+    }
     if (argc == 4 && !wcscmp(argv[1], L"--gif-compare")) {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
         int result = 0;
@@ -344,7 +398,7 @@ int wmain(int argc, wchar_t **argv) {
             const auto quiet = GetTickCount64(), quietCpu = Cpu();
             Pump([&] { return GetTickCount64() - quiet >= 1000; });
             std::cout << "post_stop_cpu_ms=" << (Cpu() - quietCpu) / 10000 << " samples=" << s.frames
-                      << " active100ns=" << s.duration << '\n';
+                      << " repeated_inputs=" << s.repeatedInputs << " active100ns=" << s.duration << '\n';
             sample(i, "quiet", s);
             completed.emplace_back(path, s.duration, s.frames);
         }

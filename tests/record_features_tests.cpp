@@ -93,7 +93,8 @@ bool Gif(const std::filesystem::path &path, unsigned expected, int64_t duration)
     std::cout << "GIF frames=" << count << " duration100ns=" << time << '\n';
     return count == expected && std::abs(time - duration) <= 100000;
 }
-bool Video(const std::filesystem::path &path, int64_t expected, UINT fps) {
+bool Video(const std::filesystem::path &path, int64_t expected, UINT fps,
+           std::vector<uint8_t> *decodedPixels = nullptr) {
     winrt::com_ptr<IMFSourceReader> reader;
     winrt::check_hresult(MFCreateSourceReaderFromURL(path.c_str(), nullptr, reader.put()));
     PROPVARIANT duration{};
@@ -118,6 +119,34 @@ bool Video(const std::filesystem::path &path, int64_t expected, UINT fps) {
         winrt::check_hresult(
             reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, &flags, &stamp, sample.put()));
         if (sample) {
+            if (decodedPixels) {
+                // These comparison fixtures are 160x90. MF reports a padded
+                // 160x96 NV12 surface; padding is not image data and may be
+                // uninitialized. Compare every visible Y/UV byte, not padding.
+                winrt::com_ptr<IMFMediaType> actual;
+                winrt::check_hresult(reader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, actual.put()));
+                UINT w{}, h{};
+                UINT32 stride{};
+                winrt::check_hresult(MFGetAttributeSize(actual.get(), MF_MT_FRAME_SIZE, &w, &h));
+                winrt::check_hresult(actual->GetUINT32(MF_MT_DEFAULT_STRIDE, &stride));
+                if (w < 160 || h < 90 || (h & 1) || stride < w || stride > 4096 || h > 4096)
+                    return false;
+                winrt::com_ptr<IMFMediaBuffer> buffer;
+                winrt::check_hresult(sample->ConvertToContiguousBuffer(buffer.put()));
+                BYTE *bytes{};
+                DWORD size{};
+                winrt::check_hresult(buffer->Lock(&bytes, nullptr, &size));
+                if (size < uint64_t(stride) * h * 3 / 2) {
+                    buffer->Unlock();
+                    return false;
+                }
+                for (UINT row = 0; row < 90; ++row)
+                    decodedPixels->insert(decodedPixels->end(), bytes + row * stride, bytes + row * stride + 160);
+                const auto *uv = bytes + stride * h;
+                for (UINT row = 0; row < 45; ++row)
+                    decodedPixels->insert(decodedPixels->end(), uv + row * stride, uv + row * stride + 160);
+                winrt::check_hresult(buffer->Unlock());
+            }
             if (stamp <= previous)
                 return false;
             previous = stamp;
@@ -129,7 +158,7 @@ bool Video(const std::filesystem::path &path, int64_t expected, UINT fps) {
     std::cout << "MP4 frames=" << frames << " duration100ns=" << length << " fps=" << n << '/' << d << '\n';
     return frames > 5 && std::abs(length - expected) < 100000 && n == fps * d;
 }
-bool AdaptiveColors(const std::filesystem::path &root, bool complex = false) {
+bool AdaptiveColors(const std::filesystem::path &root, bool complex = false, bool repeat = false) {
     constexpr std::array<unsigned, 8> scenes{0, 1, 2, 3, 3, 3, 0, 0};
     constexpr std::array<std::array<uint8_t, 3>, 8> colors{{{31, 31, 31},
                                                             {49, 40, 39},
@@ -140,7 +169,9 @@ bool AdaptiveColors(const std::filesystem::path &root, bool complex = false) {
                                                             {230, 230, 235},
                                                             {6, 7, 8}}};
     std::vector<uint8_t> pixels(160 * 90 * 4);
-    const auto path = root / (complex ? L"adaptive-gradient.gif" : L"adaptive-colors.gif");
+    auto path = root / (complex ? L"adaptive-gradient.gif" : L"adaptive-colors.gif");
+    if (repeat)
+        path += L".repeat.gif";
     {
         IsolatedEncoder encoder;
         encoder.Open(path.wstring(), 160, 90, 10, false, 0, true);
@@ -163,7 +194,10 @@ bool AdaptiveColors(const std::filesystem::path &root, bool complex = false) {
                 const std::array<uint8_t, 4> changed{11, 45, 88, 255};
                 memcpy(pixels.data() + (10 * 160 + 10) * 4, changed.data(), changed.size());
             }
-            encoder.Write(pixels.data(), frame * 1000000LL, 1000000);
+            if (repeat && frame == 7)
+                encoder.Repeat(frame * 1000000LL, 1000000);
+            else
+                encoder.Write(pixels.data(), frame * 1000000LL, 1000000);
         }
         encoder.Finalize();
         encoder.Close();
@@ -193,7 +227,8 @@ bool AdaptiveColors(const std::filesystem::path &root, bool complex = false) {
                                                        colors[(i + scenes[f]) % 8][c]));
     }
     std::cout << "Adaptive GIF max channel error=" << error << '\n';
-    return error <= 6;
+    auto baseline = root / (complex ? L"adaptive-gradient.gif" : L"adaptive-colors.gif");
+    return error <= 6 && (!repeat || ReadFileBytes(path) == ReadFileBytes(baseline));
 }
 } // namespace
 int wmain(int argc, wchar_t **argv) {
@@ -350,6 +385,72 @@ int wmain(int argc, wchar_t **argv) {
                      ok;
             }
         }
+        {
+            std::vector<uint8_t> baseline, repeated;
+            for (const bool reuse : {false, true}) {
+                const auto path = root / (reuse ? L"repeat.mp4" : L"repeat-baseline.mp4");
+                {
+                    IsolatedEncoder encoder;
+                    encoder.Open(path.wstring(), 160, 90, 10, false);
+                    bool rejected = false;
+                    try {
+                        encoder.Repeat(0, 1000000);
+                    } catch (const winrt::hresult_error &) {
+                        rejected = true;
+                    }
+                    ok = Check(rejected, "repeat before a valid input is rejected") && ok;
+                    for (int frame = 0; frame < 10; ++frame) {
+                        if (reuse && frame == 1) {
+                            rejected = false;
+                            try {
+                                encoder.Repeat(0, 1000000); // Overlaps frame zero.
+                            } catch (const winrt::hresult_error &) {
+                                rejected = true;
+                            }
+                            ok = Check(rejected, "invalid repeat timestamp does not replace the input") && ok;
+                        }
+                        const bool changed = frame == 0 || frame == 3 || frame == 6 || frame == 8;
+                        if (changed) {
+                            for (size_t p = 0; p < pixels.size(); p += 4) {
+                                pixels[p] = frame < 6 ? 20 : 200;
+                                pixels[p + 1] = frame >= 3 && frame < 6 ? 200 : 30;
+                                pixels[p + 2] = frame < 3 || frame >= 8 ? 200 : 20;
+                            }
+                        }
+                        if (reuse && !changed)
+                            encoder.Repeat(frame * 1000000LL, 1000000);
+                        else
+                            encoder.Write(pixels.data(), frame * 1000000LL, 1000000);
+                    }
+                    encoder.Finalize();
+                    rejected = false;
+                    try {
+                        encoder.Repeat(10000000, 1000000);
+                    } catch (const winrt::hresult_error &) {
+                        rejected = true;
+                    }
+                    ok = Check(rejected && encoder.Close(), "repeat after finalization is rejected") && ok;
+                }
+                ok = Check(Video(path, 10000000, 10, reuse ? &repeated : &baseline),
+                           "repeated MP4 preserves frame count, timestamps and duration") && ok;
+            }
+            if (baseline != repeated) {
+                const auto common = (std::min)(baseline.size(), repeated.size());
+                size_t differences = 0, first = common;
+                for (size_t i = 0; i < common; ++i)
+                    if (baseline[i] != repeated[i]) {
+                        if (first == common) first = i;
+                        ++differences;
+                    }
+                std::cout << "repeat decoded sizes=" << baseline.size() << ',' << repeated.size()
+                          << " differences=" << differences << " first=" << first;
+                if (first < common)
+                    std::cout << " values=" << unsigned(baseline[first]) << ',' << unsigned(repeated[first]);
+                std::cout << '\n';
+            }
+            ok = Check(!baseline.empty() && baseline == repeated,
+                       "MP4 decoded pixels match baseline across repeated and changed inputs") && ok;
+        }
         bool rotations = true;
         for (auto rotation : {DXGI_MODE_ROTATION_IDENTITY, DXGI_MODE_ROTATION_ROTATE90, DXGI_MODE_ROTATION_ROTATE180,
                               DXGI_MODE_ROTATION_ROTATE270}) {
@@ -372,6 +473,8 @@ int wmain(int argc, wchar_t **argv) {
         ok = Check(rotations, "rotation mapping is bounded and bijective") && ok;
         ok = Check(AdaptiveColors(root), "adaptive GIF preserves dark/neutral colors across local palettes") && ok;
         ok = Check(AdaptiveColors(root, true), "adaptive GIF fallback preserves grays in gradient scenes") && ok;
+        ok = Check(AdaptiveColors(root, false, true) && AdaptiveColors(root, true, true),
+                   "repeated GIF input is byte-identical across palette changes") && ok;
         std::vector<uint8_t> unique(257 * 4), indices(257);
         for (unsigned i = 0; i < 257; ++i) {
             unique[i * 4] = uint8_t(i);

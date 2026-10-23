@@ -11,6 +11,7 @@ struct Snapshot {
     State state{};
     int64_t duration{};
     uint64_t frames{}, skipped{};
+    uint64_t repeatedInputs{}; // Diagnostic: acknowledged shared input reused, frame still encoded.
     std::wstring backend, message;
     std::wstring recoveryPath;
     bool recoveryFinalized = false;

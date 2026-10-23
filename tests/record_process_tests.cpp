@@ -188,6 +188,21 @@ int wmain(int argc, wchar_t **argv) {
         if (!canceled)
             return 3;
         ok = Fault(argv[3], root / L"cancel.partial.mp4", canceled, HRESULT_FROM_WIN32(ERROR_CANCELLED)) && ok;
+        ResetEvent(canceled);
+        {
+            IsolatedEncoder encoder(canceled);
+            encoder.Open((root / L"cancel-repeat.partial.mp4").wstring(), 320, 180, 20, false);
+            const std::vector<uint8_t> pixels(320 * 180 * 4, 100);
+            encoder.Write(pixels.data(), 0, 500000);
+            SetEvent(canceled);
+            bool canceledRepeat = false;
+            try {
+                encoder.Repeat(500000, 500000);
+            } catch (const winrt::hresult_error &error) {
+                canceledRepeat = error.code() == HRESULT_FROM_WIN32(ERROR_CANCELLED);
+            }
+            ok = canceledRepeat && encoder.Close() && ok;
+        }
         CloseHandle(canceled);
         try {
             IsolatedEncoder missing(nullptr, root / L"missing.exe");

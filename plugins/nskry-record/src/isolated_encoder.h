@@ -19,6 +19,9 @@ class IsolatedEncoder {
               bool gif = false, bool preview = false, UINT sourceWidth = 0, UINT sourceHeight = 0);
     void Preview(int64_t time, uint8_t *pixels, uint32_t capacity);
     void Write(const uint8_t *bgra, int64_t time, int64_t duration);
+    // Repeat the last acknowledged input, not an MF-owned sample. The child
+    // has copied it before acknowledgment; timing/encoding still runs normally.
+    void Repeat(int64_t time, int64_t duration);
     void Finalize();
     void Trim(const std::wstring &input, int64_t start, int64_t end);
     bool Close() noexcept; // True only after the child process is signaled/exited.
@@ -41,11 +44,13 @@ class IsolatedEncoder {
 
   private:
     struct Channel;
+    void SubmitFrame(int64_t time, int64_t duration);
     std::unique_ptr<Channel> m_channel;
     HANDLE m_canceled{};
     std::filesystem::path m_executable;
     DWORD m_timeout;
     bool m_finalizationAttempted = false;
+    bool m_payloadReady = false;
     uint64_t m_samples{};
     int64_t m_lastEnd{};
     std::wstring m_backend;

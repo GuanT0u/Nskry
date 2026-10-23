@@ -280,6 +280,9 @@ int wmain(int argc, wchar_t **argv) {
             still.Stop(false);
             ok &= Check(Pump([&] { return Finished(still); }) && still.Status().state == State::Done,
                         "S_FALSE repeats valid pending frame, ignores scratch pixels");
+            ok &= Check(still.Status().repeatedInputs > 0 &&
+                            still.Status().repeatedInputs < still.Status().frames,
+                        "static session actually reuses acknowledged inputs after the first Write");
             scratchOnly = false;
             if (still.Status().state == State::Done)
                 ok &= Check(Duration(root / L"static.mp4", true, true) > 0,

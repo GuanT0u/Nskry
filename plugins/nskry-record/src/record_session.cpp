@@ -227,6 +227,7 @@ void RecordSession::Run() noexcept {
         }
         FrameSchedule schedule(fps);
         bool ready = false, haveFrame = false, havePending = false;
+        bool pendingEncoded = false;
         int64_t pendingTime = 0;
         int64_t maxRead = 0;
         auto startupDeadline = Now() + 100000000; // ten seconds, cancel-aware waits
@@ -299,18 +300,29 @@ void RecordSession::Run() noexcept {
                     const auto at = first ? int64_t(0) : ReadTiming().duration;
                     if (havePending && at > pendingTime) {
                         const auto encodeStarted = Now();
-                        encoder->Write(pending.data(), pendingTime, at - pendingTime);
+                        const bool repeatedInput = pendingEncoded;
+                        if (repeatedInput)
+                            encoder->Repeat(pendingTime, at - pendingTime);
+                        else
+                            encoder->Write(pending.data(), pendingTime, at - pendingTime);
+                        pendingEncoded = true;
                         const auto encodeSpan = Now() - encodeStarted;
                         std::lock_guard lock(m_mutex);
                         ++m_status.frames;
+                        // A fresh input becomes reusable only after Write has
+                        // completed; count the actual Repeat call, not S_FALSE.
+                        if (repeatedInput)
+                            ++m_status.repeatedInputs;
                         m_status.encodedDuration = encoder->EncodedDuration();
                         m_status.maxRead100ns = maxRead;
                         m_status.maxEncode100ns = (std::max)(m_status.maxEncode100ns, encodeSpan);
                         if (at - pendingTime > schedule.interval * 2)
                             ++m_status.skipped;
                     }
-                    if (read == S_OK)
+                    if (read == S_OK) {
                         pending.swap(pixels);
+                        pendingEncoded = false;
+                    }
                     havePending = true;
                     pendingTime = at;
                     // On S_FALSE repeat pending directly. Scratch bytes are not
@@ -353,11 +365,17 @@ void RecordSession::Run() noexcept {
             success = true;
         } else {
             const auto encodeStarted = Now();
-            encoder->Write(pending.data(), pendingTime, (std::max)(int64_t(1), final.duration - pendingTime));
+            const auto duration = (std::max)(int64_t(1), final.duration - pendingTime);
+            if (pendingEncoded)
+                encoder->Repeat(pendingTime, duration);
+            else
+                encoder->Write(pending.data(), pendingTime, duration);
             const auto encodeSpan = Now() - encodeStarted;
             {
                 std::lock_guard lock(m_mutex);
                 ++m_status.frames;
+                if (pendingEncoded)
+                    ++m_status.repeatedInputs;
                 m_status.encodedDuration = encoder->EncodedDuration();
                 m_status.maxRead100ns = maxRead;
                 m_status.maxEncode100ns = (std::max)(m_status.maxEncode100ns, encodeSpan);
