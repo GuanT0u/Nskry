@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "capture/d3d_device.h"
+#include <windows.graphics.directx.direct3d11.interop.h>
 
 namespace nskry {
 

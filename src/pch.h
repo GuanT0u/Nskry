@@ -15,19 +15,10 @@
 #include <dxgi1_6.h>
 
 // ============================================================
-// C++/WinRT base + projections
+// C++/WinRT base. Heavy capture projections belong to capture modules, not
+// every settings/JSON/update/annotation translation unit.
 // ============================================================
-#include <winrt/Windows.Foundation.h>
-#include <winrt/Windows.Foundation.Collections.h>
-#include <winrt/Windows.Graphics.Capture.h>
-#include <winrt/Windows.Graphics.DirectX.h>
-#include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
-
-// ============================================================
-// WinRT ↔ native COM interop headers
-// ============================================================
-#include <windows.graphics.capture.interop.h>
-#include <windows.graphics.directx.direct3d11.interop.h>
+#include <winrt/base.h>
 
 // ============================================================
 // STL

@@ -2,6 +2,10 @@
 #include "capture/d3d_device.h"
 #include "capture/desktop_region.h"
 #include "pch.h"
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Graphics.Capture.h>
+#include <windows.graphics.capture.interop.h>
+#include <windows.graphics.directx.direct3d11.interop.h>
 #include <cstring>
 #include <shellscalingapi.h>
 #include <dwmapi.h>

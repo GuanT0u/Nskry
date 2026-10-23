@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "capture/capture_session.h"
+#include <windows.graphics.capture.interop.h>
+#include <windows.graphics.directx.direct3d11.interop.h>
 
 namespace nskry {
 

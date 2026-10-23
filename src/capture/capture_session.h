@@ -2,6 +2,7 @@
 
 #include "capture/d3d_device.h"
 #include "capture/callback_gate.h"
+#include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Graphics.Capture.h>
 #include <functional>
 #include <mutex>
