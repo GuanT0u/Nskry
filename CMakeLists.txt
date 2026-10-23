@@ -87,10 +87,11 @@ add_subdirectory(plugins/nskry-ocr)
 add_subdirectory(plugins/nskry-record)
 
 if (BUILD_TESTING)
-    add_executable(NskryGpuReadbackTests tests/gpu_readback_tests.cpp src/capture/gpu_region_readback.cpp)
+    add_executable(NskryGpuReadbackTests tests/gpu_readback_tests.cpp src/capture/gpu_region_readback.cpp
+        src/capture/d3d_device.cpp)
     target_include_directories(NskryGpuReadbackTests PRIVATE src)
     target_compile_definitions(NskryGpuReadbackTests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-    target_link_libraries(NskryGpuReadbackTests PRIVATE d3d11 dxgi d3dcompiler windowsapp)
+    target_link_libraries(NskryGpuReadbackTests PRIVATE d3d11 dxgi d3dcompiler windowsapp psapi)
     add_test(NAME NskryGpuReadbackTests COMMAND NskryGpuReadbackTests)
     set_tests_properties(NskryGpuReadbackTests PROPERTIES TIMEOUT 20)
     add_executable(NskrySingleInstanceTests tests/single_instance_tests.cpp src/core/single_instance.cpp)

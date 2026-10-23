@@ -1,4 +1,5 @@
 #include "mf_encoder.h"
+#include "test_artifacts.h"
 #include <filesystem>
 #include <iostream>
 #include <mfapi.h>
@@ -9,8 +10,8 @@ int wmain(int argc, wchar_t **argv) {
     if (argc != 2)
         return 2;
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
-    const auto path =
-        std::filesystem::path(argv[1]) / (L"record-encoder-" + std::to_wstring(GetCurrentProcessId()) + L".mp4");
+    const nskry::test::Artifacts artifacts(argv[1], L"record-encoder");
+    const auto path = artifacts.Path() / L"record.mp4";
     int result = 0;
     try {
         {
@@ -91,11 +92,12 @@ int wmain(int argc, wchar_t **argv) {
             software.Finalize();
             std::wcout << L"Software path: " << software.Backend() << L"\n";
         }
-        std::wcout << L"Playable fixture retained: " << path.c_str() << L"\n";
     } catch (const winrt::hresult_error &e) {
         std::wcerr << L"MF error 0x" << std::hex << e.code().value << L" " << e.message().c_str() << L'\n';
         result = 1;
     }
     winrt::uninit_apartment();
+    if (!artifacts.Finish(result == 0))
+        result = 1;
     return result;
 }

@@ -1,4 +1,5 @@
 #include "mf_encoder.h"
+#include "test_artifacts.h"
 #include <filesystem>
 #include <iostream>
 #include <mfapi.h>
@@ -70,16 +71,15 @@ int wmain(int argc, wchar_t **argv) {
     winrt::check_hresult(MFStartup(MF_VERSION));
     int result = 1;
     try {
-        const auto root =
-            std::filesystem::absolute(argv[1]) /
-            (L"record-color-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
-        std::filesystem::create_directory(root);
+        const nskry::test::Artifacts artifacts(argv[1], L"record-color");
+        const auto &root = artifacts.Path();
         bool ok = true;
         for (const auto hardware : {true, false}) {
             const auto prefix = hardware ? L"hardware-" : L"software-";
             ok = CheckColor(root / (std::wstring(prefix) + L"hd.mp4"), hardware, 1920, 1080) && ok;
             ok = CheckColor(root / (std::wstring(prefix) + L"sd.mp4"), hardware, 320, 180) && ok;
         }
+        ok = artifacts.Finish(ok) && ok;
         result = ok ? 0 : 1;
     } catch (const winrt::hresult_error &e) {
         std::wcerr << e.message().c_str() << '\n';

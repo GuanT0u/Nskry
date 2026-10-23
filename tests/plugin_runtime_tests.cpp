@@ -1,6 +1,7 @@
 #include "core/plugin_manager.h"
 #include <filesystem>
 #include <iostream>
+#include <stdexcept>
 
 int wmain(int argc, wchar_t** argv) {
     if (argc != 3 && argc!=4) return 2;

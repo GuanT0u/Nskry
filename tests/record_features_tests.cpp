@@ -4,6 +4,7 @@
 #include "record_export.h"
 #include "record_preview.h"
 #include "record_ui_policy.h"
+#include "test_artifacts.h"
 #include "ui/toolbar_layout.h"
 #include <array>
 #include <atomic>
@@ -198,13 +199,36 @@ bool AdaptiveColors(const std::filesystem::path &root, bool complex = false) {
 int wmain(int argc, wchar_t **argv) {
     if (argc != 3)
         return 2;
-    const auto root = std::filesystem::path(argv[1]) / (L"record-features-" + std::to_wstring(GetCurrentProcessId()) +
-                                                        L"-" + std::to_wstring(GetTickCount64()));
-    std::filesystem::create_directory(root);
+    const nskry::test::Artifacts artifacts(argv[1], L"record-features");
+    const auto &root = artifacts.Path();
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
     MFStartup(MF_VERSION);
     bool ok = true;
     try {
+        {
+            bool rejected = false;
+            try {
+                nskry::test::Artifacts invalid(root, L"../outside");
+            } catch (const std::invalid_argument &) {
+                rejected = true;
+            }
+            ok = Check(rejected, "artifact cleanup rejects escaping names") && ok;
+            const nskry::test::Artifacts retained(root, L"retention");
+            const auto file = retained.Path() / L"evidence.txt";
+            std::ofstream(file) << "test-owned evidence";
+            ok = Check(retained.Finish(false) && std::filesystem::exists(file),
+                       "failed tests retain evidence") && ok;
+            if (!GetEnvironmentVariableW(L"NSKRY_KEEP_TEST_ARTIFACTS", nullptr, 0)) {
+                HANDLE locked = CreateFileW(file.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+                ok = Check(locked != INVALID_HANDLE_VALUE && !retained.Finish(true) && std::filesystem::exists(file),
+                           "locked evidence cleanup fails without reporting success") && ok;
+                if (locked != INVALID_HANDLE_VALUE)
+                    CloseHandle(locked);
+                ok = Check(retained.Finish(true) && !std::filesystem::exists(retained.Path()) &&
+                               std::filesystem::exists(root),
+                           "successful cleanup deletes only the owned child") && ok;
+            }
+        }
         const auto layout =
             nskry::LayoutSelectionToolbar(std::vector<int>(25, 76), {0, 0, 800, 600}, {0, 0, 800, 600}, 20);
         for (auto r : layout)
@@ -417,6 +441,6 @@ int wmain(int argc, wchar_t **argv) {
     }
     MFShutdown();
     winrt::uninit_apartment();
-    std::wcout << L"Artifacts: " << root.wstring() << '\n';
+    ok = artifacts.Finish(ok) && ok;
     return ok ? 0 : 1;
 }

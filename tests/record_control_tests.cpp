@@ -2,6 +2,7 @@
 #include "nskry_commands.h"
 #include "nskry_plugin.h"
 #include "record_session.h"
+#include "test_artifacts.h"
 #include <atomic>
 #include <filesystem>
 #include <functional>
@@ -75,9 +76,8 @@ int wmain(int argc, wchar_t **argv) {
     if (argc != 2)
         return 2;
     winrt::init_apartment(winrt::apartment_type::single_threaded);
-    const auto root = std::filesystem::path(argv[1]) / (L"record-control-" + std::to_wstring(GetCurrentProcessId()) +
-                                                        L"-" + std::to_wstring(GetTickCount64()));
-    std::filesystem::create_directory(root);
+    const nskry::test::Artifacts artifacts(argv[1], L"record-control");
+    const auto &root = artifacts.Path();
     NskryCaptureServiceV1 capture{sizeof(capture), 1, Open, Read, Close};
     HWND hwnd = RecordControlTestStart(capture, {0, 0, 160, 90}, (root / L"save.mp4").wstring());
     bool ok = hwnd && Pump([] { return RecordControlTestStatus().state == State::Recording; });
@@ -207,6 +207,7 @@ int wmain(int argc, wchar_t **argv) {
     for (const auto &file : std::filesystem::directory_iterator(root))
         ok = !file.path().filename().wstring().starts_with(L".nskry-record-") && ok;
     winrt::uninit_apartment();
+    ok = artifacts.Finish(ok) && ok;
     std::cout
         << (ok ? "Record control UI pause/resume/save/discard, capture exclusion and inline-close lifetime passed.\n"
                : "Record control UI regression failed.\n");

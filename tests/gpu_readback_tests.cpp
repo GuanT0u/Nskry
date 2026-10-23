@@ -1,8 +1,10 @@
 #include "capture/gpu_region_readback.h"
+#include "capture/d3d_device.h"
 #include <chrono>
 #include <cstring>
 #include <iostream>
 #include <vector>
+#include <psapi.h>
 
 namespace {
 using Clock = std::chrono::steady_clock;
@@ -14,6 +16,30 @@ uint64_t CpuTime() {
     GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u);
     return (uint64_t(k.dwHighDateTime) << 32 | k.dwLowDateTime) +
            (uint64_t(u.dwHighDateTime) << 32 | u.dwLowDateTime);
+}
+bool DeviceCost() {
+    const auto memory = [](const char *label) {
+        PROCESS_MEMORY_COUNTERS_EX value{};
+        value.cb = sizeof(value);
+        if (!GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&value),
+                                  sizeof(value)))
+            winrt::throw_last_error();
+        std::cout << label << " private_bytes=" << value.PrivateUsage << " working_bytes=" << value.WorkingSetSize
+                  << '\n';
+    };
+    memory("before_device");
+    const auto cpu = CpuTime();
+    const auto start = Clock::now();
+    {
+        nskry::D3DDevice device;
+        std::cout << "device_init_ms=" << Milliseconds(start) << " device_init_cpu_ms="
+                  << (CpuTime() - cpu) / 10000.0 << '\n';
+        memory("device_live");
+        if (!device.Device() || !device.Context() || !device.WinRTDevice())
+            return false;
+    }
+    memory("device_released");
+    return true;
 }
 struct Device {
     winrt::com_ptr<ID3D11Device> value;
@@ -130,6 +156,12 @@ bool Benchmark(Device& device) {
 } // namespace
 int main(int argc, char** argv) {
     try {
+        if (argc == 2 && std::string(argv[1]) == "--device-cost") {
+            winrt::init_apartment(winrt::apartment_type::multi_threaded);
+            const bool ok = DeviceCost();
+            winrt::uninit_apartment();
+            return ok ? 0 : 1;
+        }
         if (argc == 2 && std::string(argv[1]) == "--benchmark") {
             Device hardware(D3D_DRIVER_TYPE_HARDWARE);
             return Benchmark(hardware) ? 0 : 1;

@@ -1,4 +1,5 @@
 #include "isolated_encoder.h"
+#include "test_artifacts.h"
 #include "record_worker_protocol.h"
 #include <filesystem>
 #include <iostream>
@@ -144,10 +145,8 @@ int wmain(int argc, wchar_t **argv) {
         return OrphanParent(argv[2], argv[3]);
     if (argc != 5)
         return 2;
-    const auto root =
-        std::filesystem::absolute(argv[1]) /
-        (L"record-process-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
-    std::filesystem::create_directory(root);
+    const nskry::test::Artifacts artifacts(argv[1], L"record-process");
+    const auto &root = artifacts.Path();
     bool ok = true;
     try {
         HANDLE process{};
@@ -204,5 +203,6 @@ int wmain(int argc, wchar_t **argv) {
     }
     std::cout << (ok ? "Encoder child normal/crash/timeout/cancel/missing cleanup passed.\n"
                      : "Encoder process failure.\n");
+    ok = artifacts.Finish(ok) && ok;
     return ok ? 0 : 1;
 }

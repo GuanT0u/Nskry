@@ -1,6 +1,7 @@
 #include "capture/region_stream.h"
 #include "pch.h"
 #include "record_session.h"
+#include "test_artifacts.h"
 #include <chrono>
 #include <filesystem>
 #include <functional>
@@ -114,6 +115,7 @@ int wmain(int argc, wchar_t **argv) {
         return 2;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
+    const nskry::test::Artifacts artifacts(argv[1], L"record-capture");
     SYSTEM_INFO system{};
     GetSystemInfo(&system);
     MEMORYSTATUSEX memory{sizeof(memory)};
@@ -158,7 +160,7 @@ int wmain(int argc, wchar_t **argv) {
     ShowWindow(excluded, SW_SHOWNOACTIVATE);
     UpdateWindow(excluded);
     const auto path =
-        std::filesystem::path(argv[1]) / (L"record-wgc-" + std::to_wstring(GetCurrentProcessId()) + L".mp4");
+        artifacts.Path() / L"fixed.mp4";
     try {
         auto service = nskry::RegionCaptureService();
         void *invalid{};
@@ -274,8 +276,7 @@ int wmain(int argc, wchar_t **argv) {
         options.fps = 60;
         options.capture = nskry::RegionCaptureServiceV2();
         options.followWindow = source;
-        const auto followedPath = std::filesystem::path(argv[1]) /
-            (L"record-follow-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()) + L".mp4");
+        const auto followedPath = artifacts.Path() / L"follow.mp4";
         const RECT selected{region.left + 40, region.top + 20, region.left + 200, region.top + 110};
         RecordSession followed({}, selected, followedPath.wstring(), true, options);
         followOk = followed.Start() &&
@@ -326,5 +327,6 @@ int wmain(int argc, wchar_t **argv) {
     DestroyWindow(source);
     UnregisterClassW(wc.lpszClassName, wc.hInstance);
     winrt::uninit_apartment();
+    ok = artifacts.Finish(ok) && ok;
     return ok ? 0 : 1;
 }

@@ -1,4 +1,5 @@
 #include "record_session.h"
+#include "test_artifacts.h"
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -165,9 +166,8 @@ int wmain(int argc, wchar_t **argv) {
     if (argc != 2)
         return 2;
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
-    auto root = std::filesystem::path(argv[1]) / (L"record-session-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
-                                                  std::to_wstring(GetTickCount64()));
-    std::filesystem::create_directory(root);
+    const nskry::test::Artifacts artifacts(argv[1], L"record-session");
+    const auto &root = artifacts.Path();
     WNDCLASSW wc{};
     wc.lpszClassName = L"RecordSessionTestOwned";
     wc.lpfnWndProc = WindowProc;
@@ -382,5 +382,6 @@ int wmain(int argc, wchar_t **argv) {
     DestroyWindow(ui);
     UnregisterClassW(wc.lpszClassName, wc.hInstance);
     winrt::uninit_apartment();
+    ok = artifacts.Finish(ok) && ok;
     return ok ? 0 : 1;
 }
