@@ -23,6 +23,16 @@ int wmain(int argc, wchar_t** argv) {
     if(legacy)manifest.shortcuts.clear();
     if (!registry.UpsertInstalled(manifest, dll.parent_path().wstring(), nskry::PluginSource::ThirdParty)) return 5;
     auto& runtime = nskry::PluginManager::Instance();
+    unsigned graphicsCalls = 0;
+    bool rejectGraphics = true;
+    runtime.SetGraphicsProvider([&](NskryHostContext &ctx) {
+        ++graphicsCalls;
+        if (rejectGraphics)
+            throw std::runtime_error("Test graphics creation failure");
+        // Opaque identity sentinels only; the fixture never dereferences them.
+        ctx.d3dDevice = reinterpret_cast<ID3D11Device *>(uintptr_t(1));
+        ctx.d3dContext = reinterpret_cast<ID3D11DeviceContext *>(uintptr_t(2));
+    });
     runtime.SetShortcutProvider([](const nskry::ShortcutDefinition&){return std::wstring(L"Ctrl+Shift+C");});
     NskryHostContext context{}; context.structSize = sizeof(context); context.apiVersion = NSKRY_PLUGIN_API_VERSION;
     runtime.Initialize(registry, context);
@@ -32,6 +42,10 @@ int wmain(int argc, wchar_t** argv) {
     if (runtime.IsLoaded(manifest.id) || runtime.GetEnabledImageActions().size() != 1) return 6;
     if(runtime.GetInputReport(manifest.id).status!=InputStatus::NotLoaded || !runtime.RefreshInputConfiguration().empty())return 23;
     if (GetModuleHandleW(dll.filename().c_str())) return 14;
+    if (graphicsCalls || runtime.EnsureLoaded(manifest.id) || runtime.IsLoaded(manifest.id) || graphicsCalls != 1)
+        return 30;
+    if (GetModuleHandleW(dll.filename().c_str())) return 31;
+    rejectGraphics = false;
     HMODULE probe = LoadLibraryW(dll.c_str());
     struct ModuleGuard { HMODULE value; ~ModuleGuard() { if (value) FreeLibrary(value); } } probeGuard{probe};
     const auto shutdownCount = probe ? reinterpret_cast<int (NSKRY_CALL*)()>(GetProcAddress(probe, "nskry_test_shutdown_count")) : nullptr;
@@ -43,6 +57,11 @@ int wmain(int argc, wchar_t** argv) {
     HMODULE module = GetModuleHandleW(dll.filename().c_str());
     const auto count = reinterpret_cast<int (NSKRY_CALL*)()>(GetProcAddress(module, "nskry_test_execute_count"));
     if (!count || count() != 1) return 8;
+    const auto graphicsMatch = reinterpret_cast<int (NSKRY_CALL*)()>(GetProcAddress(module, "nskry_test_graphics_match"));
+    if (!graphicsMatch || !graphicsMatch() || graphicsCalls != 4) return 32;
+    rejectGraphics = true;
+    if (runtime.ExecutePlugin(manifest.id, context) || count() != 1) return 33;
+    rejectGraphics = false;
     auto commandManifest=manifest;
     commandManifest.commandApi=1;
     commandManifest.shortcuts.push_back({L"plugin.org.test.runtime.stop",L"Stop",L"",manifest.id,manifest.name,nskry::input::Kind::Global,false,false,true});
@@ -79,6 +98,21 @@ int wmain(int argc, wchar_t** argv) {
     if(editable.size()!=(legacy?1:2) || editable[0].official || runtime.EnsureLoaded(manifest.id))return 22;
     runtime.Shutdown();
     if (runtime.IsLoaded(manifest.id) || registry.Find(manifest.id)->loaded || shutdownCount() != 2) return 11;
+    manifest.loadPolicy = nskry::PluginLoadPolicy::Startup;
+    if (!registry.UpsertInstalled(manifest, dll.parent_path().wstring(), nskry::PluginSource::ThirdParty)) return 34;
+    const auto previousGraphicsCalls = graphicsCalls;
+    runtime.Initialize(registry, context); // Shutdown must release the previous provider.
+    if (!runtime.IsLoaded(manifest.id) || graphicsCalls != previousGraphicsCalls) return 35;
+    runtime.Shutdown();
+    runtime.SetGraphicsProvider([&](NskryHostContext &ctx) {
+        ++graphicsCalls;
+        ctx.d3dDevice = reinterpret_cast<ID3D11Device *>(uintptr_t(1));
+        ctx.d3dContext = reinterpret_cast<ID3D11DeviceContext *>(uintptr_t(2));
+    });
+    runtime.Initialize(registry, context); // Explicit startup opt-in still prepares graphics before init.
+    if (!runtime.IsLoaded(manifest.id) || graphicsCalls != previousGraphicsCalls + 1 ||
+        !runtime.ExecutePlugin(manifest.id, context) || !graphicsMatch()) return 36;
+    runtime.Shutdown();
     FreeLibrary(probeGuard.value); probeGuard.value = nullptr;
     if (GetModuleHandleW(dll.filename().c_str())) return 17;
     std::cout << "Lazy loading, disabled-loaded rejection and re-enable passed.\n";

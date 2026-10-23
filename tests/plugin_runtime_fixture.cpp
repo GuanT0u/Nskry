@@ -9,6 +9,8 @@ NskryPluginInfo info{sizeof(NskryPluginInfo), NSKRY_PLUGIN_API_VERSION,
     NSKRY_CAP_TOOLBAR_ACTION | NSKRY_CAP_POST_CAPTURE, {}};
 int calls{};
 int shutdowns{};
+ID3D11Device *initDevice{}, *executeDevice{};
+ID3D11DeviceContext *initContext{}, *executeContext{};
 void ConfigureFixtureInput(const NskryInputConfigV1* config) {
     wchar_t fail[8]{};
     if(GetEnvironmentVariableW(L"NSKRY_TEST_FAIL_INPUT",fail,8))throw std::runtime_error("Fixture input failure");
@@ -17,10 +19,19 @@ void ConfigureFixtureInput(const NskryInputConfigV1* config) {
 }
 extern "C" {
 NSKRY_API const NskryPluginInfo* NSKRY_CALL nskry_plugin_info() { return &info; }
-NSKRY_API int32_t NSKRY_CALL nskry_plugin_init(const NskryHostContext*) {
+NSKRY_API int32_t NSKRY_CALL nskry_plugin_init(const NskryHostContext* ctx) {
+    initDevice = ctx->d3dDevice;
+    initContext = ctx->d3dContext;
     wchar_t fail[8]{}; return GetEnvironmentVariableW(L"NSKRY_TEST_FAIL_INIT", fail, 8) ? 0 : 1;
 }
-NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext*) { ++calls; }
+NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext* ctx) {
+    executeDevice = ctx->d3dDevice;
+    executeContext = ctx->d3dContext;
+    ++calls;
+}
+__declspec(dllexport) int NSKRY_CALL nskry_test_graphics_match() {
+    return initDevice && initContext && initDevice == executeDevice && initContext == executeContext;
+}
 NSKRY_API void NSKRY_CALL nskry_plugin_shutdown() { ++shutdowns; }
 __declspec(dllexport) int NSKRY_CALL nskry_test_execute_count() { return calls; }
 __declspec(dllexport) int NSKRY_CALL nskry_test_shutdown_count() { return shutdowns; }

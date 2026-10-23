@@ -52,6 +52,11 @@ class PluginManager {
 
     void Initialize(PluginRegistry &registry, const NskryHostContext &hostContext);
     void Shutdown();
+    // Host UI thread only. Prepare borrowed graphics before init/execute,
+    // never during metadata discovery. Not a plugin SDK extension.
+    void SetGraphicsProvider(std::function<void(NskryHostContext &)> provider) {
+        m_graphicsProvider = std::move(provider);
+    }
 
     bool EnsureLoaded(const std::wstring &pluginId);
     bool Unload(const std::wstring &pluginId);
@@ -89,6 +94,7 @@ class PluginManager {
     std::unordered_map<std::wstring, PluginEntry> m_plugins;
     bool m_initialized = false;
     std::function<std::wstring(const ShortcutDefinition &)> m_shortcutProvider;
+    std::function<void(NskryHostContext &)> m_graphicsProvider;
 };
 
 } // namespace nskry

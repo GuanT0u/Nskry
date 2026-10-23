@@ -34,6 +34,12 @@ namespace Gdiplus { using std::min; using std::max; }
 
 static HWND                                      g_mainHwnd = nullptr;
 static std::shared_ptr<nskry::D3DDevice>         g_device;
+// UI-thread-owned; retain after first use because loaded API2 plugins may
+// keep borrowed device pointers until shutdown. No GPU work for metadata/UI.
+static void EnsureGraphicsDevice() {
+    if (!g_device)
+        g_device = std::make_shared<nskry::D3DDevice>();
+}
 static std::unique_ptr<nskry::CaptureSession>    g_capture;
 static std::unique_ptr<nskry::PipWindow>         g_pip;
 static std::unique_ptr<nskry::MonitorVisibilityController> g_monitorVisibility;
@@ -186,16 +192,6 @@ int WINAPI wWinMain(
     Gdiplus::GdiplusStartupInput gdipInput;
     Gdiplus::GdiplusStartup(&g_gdiplusToken, &gdipInput, nullptr);
 
-    // D3D11 device
-    try {
-        g_device = std::make_shared<nskry::D3DDevice>();
-    } catch (const winrt::hresult_error& e) {
-        ::MessageBoxW(nullptr,
-            (std::wstring(L"Failed to create D3D11 device:\n") + e.message().c_str()).c_str(),
-            L"Nskry", MB_ICONERROR);
-        return 1;
-    }
-
     // Hidden message-only main window
     {
         WNDCLASSEXW wc{};
@@ -237,6 +233,11 @@ int WINAPI wWinMain(
     hostCtx.copyBitmapToClipboard = CopyBitmapToClipboard;
     hostCtx.openBitmapEditor = OpenBitmapEditor;
     nskry::PluginRegistry pluginRegistry;
+    nskry::PluginManager::Instance().SetGraphicsProvider([](NskryHostContext &context) {
+        EnsureGraphicsDevice();
+        context.d3dDevice = g_device->Device();
+        context.d3dContext = g_device->Context();
+    });
     nskry::PluginManager::Instance().SetCaptureService(nskry::RegionCaptureService());
     nskry::PluginManager::Instance().SetCaptureServiceV2(nskry::RegionCaptureServiceV2());
     nskry::PluginPackageManager packageManager(pluginRegistry);
@@ -698,6 +699,7 @@ static void StartPiP(HWND targetHwnd, nskry::CropRegion crop, RECT screenRegion,
     const WPARAM generation = g_monitorGeneration;
 
     try {
+        EnsureGraphicsDevice();
         g_pip = std::make_unique<nskry::PipWindow>(
             g_device,
             static_cast<UINT>(crop.width),

@@ -37,6 +37,7 @@ void PluginManager::Shutdown() {
     m_captureService = {};
     m_captureServiceV2 = {};
     m_initialized = false;
+    m_graphicsProvider = {};
 }
 
 bool PluginManager::EnsureLoaded(const std::wstring &pluginId) {
@@ -112,6 +113,8 @@ bool PluginManager::LoadPlugin(const PluginRecord &record) {
                       record.manifest.apiVersion == runtimeInfo->apiVersion && record.manifest.id == runtimeInfo->id &&
                       record.manifest.version == runtimeInfo->version;
         if (initialized) {
+            if (m_graphicsProvider)
+                m_graphicsProvider(m_hostContext);
             initAttempted = true;
             if ((record.manifest.captureApi == 1 && !connectCapture(&m_captureService)) ||
                 (record.manifest.captureApi == 2 && !connectCaptureV2(&m_captureServiceV2)))
@@ -191,11 +194,14 @@ bool PluginManager::ExecutePlugin(const std::wstring &pluginId, const NskryHostC
     if (it == m_plugins.end() || !it->second.fnExecute)
         return false;
     try {
+        auto context = hostContext;
+        if (m_graphicsProvider)
+            m_graphicsProvider(context);
         if (!actionId.empty()) {
-            NskryCaptureActionV1 action{sizeof(action), 1, actionId.c_str(), &hostContext};
+            NskryCaptureActionV1 action{sizeof(action), 1, actionId.c_str(), &context};
             return it->second.fnCaptureAction && it->second.fnCaptureAction(&action) != 0;
         }
-        it->second.fnExecute(&hostContext);
+        it->second.fnExecute(&context);
         return true;
     } catch (...) {
         return false;
