@@ -1,0 +1,119 @@
+#include "core/plugin_manager.h"
+#include "test_artifacts.h"
+#include <functional>
+#include <winrt/base.h>
+
+HWND Own(const wchar_t *name) {
+    struct Search {
+        const wchar_t *name;
+        HWND window{};
+    } search{name};
+    EnumThreadWindows(
+        GetCurrentThreadId(),
+        [](HWND window, LPARAM value) -> BOOL {
+            auto &search = *reinterpret_cast<Search *>(value);
+            wchar_t name[80]{};
+            GetClassNameW(window, name, 80);
+            if (!wcscmp(name, search.name))
+                search.window = window;
+            return TRUE;
+        },
+        LPARAM(&search));
+    return search.window;
+}
+bool Pump(const std::function<bool()> &done) {
+    const auto end = GetTickCount64() + 20000;
+    while (!done() && GetTickCount64() < end) {
+        MSG message{};
+        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+        MsgWaitForMultipleObjects(0, nullptr, FALSE, 10, QS_ALLINPUT);
+    }
+    return done();
+}
+std::wstring Text(HWND control) {
+    std::wstring text(GetWindowTextLengthW(control) + 1, 0);
+    GetWindowTextW(control, text.data(), int(text.size()));
+    text.resize(text.size() - 1);
+    return text;
+}
+int wmain(int argc, wchar_t **argv) {
+    if (argc != 5)
+        return 2;
+    winrt::init_apartment(winrt::apartment_type::single_threaded);
+    nskry::test::Artifacts artifacts(argv[4], L"ocr-translation");
+    if (!SetEnvironmentVariableW(L"LOCALAPPDATA", artifacts.Path().c_str()))
+        return 3;
+    SetEnvironmentVariableW(L"NSKRY_OCR_ENGINE", L"fast"); // Only this test process.
+    nskry::PluginRegistry registry;
+    if (!registry.Initialize())
+        return 4;
+    nskry::PluginManifest translation, ocr;
+    const auto translator = std::filesystem::absolute(argv[1]);
+    const auto recognizer = std::filesystem::absolute(argv[2]);
+    if (!nskry::PluginManifest::LoadFromFile((translator.parent_path() / L"manifest.json").wstring(),
+                                             translation) ||
+        !nskry::PluginManifest::LoadFromFile((recognizer.parent_path() / L"manifest.json").wstring(), ocr) ||
+        !registry.UpsertInstalled(translation, translator.parent_path().wstring(),
+                                  nskry::PluginSource::ThirdParty) ||
+        !registry.UpsertInstalled(ocr, recognizer.parent_path().wstring(), nskry::PluginSource::ThirdParty))
+        return 5;
+    NskryHostContext context{sizeof(context), NSKRY_PLUGIN_API_VERSION};
+    auto &runtime = nskry::PluginManager::Instance();
+    runtime.Initialize(registry, context);
+    struct Stop {
+        nskry::PluginManager &runtime;
+        ~Stop() { runtime.Shutdown(); }
+    } stop{runtime};
+    if (!runtime.ShowPluginSettings(translation.id, nullptr))
+        return 6;
+    const auto translated = Own(L"NskryTranslateV1");
+    SetWindowTextW(GetDlgItem(translated, 12), argv[3]); // Do not save/modify user settings.
+    registry.SetEnabled(translation.id, false);
+    HDC screen = GetDC(nullptr), dc = CreateCompatibleDC(screen);
+    HBITMAP bitmap = CreateCompatibleBitmap(screen, 480, 100);
+    const auto previous = SelectObject(dc, bitmap);
+    RECT area{0, 0, 480, 100};
+    FillRect(dc, &area, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+    SetTextColor(dc, RGB(0, 0, 0));
+    SetBkColor(dc, RGB(255, 255, 255));
+    HFONT font = CreateFontW(32, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    const auto previousFont = SelectObject(dc, font);
+    TextOutW(dc, 10, 20, L"Hello world", 11);
+    SelectObject(dc, previousFont);
+    DeleteObject(font);
+    SelectObject(dc, previous);
+    DeleteDC(dc);
+    ReleaseDC(nullptr, screen);
+    context.capturedBitmap = bitmap;
+    bool ok = runtime.ExecutePlugin(ocr.id, context);
+    DeleteObject(bitmap);
+    ok = Pump([] { return Own(L"NskryOcrResult") != nullptr; }) && ok;
+    const auto result = Own(L"NskryOcrResult");
+    ok = result && !IsWindowEnabled(GetDlgItem(result, 1011)) && ok;
+    if (result) {
+        const auto original = Text(FindWindowExW(result, nullptr, L"EDIT", nullptr));
+        ok = original.find(L"world") != std::wstring::npos && ok; // OCR may confuse I/l; this tests handoff, not spelling.
+        ok = registry.SetEnabled(translation.id, true) && ok;
+        SendMessageW(result, WM_ACTIVATE, WA_ACTIVE, 0);
+        ok = IsWindowEnabled(GetDlgItem(result, 1011)) && ok;
+        SendMessageW(result, WM_COMMAND, 1011, 0);
+        ok = Text(GetDlgItem(translated, 10)) == original && !IsWindowEnabled(GetDlgItem(translated, 1)) &&
+             !Own(L"NskryOcrProgress") && ok;
+        DestroyWindow(result); // Translation owns its copy/window, not OCR's lifetime.
+        ok = IsWindow(translated) && Pump([&] { return IsWindowEnabled(GetDlgItem(translated, 1)); }) && ok;
+        ok = !Text(GetDlgItem(translated, 11)).empty() && ok;
+        std::cout << "Forwarded OCR source units=" << original.size()
+                  << ", translated result units=" << Text(GetDlgItem(translated, 11)).size()
+                  << ", window alive=" << IsWindow(translated) << '\n';
+    }
+    runtime.Shutdown();
+    ok = !Own(L"NskryTranslateV1") && !Own(L"NskryOcrResult") && ok;
+    std::cout << "Real OCR → host → translation (no second OCR), optional disable/enable/close=" << ok
+              << '\n';
+    winrt::uninit_apartment();
+    return artifacts.Finish(ok) && ok ? 0 : 1;
+}

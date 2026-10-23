@@ -27,6 +27,7 @@ struct PluginManifest {
     bool toolbarAction = false;
     bool postCapture = false;
     unsigned int commandApi = 0, captureApi = 0, actionApi = 0, settingsUiApi = 0;
+    unsigned int textTranslationApi = 0, textTranslationClientApi = 0;
     struct CaptureAction { std::wstring id, label; };
     std::vector<CaptureAction> captureActions;
     std::vector<ShortcutDefinition> shortcuts;

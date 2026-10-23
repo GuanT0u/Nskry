@@ -39,6 +39,10 @@ bool PluginManifest::LoadFromFile(const std::wstring& path, PluginManifest& mani
     result.manifestVersion = static_cast<int>(manifestVersion);
     if (const auto *extensions = root.Find(L"extensions")) {
         if (!extensions->IsObject() ||
+            (extensions->Find(L"text_translation") &&
+             (!extensions->GetUnsigned(L"text_translation", result.textTranslationApi) || result.textTranslationApi != 1)) ||
+            (extensions->Find(L"text_translation_client") &&
+             (!extensions->GetUnsigned(L"text_translation_client", result.textTranslationClientApi) || result.textTranslationClientApi != 1)) ||
             (extensions->Find(L"settings_ui") &&
              (!extensions->GetUnsigned(L"settings_ui", result.settingsUiApi) || result.settingsUiApi != 1)) ||
             (extensions->Find(L"capture_actions") &&

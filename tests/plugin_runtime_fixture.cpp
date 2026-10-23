@@ -2,13 +2,24 @@
 #include "nskry_plugin.h"
 #include "nskry_input.h"
 #include "nskry_commands.h"
+#include "nskry_text_translation.h"
+#include <string>
 #include <stdexcept>
 namespace {
 NskryPluginInfo info{sizeof(NskryPluginInfo), NSKRY_PLUGIN_API_VERSION,
-    L"Runtime fixture", L"org.test.runtime", L"1.0.0", L"Tests", L"Test only", nullptr,
+    L"Runtime fixture",
+#ifdef NSKRY_TEST_TEXT_CLIENT
+    L"org.test.text-client",
+#else
+    L"org.test.runtime",
+#endif
+    L"1.0.0", L"Tests", L"Test only", nullptr,
     NSKRY_CAP_TOOLBAR_ACTION | NSKRY_CAP_POST_CAPTURE, {}};
 int calls{};
 int shutdowns{};
+NskryTextTranslationServiceV1 translationService{};
+std::wstring receivedText;
+void ThrowTranslationFixture() { throw std::runtime_error("Test translation failure"); }
 ID3D11Device *initDevice{}, *executeDevice{};
 ID3D11DeviceContext *initContext{}, *executeContext{};
 void ConfigureFixtureInput(const NskryInputConfigV1* config) {
@@ -33,6 +44,28 @@ __declspec(dllexport) int NSKRY_CALL nskry_test_graphics_match() {
     return initDevice && initContext && initDevice == executeDevice && initContext == executeContext;
 }
 NSKRY_API void NSKRY_CALL nskry_plugin_shutdown() { ++shutdowns; }
+#ifndef NSKRY_TEST_NO_TEXT
+NSKRY_API int32_t NSKRY_CALL nskry_plugin_connect_text_translation_v1(const NskryTextTranslationServiceV1 *service) {
+    if (!service || service->version != 1 || service->structSize < sizeof(*service)) return 0;
+    translationService = *service;
+    return 1;
+}
+NSKRY_API int32_t NSKRY_CALL nskry_plugin_translate_text_v1(const NskryTextTranslationV1 *request, NskryTranslationResultV1 *result) {
+    if (!NskryValidTranslation(request)) return NSKRY_TRANSLATION_INVALID;
+    wchar_t mode[24]{};
+    GetEnvironmentVariableW(L"NSKRY_TEST_TRANSLATION_RESULT", mode, 24);
+    if (!wcscmp(mode, L"throw")) ThrowTranslationFixture();
+    if (!wcscmp(mode, L"busy")) {
+        NskryTranslationError(result, L"Fixture busy");
+        return NSKRY_TRANSLATION_BUSY;
+    }
+    if (!wcscmp(mode, L"malformed")) return 99;
+    receivedText.assign(request->text, request->textLength);
+    return NSKRY_TRANSLATION_ACCEPTED;
+}
+__declspec(dllexport) const NskryTextTranslationServiceV1 *NSKRY_CALL nskry_test_translation_service() { return &translationService; }
+__declspec(dllexport) const wchar_t *NSKRY_CALL nskry_test_translation_received() { return receivedText.c_str(); }
+#endif
 __declspec(dllexport) int NSKRY_CALL nskry_test_execute_count() { return calls; }
 __declspec(dllexport) int NSKRY_CALL nskry_test_shutdown_count() { return shutdowns; }
 NSKRY_API int32_t NSKRY_CALL nskry_plugin_command_v1(const NskryCommandV1* request,NskryCommandResultV1*) {

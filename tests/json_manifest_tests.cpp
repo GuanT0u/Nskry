@@ -111,6 +111,10 @@ bool TestManifestDependencyContract() {
     ok &= Expect(load(",\"requires_plugins\":[]"), "empty prerequisites accepted");
     ok &= Expect(load(R"(,"extensions":{"commands":1,"region_capture":1},"shortcuts":[{"id":"stop","label":"Stop","scope":"command","default":"Ctrl+Alt+R"}])"),"optional versioned command/capture metadata accepted");
     ok &= Expect(!load(R"(,"extensions":{"commands":2})"),"unknown command version rejected before DLL load");
+    ok &= Expect(load(R"(,"extensions":{"text_translation":1,"text_translation_client":1})"),
+        "optional host-mediated text handoff metadata accepted");
+    ok &= Expect(!load(R"(,"extensions":{"text_translation":2})"), "unknown text provider version rejected");
+    ok &= Expect(!load(R"(,"extensions":{"text_translation_client":true})"), "invalid text client version rejected");
     ok &= Expect(load(R"(,"extensions":{"region_capture":2,"capture_actions":1,"settings_ui":1},"capture_actions":[{"id":"gif","label":"Record GIF"}])"),
                  "capture v2 and extra metadata actions accepted without loading DLL");
     ok &= Expect(!load(R"(,"extensions":{"region_capture":3})"), "unknown capture version rejected");

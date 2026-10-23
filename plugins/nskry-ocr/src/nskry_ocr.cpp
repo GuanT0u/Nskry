@@ -1,5 +1,6 @@
 #include "nskry_plugin.h"
 #include "nskry_input.h"
+#include "nskry_text_translation.h"
 
 extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_configure_input_v1(const NskryInputConfigV1* config) {
     nskry::input::Configure(config);
@@ -71,6 +72,8 @@ constexpr int kEditId = 1007;
 constexpr int kSaveId = 1008;
 constexpr int kRotateId = 1009;
 constexpr int kEngineId = 1010;
+constexpr int kTranslateId = 1011;
+NskryTextTranslationServiceV1 s_translationService{};
 constexpr int kMaxPreviewDimension = 3200;
 constexpr size_t kMaxOcrPasses = 3;
 
@@ -340,7 +343,7 @@ struct OcrRequest {
 };
 
 NskryPluginInfo kInfo{ sizeof(NskryPluginInfo), NSKRY_PLUGIN_API_VERSION,
-    L"Text recognition", L"nskry-ocr", L"0.6.2", L"Nskry Team",
+    L"Text recognition", L"nskry-ocr", L"0.6.3", L"Nskry Team",
     L"On-demand offline text recognition", nullptr,
     NSKRY_CAP_TOOLBAR_ACTION | NSKRY_CAP_POST_CAPTURE, {} };
 
@@ -1004,18 +1007,27 @@ private:
         m_copyButton = Button(L"Copy", kCopyAllId);
         m_saveButton = Button(L"Save", kSaveId);
         m_rotateButton = Button(L"Rotate 90°", kRotateId);
+        m_translateButton = Button(L"Translate", kTranslateId);
         if (NSKRY_OCR_MODEL_ENGINE)
             m_engineButton = Button(m_result->engine == OcrEngineKind::Accurate ? L"Fast OCR" : L"Accurate OCR", kEngineId);
         m_textEdit = ::CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", m_result->error.empty() ? m_result->text.c_str() : m_result->error.c_str(),
             WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_READONLY | WS_VSCROLL | WS_HSCROLL,
             0, 0, 1, 1, m_hwnd, nullptr, nullptr, nullptr);
         for (HWND child : { m_zoomOutButton, m_zoomInButton, m_scaleLabel, m_highlightButton, m_editButton,
-                            m_copyButton, m_saveButton, m_rotateButton, m_engineButton, m_textEdit })
+                            m_copyButton, m_saveButton, m_rotateButton, m_engineButton, m_translateButton, m_textEdit })
             if (child) ::SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
-        for(HWND child:{m_zoomOutButton,m_zoomInButton,m_highlightButton,m_editButton,m_copyButton,m_saveButton,m_rotateButton,m_engineButton})
+        for(HWND child:{m_zoomOutButton,m_zoomInButton,m_highlightButton,m_editButton,m_copyButton,m_saveButton,m_rotateButton,m_engineButton,m_translateButton})
             if(child)::SetWindowSubclass(child,OcrInputRelay,1,DWORD_PTR(m_hwnd));
         if(m_textEdit)::SetWindowSubclass(m_textEdit,OcrInputRelay,2,DWORD_PTR(m_hwnd));
         LayoutControls();
+        UpdateTranslationButton();
+    }
+
+    void UpdateTranslationButton() {
+        const bool available = s_translationService.available && s_translationService.translate &&
+            s_translationService.available() != 0 && m_result->error.empty() && !m_result->text.empty();
+        ::EnableWindow(m_translateButton, available);
+        ::SetWindowTextW(m_translateButton, available ? L"Translate" : L"Translation unavailable");
     }
 
     HWND Button(const wchar_t* label, int id) {
@@ -1041,7 +1053,10 @@ private:
         const int textLeft = canvas.right;
         if (m_textEdit) ::SetWindowPos(m_textEdit, nullptr, textLeft + 8, 8,
             (std::max)(1, static_cast<int>(client.right) - textLeft - 16),
-            (std::max)(1, static_cast<int>(client.bottom) - 16), SWP_NOZORDER | SWP_NOACTIVATE);
+            (std::max)(1, static_cast<int>(client.bottom) - 56), SWP_NOZORDER | SWP_NOACTIVATE);
+        if (m_translateButton) ::SetWindowPos(m_translateButton, nullptr, textLeft + 8,
+            (std::max)(8, static_cast<int>(client.bottom) - 40),
+            (std::max)(1, static_cast<int>(client.right) - textLeft - 16), 32, SWP_NOZORDER | SWP_NOACTIVATE);
         int x = 8;
         const int y = canvas.bottom;
         const auto place = [&](HWND control, int width) { if (control) ::SetWindowPos(control, nullptr, x, y, width, 40, SWP_NOZORDER | SWP_NOACTIVATE); x += width + 4; };
@@ -1199,7 +1214,26 @@ private:
     LRESULT HandleMessage(UINT message, WPARAM wp, LPARAM lp) {
         switch (message) {
         case WM_CREATE: CreateControls(); return 0;
+        case WM_ACTIVATE:
+            UpdateTranslationButton();
+            break;
         case WM_COMMAND:
+            if (LOWORD(wp) == kTranslateId) {
+                // Copy before the host may show a provider menu/pump messages.
+                // That menu can outlive this OCR window; do not access self after dispatch.
+                const auto owner = m_hwnd;
+                const std::wstring text = m_result->text;
+                const NskryTextTranslationV1 request{sizeof(request), 1, owner, text.c_str(), uint32_t(text.size())};
+                wchar_t error[512]{};
+                NskryTranslationResultV1 result{sizeof(result), 1, error, 512};
+                const auto translate = s_translationService.translate;
+                const auto status = translate ? translate(&request, &result) : NSKRY_TRANSLATION_UNAVAILABLE;
+                error[511] = 0;
+                if (status != NSKRY_TRANSLATION_ACCEPTED && status != NSKRY_TRANSLATION_CANCELED && ::IsWindow(owner))
+                    ::MessageBoxW(owner, error[0] ? error : L"Enable/install a text translation plugin and use a matching Core build.",
+                        L"Nskry — Translation", MB_OK | MB_ICONINFORMATION);
+                return 0;
+            }
             if (LOWORD(wp) == kZoomOutId) { RECT canvas = CanvasRect(); ZoomAt({ (canvas.left + canvas.right) / 2, (canvas.top + canvas.bottom) / 2 }, 1.0 / 1.2); return 0; }
             if (LOWORD(wp) == kZoomInId) { RECT canvas = CanvasRect(); ZoomAt({ (canvas.left + canvas.right) / 2, (canvas.top + canvas.bottom) / 2 }, 1.2); return 0; }
             if (LOWORD(wp) == kHighlightId) { m_highlights = !m_highlights; LayoutControls(); ::InvalidateRect(m_hwnd, nullptr, FALSE); return 0; }
@@ -1335,6 +1369,7 @@ private:
     HWND m_rotateButton{};
     HWND m_engineButton{};
     HWND m_textEdit{};
+    HWND m_translateButton{};
     HFONT m_font{};
     HFONT m_boldFont{};
     std::unique_ptr<OcrJobResult> m_result;
@@ -1401,6 +1436,14 @@ bool CreateDispatchWindow() {
 
 extern "C" NSKRY_API const NskryPluginInfo* NSKRY_CALL nskry_plugin_info() { return &kInfo; }
 
+extern "C" NSKRY_API int32_t NSKRY_CALL nskry_plugin_connect_text_translation_v1(
+    const NskryTextTranslationServiceV1 *service) {
+    if (!service || service->structSize < sizeof(*service) || service->version != 1 ||
+        !service->available || !service->translate) return 0;
+    s_translationService = *service;
+    return 1;
+}
+
 extern "C" NSKRY_API int32_t NSKRY_CALL nskry_plugin_init(const NskryHostContext* context) {
     return context && context->structSize >= sizeof(NskryHostContext) &&
         context->apiVersion == NSKRY_PLUGIN_API_VERSION && CreateDispatchWindow() ? 1 : 0;
@@ -1432,6 +1475,7 @@ extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext
 }
 
 extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_shutdown() {
+    s_translationService = {};
     CloseProgress();
     std::thread worker;
     {

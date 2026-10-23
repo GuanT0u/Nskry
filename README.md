@@ -54,6 +54,7 @@ iscc installer/NskrySetup.iss
 
 安装器会显示当前 `installer/bundled/` 中实际存在的官方插件作为可选组件，并通过 Nskry 自己的插件安装流程完成校验和安装。
 翻译已有[中英离线开发 MVP](plugins/nskry-translate/README.md)，需单独准备运行时/语言包，尚未通过正式发行门禁，不随安装器发布；在线引擎尚未实现。
+配套新版 Core、OCR 0.6.3 与翻译 0.2.0 支持 OCR 结果页一键交接翻译，以及框选后自动判断中英方向并翻译；语言包可复用。
 录屏需要同轮构建的 Core，范围、资源实测及待验收限制见 [录屏说明](plugins/nskry-record/README.md)。
 
 ## 技术栈

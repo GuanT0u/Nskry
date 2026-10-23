@@ -32,5 +32,19 @@ if(BUILD_TESTING)
         add_test(NAME NskryTranslationOfflineTests COMMAND NskryTranslationPluginTests
             $<TARGET_FILE:nskry_translate> "${NSKRY_TRANSLATE_TEST_MODELS}")
         set_tests_properties(NskryTranslationOfflineTests PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+        add_executable(NskryOcrTranslationIntegrationTests "${CMAKE_SOURCE_DIR}/tests/ocr_translation_integration_tests.cpp"
+            "${CMAKE_SOURCE_DIR}/src/core/plugin_manager.cpp" "${CMAKE_SOURCE_DIR}/src/core/plugin_registry.cpp"
+            "${CMAKE_SOURCE_DIR}/src/core/plugin_manifest.cpp" "${CMAKE_SOURCE_DIR}/src/core/json.cpp"
+            "${CMAKE_SOURCE_DIR}/src/update/semver.cpp")
+        target_include_directories(NskryOcrTranslationIntegrationTests PRIVATE "${CMAKE_SOURCE_DIR}" "${CMAKE_SOURCE_DIR}/src" "${CMAKE_SOURCE_DIR}/sdk")
+        target_compile_definitions(NskryOcrTranslationIntegrationTests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN WINRT_LEAN_AND_MEAN)
+        target_link_libraries(NskryOcrTranslationIntegrationTests PRIVATE windowsapp user32 gdi32)
+        if(MSVC)
+            target_compile_options(NskryOcrTranslationIntegrationTests PRIVATE /utf-8)
+        endif()
+        add_dependencies(NskryOcrTranslationIntegrationTests nskry_translate nskry_ocr_package)
+        add_test(NAME NskryOcrTranslationIntegrationTests COMMAND NskryOcrTranslationIntegrationTests
+            $<TARGET_FILE:nskry_translate> $<TARGET_FILE:nskry_ocr> "${NSKRY_TRANSLATE_TEST_MODELS}" "${CMAKE_BINARY_DIR}")
+        set_tests_properties(NskryOcrTranslationIntegrationTests PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
     endif()
 endif()

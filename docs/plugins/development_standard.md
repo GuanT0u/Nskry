@@ -5,6 +5,8 @@
 已加载任务的全局控制与连续区域采集另见 [可选命令/采集 v1](recording_extensions_v1.md)；
 不是 screenshot context 的帧流，也不是已实现 standalone 或跨插件服务。
 区域/窗口跟随采集v2、额外capture动作与设置UI见 [录屏扩展v2](recording_extensions_v2.md)。
+用户主动发起的 OCR→翻译交接见 [文字翻译扩展v1](text_translation_extension_v1.md)；
+它不是任意跨插件服务或前置依赖解析，不允许直接调用另一个包的私有 DLL。
 
 适用官方及独立第三方作者。先阅读 [基础能力契约](../architecture/core_plugin_contract.md)
 与 [第三方安全政策](third_party_policy.md)。官方身份不改变 SDK 约束。

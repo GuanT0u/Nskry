@@ -14,6 +14,7 @@ void PluginManager::Initialize(PluginRegistry &registry, const NskryHostContext 
         return;
     m_registry = &registry;
     m_hostContext = hostContext;
+    m_uiThread = GetCurrentThreadId();
     m_initialized = true;
 
     // Startup is deliberately opt-in. All normal plugins remain installed and
@@ -26,6 +27,7 @@ void PluginManager::Initialize(PluginRegistry &registry, const NskryHostContext 
 }
 
 void PluginManager::Shutdown() {
+    m_initialized = false; // No new text handoffs from closing clients.
     for (auto it = m_plugins.begin(); it != m_plugins.end();) {
         const std::wstring id = it->first;
         ++it;
@@ -37,6 +39,7 @@ void PluginManager::Shutdown() {
     m_captureService = {};
     m_captureServiceV2 = {};
     m_initialized = false;
+    m_uiThread = 0;
     m_graphicsProvider = {};
 }
 
@@ -80,6 +83,15 @@ bool PluginManager::LoadPlugin(const PluginRecord &record) {
         ::GetProcAddress(module, "nskry_plugin_capture_action_v1"));
     const auto showSettings = reinterpret_cast<NskryShowSettingsV1>(
         ::GetProcAddress(module, "nskry_plugin_show_settings_v1"));
+    const auto translateText = reinterpret_cast<NskryTranslateTextV1>(
+        ::GetProcAddress(module, "nskry_plugin_translate_text_v1"));
+    const auto connectTranslation = reinterpret_cast<NskryConnectTextTranslationV1>(
+        ::GetProcAddress(module, "nskry_plugin_connect_text_translation_v1"));
+    if ((record.manifest.textTranslationApi && !translateText) ||
+        (record.manifest.textTranslationClientApi && !connectTranslation)) {
+        ::FreeLibrary(module);
+        return false;
+    }
     if ((record.manifest.actionApi && !captureAction) || (record.manifest.settingsUiApi && !showSettings)) {
         ::FreeLibrary(module);
         return false;
@@ -116,6 +128,14 @@ bool PluginManager::LoadPlugin(const PluginRecord &record) {
             if (m_graphicsProvider)
                 m_graphicsProvider(m_hostContext);
             initAttempted = true;
+            if (record.manifest.textTranslationClientApi) {
+                const NskryTextTranslationServiceV1 service{sizeof(service), 1,
+                    []() -> int32_t { return PluginManager::Instance().HasTextTranslation() ? 1 : 0; },
+                    [](const NskryTextTranslationV1 *request, NskryTranslationResultV1 *result) -> int32_t {
+                        return PluginManager::Instance().TranslateText(request, result);
+                    }};
+                if (!connectTranslation(&service)) throw std::runtime_error("Text translation extension rejected");
+            }
             if ((record.manifest.captureApi == 1 && !connectCapture(&m_captureService)) ||
                 (record.manifest.captureApi == 2 && !connectCaptureV2(&m_captureServiceV2)))
                 throw std::runtime_error("Capture extension rejected");
@@ -140,6 +160,7 @@ bool PluginManager::LoadPlugin(const PluginRecord &record) {
     PluginEntry entry;
     entry.fnCaptureAction = captureAction;
     entry.fnShowSettings = showSettings;
+    entry.fnTranslateText = translateText;
     entry.hModule = module;
     entry.id = record.manifest.id;
     entry.fnExecute = fnExecute;
@@ -220,6 +241,70 @@ bool PluginManager::ShowPluginSettings(const std::wstring &id, HWND owner) {
 }
 bool PluginManager::IsLoaded(const std::wstring &pluginId) const {
     return m_plugins.contains(pluginId);
+}
+
+bool PluginManager::HasTextTranslation() const {
+    if (GetCurrentThreadId() != m_uiThread.load() || !m_initialized || !m_registry) return false;
+    try {
+        for (const auto *record : m_registry->GetAll())
+            if (record->enabled && record->manifest.textTranslationApi == 1 && record->manifest.IsCompatibleWithHost())
+                return true;
+    } catch (...) {} // Service callbacks must not throw across the plugin ABI.
+    return false;
+}
+
+int32_t PluginManager::TranslateText(const NskryTextTranslationV1 *request, NskryTranslationResultV1 *result) {
+    if (result && (result->structSize < sizeof(*result) || result->version != 1)) return NSKRY_TRANSLATION_INVALID;
+    NskryTranslationError(result, L"");
+    if (!NskryValidTranslation(request)) {
+        NskryTranslationError(result, L"Enter nonempty valid text within 16000 UTF-16 units.");
+        return NSKRY_TRANSLATION_INVALID;
+    }
+    if (!HasTextTranslation()) {
+        NskryTranslationError(result, L"No enabled compatible text translation plugin. Update Core and enable/install a provider.");
+        return NSKRY_TRANSLATION_UNAVAILABLE;
+    }
+    if (m_textDispatching) {
+        NskryTranslationError(result, L"A translation handoff is being selected. Wait or cancel the provider menu.");
+        return NSKRY_TRANSLATION_BUSY;
+    }
+    m_textDispatching = true;
+    struct Dispatch { bool &value; ~Dispatch() { value = false; } } dispatch{m_textDispatching};
+    try {
+        const std::wstring copiedText(request->text, request->textLength);
+        auto copiedRequest = *request;
+        copiedRequest.text = copiedText.c_str();
+        std::vector<std::pair<std::wstring, std::wstring>> providers;
+        for (const auto *record : m_registry->GetAll())
+            if (record->enabled && record->manifest.textTranslationApi == 1 && record->manifest.IsCompatibleWithHost())
+                providers.emplace_back(record->manifest.id, record->manifest.name);
+        size_t selected = 0;
+        if (providers.size() > 1) {
+            HMENU menu = CreatePopupMenu();
+            if (!menu) return NSKRY_TRANSLATION_FAILED;
+            struct Menu { HMENU value; ~Menu() { DestroyMenu(value); } } guard{menu};
+            const size_t count = (std::min)(providers.size(), size_t(100));
+            for (size_t i = 0; i < count; ++i) AppendMenuW(menu, MF_STRING, UINT_PTR(i + 1), providers[i].second.c_str());
+            POINT point{}; GetCursorPos(&point);
+            const auto choice = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY,
+                point.x, point.y, 0, request->owner ? request->owner : m_hostContext.mainHwnd, nullptr);
+            if (!choice || choice > count) return NSKRY_TRANSLATION_CANCELED;
+            selected = choice - 1;
+        }
+        // Registry may change while the provider menu pumps messages.
+        const auto id = providers[selected].first;
+        const auto *record = m_registry ? m_registry->Find(id) : nullptr;
+        if (!m_initialized || !record || record->manifest.textTranslationApi != 1 || !EnsureLoaded(id)) {
+            NskryTranslationError(result, L"The selected translation provider is unavailable or could not load.");
+            return NSKRY_TRANSLATION_UNAVAILABLE;
+        }
+        const auto it = m_plugins.find(id);
+        if (it == m_plugins.end() || !it->second.fnTranslateText) return NSKRY_TRANSLATION_UNAVAILABLE;
+        const auto status = it->second.fnTranslateText(&copiedRequest, result);
+        if (status >= NSKRY_TRANSLATION_CANCELED && status <= NSKRY_TRANSLATION_ACCEPTED) return status;
+    } catch (...) {}
+    NskryTranslationError(result, L"The translation provider failed to accept the request.");
+    return NSKRY_TRANSLATION_FAILED;
 }
 
 bool PluginManager::ExecuteCommand(const std::wstring &id, const std::wstring &local, std::wstring &error) {

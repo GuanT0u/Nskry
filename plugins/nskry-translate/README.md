@@ -1,10 +1,23 @@
-# Translation 0.1.0 — experimental offline MVP
+# Translation 0.2.0 — experimental offline translation
 
 Independent API2 plugin. Select a screenshot, a pinned image, a monitor's static
-frame, or an editor subregion and choose Translation. Windows OCR runs locally;
-review/edit the source, select English→Chinese or Chinese→English, then Translate.
+frame, or an editor subregion and choose Translation. Windows OCR runs locally,
+then translation starts automatically. Auto chooses English→Chinese or Chinese→English
+using a bounded script-based rule; mixed text uses the dominant supported script.
+It is not a universal language classifier (other Latin-alphabet languages can be
+mistaken for English). Unknown/numeric-only or clearly unsupported scripts need
+manual direction/source review. You can edit the source and translate again, or
+override Auto with either direction. No extra detector model is loaded.
 Copy result copies all translated text; normal text selection also works.
 Settings opens the same window without OCR, model loading or networking.
+
+With the matching Core, OCR 0.6.3+ has a Translate button below its text pane.
+It forwards the existing OCR text through the host's optional text translation v1
+extension, immediately starts translation, and never recognizes the image again.
+OCR/Translation remain independently usable; a missing/disabled/incompatible
+provider disables the OCR entry, and a busy task is not silently overwritten.
+Closing OCR does not close a handed-off translation window. Update Core + both
+plugins for this integration; the external language packs do not need conversion again.
 
 The source bitmap is copied before execute returns. OCR does not depend on the
 OCR plugin. Missing Windows language resources may reduce recognition quality;
@@ -69,7 +82,7 @@ before redistribution. CTranslate2, SentencePiece, Python, NumPy/OpenBLAS,
 setuptools, frozen bootloader and bundled native runtimes also need their own
 complete notices/source obligations; project GPL does not replace those.
 
-## Future providers (not implemented in 0.1.0)
+## Future providers (not implemented in 0.2.0)
 
 Keep distinct provider categories: user-configured online (BYOK or another user
 credential scheme), approved free online service, lightweight offline, and

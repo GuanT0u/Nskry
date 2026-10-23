@@ -176,6 +176,7 @@ int wmain(int argc, wchar_t** argv) {
         resultShown = false;
         if (HWND result = WaitForResult(observedText)) {
             resultShown = !workflow || Workflow(result, observedText, missingEngine);
+            if (result && !::GetDlgItem(result, 1011)) resultShown = false;
             recognizedText = observedText.find(L"Nskry") != std::wstring::npos;
             if (result && !workflow) ::SendMessageW(result, WM_CLOSE, 0, 0);
         }

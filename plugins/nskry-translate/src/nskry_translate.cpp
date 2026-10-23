@@ -1,6 +1,7 @@
 #include "core/json.h"
 #include "nskry_actions.h"
 #include "nskry_plugin.h"
+#include "nskry_text_translation.h"
 #include "translation_policy.h"
 #include <atomic>
 #include <chrono>
@@ -29,6 +30,7 @@ struct Task {
     std::thread thread;
     std::atomic<bool> done{false};
     std::wstring result, error;
+    std::wstring successMessage = L"Done. Experimental offline translation; review the result.";
     bool ocr{};
     ~Task() {
         SetEvent(cancel);
@@ -39,6 +41,7 @@ struct Task {
     }
 };
 std::unique_ptr<Task> task;
+bool BeginTranslation();
 std::wstring Text(HWND control) {
     const auto size = GetWindowTextLengthW(control);
     std::wstring text(size + 1, 0);
@@ -197,10 +200,14 @@ std::wstring RunOffline(Task &work, const std::wstring &text, const std::wstring
 void FinishTask() {
     if (!task || !task->done.load())
         return;
-    const auto &message =
-        task->error.empty() ? L"Done. Experimental offline translation; review the result." : task->error;
+    const bool canceled = WaitForSingleObject(task->cancel, 0) == WAIT_OBJECT_0;
+    const bool autoTranslate = task->ocr && task->error.empty() && !canceled && !closing;
+    const std::wstring message =
+        canceled ? L"Canceled. No online fallback was used."
+                 : (task->error.empty() ? task->successMessage : task->error);
     SetWindowTextW(statusLabel, message.c_str());
-    SetWindowTextW(task->ocr ? sourceEdit : resultEdit, task->result.c_str());
+    if (!canceled)
+        SetWindowTextW(task->ocr ? sourceEdit : resultEdit, task->result.c_str());
     task.reset();
     KillTimer(window, 1);
     EnableWindow(GetDlgItem(window, 1), TRUE);
@@ -209,14 +216,17 @@ void FinishTask() {
     EnableWindow(directionChoice, TRUE);
     if (closing)
         DestroyWindow(window);
+    else if (autoTranslate)
+        BeginTranslation();
 }
 template <class Work> void Start(bool ocr, Work work) {
     if (task)
         return;
     task = std::make_unique<Task>();
     if (!task->cancel) {
+        const auto error = GetLastError();
         task.reset();
-        winrt::throw_last_error();
+        winrt::throw_hresult(HRESULT_FROM_WIN32(error));
     }
     task->ocr = ocr;
     auto *state = task.get();
@@ -255,6 +265,33 @@ template <class Work> void Start(bool ocr, Work work) {
         EnableWindow(directionChoice, TRUE);
         winrt::throw_hresult(HRESULT_FROM_WIN32(error ? error : ERROR_NOT_ENOUGH_MEMORY));
     }
+}
+bool BeginTranslation() {
+    if (task || closing)
+        return false;
+    SetWindowTextW(resultEdit, L"");
+    auto text = Text(sourceEdit), root = Text(packEdit);
+    if (ValidateText(text) != InputError::None) {
+        SetWindowTextW(statusLabel, L"No valid text found. Edit the source (maximum 16000 UTF-16 units).");
+        return false;
+    }
+    const auto selection = SendMessageW(directionChoice, CB_GETCURSEL, 0, 0);
+    bool toChinese = selection == 1;
+    if (selection == 0) {
+        const auto language = DetectSourceLanguage(text);
+        if (language != SourceLanguage::Chinese && language != SourceLanguage::English) {
+            SetWindowTextW(statusLabel, L"Cannot choose an English/Chinese language pack for this text. "
+                                        L"Check the source or choose a direction manually.");
+            return false;
+        }
+        toChinese = language == SourceLanguage::English;
+    }
+    Start(false, [text, root, toChinese](Task &work) { return RunOffline(work, text, root, toChinese); });
+    task->successMessage = toChinese ? L"English → 中文: done. Review the experimental translation."
+                                     : L"中文 → English: done. Review the experimental translation.";
+    SetWindowTextW(statusLabel, toChinese ? L"English → 中文: translating offline…"
+                                          : L"中文 → English: translating offline…");
+    return true;
 }
 std::wstring Recognize(Task &work, const std::vector<uint8_t> &pixels, int width, int height) {
     using namespace winrt::Windows;
@@ -334,14 +371,7 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         }
         if (message == WM_COMMAND) {
             if (LOWORD(wp) == 1 && !task) {
-                auto text = Text(sourceEdit), root = Text(packEdit);
-                if (ValidateText(text) != InputError::None) {
-                    SetWindowTextW(statusLabel, L"Enter nonempty text within 16000 UTF-16 units.");
-                    return 0;
-                }
-                const bool chinese = SendMessageW(directionChoice, CB_GETCURSEL, 0, 0) == 0;
-                Start(false,
-                      [text, root, chinese](Task &work) { return RunOffline(work, text, root, chinese); });
+                BeginTranslation();
             }
             if (LOWORD(wp) == 2 && task)
                 SetEvent(task->cancel);
@@ -394,6 +424,7 @@ void Show(HWND owner) {
     SendMessageW(resultEdit, EM_SETLIMITTEXT, MaxReplyBytes, 0);
     packEdit = child(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, 12);
     directionChoice = child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP, 13);
+    SendMessageW(directionChoice, CB_ADDSTRING, 0, LPARAM(L"Auto (中/En)"));
     SendMessageW(directionChoice, CB_ADDSTRING, 0, LPARAM(L"English → 中文"));
     SendMessageW(directionChoice, CB_ADDSTRING, 0, LPARAM(L"中文 → English"));
     SendMessageW(directionChoice, CB_SETCURSEL, 0, 0);
@@ -401,9 +432,10 @@ void Show(HWND owner) {
     child(L"BUTTON", L"Cancel", WS_TABSTOP, 2);
     child(L"BUTTON", L"Copy result", WS_TABSTOP, 3);
     child(L"BUTTON", L"Save pack path", WS_TABSTOP, 4);
-    statusLabel =
-        child(L"STATIC",
-              L"Edit the source, choose direction, then Translate. Result: select text and Ctrl+C.", 0, 14);
+    statusLabel = child(L"STATIC",
+                        L"Select a region to recognize and translate automatically. You can edit the source "
+                        L"and translate again.",
+                        0, 14);
     wchar_t saved[32768]{};
     DWORD bytes = sizeof(saved);
     auto root = (PluginDirectory() / L"languages").wstring();
@@ -419,7 +451,7 @@ NskryPluginInfo info{sizeof(info),
                      NSKRY_PLUGIN_API_VERSION,
                      L"Translation",
                      L"nskry-translate",
-                     L"0.1.0",
+                     L"0.2.0",
                      L"Nskry Team",
                      L"Experimental on-demand offline English/Chinese translation.",
                      nullptr,
@@ -443,6 +475,40 @@ extern "C" NSKRY_API int32_t NSKRY_CALL nskry_plugin_show_settings_v1(HWND owner
         return 0;
     }
 }
+extern "C" NSKRY_API int32_t NSKRY_CALL nskry_plugin_translate_text_v1(const NskryTextTranslationV1 *request,
+                                                                       NskryTranslationResultV1 *result) {
+    if ((result && (result->structSize < sizeof(*result) || result->version != 1)) ||
+        !NskryValidTranslation(request)) {
+        NskryTranslationError(result, L"Translation requires nonempty valid text within 16000 UTF-16 units.");
+        return NSKRY_TRANSLATION_INVALID;
+    }
+    try {
+        Show(nullptr); // Independent window: closing OCR must not destroy this task.
+        if (task || closing) {
+            NskryTranslationError(
+                result, L"A translation task is active. Cancel it or wait before sending more text.");
+            return NSKRY_TRANSLATION_BUSY;
+        }
+        const std::wstring copied(request->text, request->textLength);
+        SetWindowTextW(sourceEdit, copied.c_str());
+        SendMessageW(directionChoice, CB_SETCURSEL, 0, 0);
+        // OCR results are topmost; the translation must not open hidden behind them.
+        SetWindowPos(window,
+                     request->owner && (GetWindowLongPtrW(request->owner, GWL_EXSTYLE) & WS_EX_TOPMOST)
+                         ? HWND_TOPMOST
+                         : HWND_NOTOPMOST,
+                     0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        if (!BeginTranslation()) {
+            NskryTranslationError(result, L"Automatic English/Chinese direction is unavailable for this "
+                                          L"source. Choose a direction in the translation window.");
+            return NSKRY_TRANSLATION_INVALID;
+        }
+        return NSKRY_TRANSLATION_ACCEPTED;
+    } catch (...) {
+        NskryTranslationError(result, L"Could not start the translation task. No online fallback was used.");
+        return NSKRY_TRANSLATION_FAILED;
+    }
+}
 NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext *context) {
     if (!context || !context->capturedBitmap)
         return;
@@ -450,6 +516,7 @@ NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext *context) 
         Show(context->mainHwnd);
         if (task)
             return;
+        SendMessageW(directionChoice, CB_SETCURSEL, 0, 0);
         BITMAP bitmap{};
         if (!GetObjectW(context->capturedBitmap, sizeof(bitmap), &bitmap) || bitmap.bmWidth < 1 ||
             bitmap.bmHeight < 1 || bitmap.bmWidth > 4096 || bitmap.bmHeight > 4096 ||

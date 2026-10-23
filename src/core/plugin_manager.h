@@ -5,7 +5,9 @@
 #include "sdk/nskry_capture.h"
 #include "sdk/nskry_commands.h"
 #include "sdk/nskry_actions.h"
+#include "sdk/nskry_text_translation.h"
 #include <functional>
+#include <atomic>
 #include <string>
 #include <unordered_map>
 
@@ -21,6 +23,7 @@ struct PluginEntry {
     NskryCommandHandlerV1 fnCommand = nullptr;
     NskryExecuteCaptureActionV1 fnCaptureAction = nullptr;
     NskryShowSettingsV1 fnShowSettings = nullptr;
+    NskryTranslateTextV1 fnTranslateText = nullptr;
     struct InputReport {
         enum class Status {
             NotLoaded,
@@ -65,6 +68,8 @@ class PluginManager {
     // Does not load idle plugins. Cleanup commands remain usable after disable.
     bool ExecuteCommand(const std::wstring& pluginId, const std::wstring& localId, std::wstring& error);
     bool ShowPluginSettings(const std::wstring &pluginId, HWND owner);
+    bool HasTextTranslation() const; // Metadata discovery only, UI thread.
+    int32_t TranslateText(const NskryTextTranslationV1 *, NskryTranslationResultV1 *);
     void SetCaptureService(const NskryCaptureServiceV1& service) { m_captureService = service; }
     void SetCaptureServiceV2(const NskryCaptureServiceV2& service) { m_captureServiceV2 = service; }
     bool IsLoaded(const std::wstring &pluginId) const;
@@ -93,6 +98,8 @@ class PluginManager {
     NskryCaptureServiceV2 m_captureServiceV2{};
     std::unordered_map<std::wstring, PluginEntry> m_plugins;
     bool m_initialized = false;
+    std::atomic<DWORD> m_uiThread{0};
+    bool m_textDispatching = false;
     std::function<std::wstring(const ShortcutDefinition &)> m_shortcutProvider;
     std::function<void(NskryHostContext &)> m_graphicsProvider;
 };

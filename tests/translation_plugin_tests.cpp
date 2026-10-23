@@ -1,5 +1,6 @@
 #include "nskry_actions.h"
 #include "nskry_plugin.h"
+#include "nskry_text_translation.h"
 #include <chrono>
 #include <functional>
 #include <iostream>
@@ -47,7 +48,9 @@ int wmain(int argc, wchar_t **argv) {
         reinterpret_cast<decltype(&nskry_plugin_execute)>(GetProcAddress(dll, "nskry_plugin_execute"));
     const auto init =
         reinterpret_cast<decltype(&nskry_plugin_init)>(GetProcAddress(dll, "nskry_plugin_init"));
-    if (!settings || !shutdown || !execute || !init || !init(nullptr))
+    const auto translateText =
+        reinterpret_cast<NskryTranslateTextV1>(GetProcAddress(dll, "nskry_plugin_translate_text_v1"));
+    if (!settings || !shutdown || !execute || !init || !translateText || !init(nullptr))
         return 4;
     bool ok = settings && shutdown && settings(nullptr);
     HWND window = OwnWindow();
@@ -98,6 +101,10 @@ int wmain(int argc, wchar_t **argv) {
         ReleaseDC(nullptr, screen);
         NskryHostContext context{sizeof(context), NSKRY_PLUGIN_API_VERSION};
         context.capturedBitmap = bitmap;
+        if (execute) execute(&context);
+        SendMessageW(window, WM_COMMAND, 2, 0); // Cancel recognition: no automatic translation may follow.
+        ok = Pump([&] { return IsWindowEnabled(GetDlgItem(window, 1)); }) &&
+            !GetWindowTextLengthW(GetDlgItem(window, 11)) && ok;
         if (execute)
             execute(&context);
         DeleteObject(bitmap); // execute must have copied borrowed pixels before returning.
@@ -105,7 +112,27 @@ int wmain(int argc, wchar_t **argv) {
         wchar_t recognized[2048]{};
         GetWindowTextW(GetDlgItem(window, 10), recognized, 2048);
         std::wcout << L"Synthetic screenshot OCR: " << recognized << L'\n';
-        ok = wcsstr(recognized, L"Hello") != nullptr && ok;
+        ok = wcsstr(recognized, L"world") != nullptr && ok;
+        if (argc == 3) {
+            wchar_t automatic[2048]{};
+            GetWindowTextW(GetDlgItem(window, 11), automatic, 2048);
+            ok = automatic[0] && SendMessageW(GetDlgItem(window, 13), CB_GETCURSEL, 0, 0) == 0 && ok;
+            std::wcout << L"Screenshot automatically translated: " << automatic << L'\n';
+            // OCR handoff accepts a copied, length-delimited source, detects zh→en,
+            // and starts immediately, without clicking the Translate button.
+            std::wstring chinese = L"请不要关闭应用程序。";
+            NskryTextTranslationV1 request{sizeof(request), 1, nullptr, chinese.data(),
+                                           uint32_t(chinese.size())};
+            wchar_t error[256]{};
+            NskryTranslationResultV1 reply{sizeof(reply), 1, error, 256};
+            ok = translateText(&request, &reply) == NSKRY_TRANSLATION_ACCEPTED && ok;
+            ok = translateText(&request, &reply) == NSKRY_TRANSLATION_BUSY && ok;
+            chinese.assign(chinese.size(), L'x'); // Provider must not retain this borrowed pointer.
+            ok = Pump([&] { return IsWindowEnabled(GetDlgItem(window, 1)); }) && ok;
+            GetWindowTextW(GetDlgItem(window, 11), automatic, 2048);
+            ok = automatic[0] && wcsstr(automatic, L"close") && ok;
+            std::wcout << L"Chinese handoff automatically translated: " << automatic << L'\n';
+        }
         SetWindowTextW(GetDlgItem(window, 10), L"Hello");
         SendMessageW(window, WM_COMMAND, 1, 0);
         SendMessageW(window, WM_COMMAND, 1, 0); // Repeated start is ignored, not queued.
