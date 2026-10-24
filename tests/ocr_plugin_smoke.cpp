@@ -64,11 +64,20 @@ bool InClient(HWND parent, HWND child) {
     return bounds.left >= 0 && bounds.top >= 0 && bounds.right <= client.right && bounds.bottom <= client.bottom;
 }
 bool Workflow(HWND& result, std::wstring& text, bool missingEngine) {
+    const auto checkpoint = [&](bool valid, const char *stage) {
+        if (!valid) {
+            std::wcerr << L"OCR workflow source: " << text << L'\n';
+            std::cerr << "OCR workflow failed at " << stage << '\n';
+        }
+        return valid;
+    };
     // Public UI workflow: original bitmap callbacks, small-window controls,
     // engine switching, rotation. Only windows in this test process are used.
     ::SetWindowPos(result, nullptr, 0, 0, 640, 360, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     for (int id : {1004, 1005, 1006, 1007, 1003, 1008, 1009, 1010})
-        if (!InClient(result, ::GetDlgItem(result, id))) return false;
+        if (!checkpoint(InClient(result, ::GetDlgItem(result, id)), "control bounds")) return false;
+    HWND plainText = ::FindWindowExW(result, nullptr, L"EDIT", nullptr);
+    if (!checkpoint(plainText && !(::GetWindowLongPtrW(plainText, GWL_STYLE) & ES_AUTOHSCROLL), "paragraph soft wrap")) return false;
     ::SendMessageW(result, WM_COMMAND, 1003, 0);
     ::SendMessageW(result, WM_COMMAND, 1007, 0);
     ::SendMessageW(result, WM_COMMAND, 1003, 0);
@@ -76,14 +85,14 @@ bool Workflow(HWND& result, std::wstring& text, bool missingEngine) {
     if (missingEngine && text.find(L"missing") == std::wstring::npos) return false;
     ::SendMessageW(result, WM_COMMAND, 1010, 0); // Accurate -> Fast.
     result = WaitForResult(text);
-    if (!result || text.find(L"Nskry") == std::wstring::npos) return false;
+    if (!checkpoint(result && text.find(L"Nskry") != std::wstring::npos, "fast mode")) return false;
     if (missingEngine) return true;
     ::SendMessageW(result, WM_COMMAND, 1010, 0); // Fast -> Accurate.
     result = WaitForResult(text);
-    if (!result || text.find(L"Nskry") == std::wstring::npos) return false;
+    if (!checkpoint(result && text.find(L"Nskry") != std::wstring::npos, "accurate mode")) return false;
     ::SendMessageW(result, WM_COMMAND, 1009, 0); // Rotate and re-recognize.
     result = WaitForResult(text);
-    if (!result || text.find(L"Nskry") == std::wstring::npos) return false;
+    if (!checkpoint(result && text.find(L"Nskry") != std::wstring::npos, "rotated mode")) return false;
     ::SendMessageW(result, WM_COMMAND, 1003, 0);
     return s_copiedWidth == 240 && s_copiedHeight == 640;
 }

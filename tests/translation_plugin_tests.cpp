@@ -5,6 +5,7 @@
 #include <functional>
 #include <iostream>
 #include <thread>
+#include <gdiplus.h>
 #include <winrt/base.h>
 bool Pump(const std::function<bool()> &done, DWORD timeout = 15000) {
     const auto end = GetTickCount64() + timeout;
@@ -33,7 +34,7 @@ HWND OwnWindow() {
     return result;
 }
 int wmain(int argc, wchar_t **argv) {
-    if (argc != 2 && argc != 3)
+    if (argc != 2 && argc != 3 && argc != 4)
         return 2;
     winrt::init_apartment(winrt::apartment_type::single_threaded);
     HMODULE dll =
@@ -69,7 +70,7 @@ int wmain(int argc, wchar_t **argv) {
         SendMessageW(window, WM_COMMAND, 1, 0);
         ok = Pump([&] { return IsWindowEnabled(GetDlgItem(window, 1)); }) &&
              !GetWindowTextLengthW(GetDlgItem(window, 11)) && ok;
-        if (argc == 3) {
+        if (argc >= 3) {
             SetWindowTextW(GetDlgItem(window, 12), argv[2]);
             SetWindowTextW(GetDlgItem(window, 10), L"Save the screenshot to the clipboard.");
             SendMessageW(window, WM_COMMAND, 1, 0);
@@ -113,7 +114,7 @@ int wmain(int argc, wchar_t **argv) {
         GetWindowTextW(GetDlgItem(window, 10), recognized, 2048);
         std::wcout << L"Synthetic screenshot OCR: " << recognized << L'\n';
         ok = wcsstr(recognized, L"world") != nullptr && ok;
-        if (argc == 3) {
+        if (argc >= 3) {
             wchar_t automatic[2048]{};
             GetWindowTextW(GetDlgItem(window, 11), automatic, 2048);
             ok = automatic[0] && SendMessageW(GetDlgItem(window, 13), CB_GETCURSEL, 0, 0) == 0 && ok;
@@ -133,6 +134,31 @@ int wmain(int argc, wchar_t **argv) {
             ok = automatic[0] && wcsstr(automatic, L"close") && ok;
             std::wcout << L"Chinese handoff automatically translated: " << automatic << L'\n';
         }
+        if (argc == 4) {
+            Gdiplus::GdiplusStartupInput input;
+            ULONG_PTR token{};
+            HBITMAP fixture{};
+            if (Gdiplus::GdiplusStartup(&token, &input, nullptr) != Gdiplus::Ok) return 5;
+            {
+                Gdiplus::Bitmap image(argv[3]);
+                if (image.GetLastStatus() == Gdiplus::Ok) image.GetHBITMAP(Gdiplus::Color::White, &fixture);
+            }
+            Gdiplus::GdiplusShutdown(token);
+            if (!fixture) return 6;
+            context.capturedBitmap = fixture;
+            for (int run = 0; run < 3; ++run) {
+                const auto began = GetTickCount64();
+                execute(&context);
+                const bool finished = Pump([&] { return IsWindowEnabled(GetDlgItem(window, 1)); }, 20000);
+                const auto sourceUnits = GetWindowTextLengthW(GetDlgItem(window, 10));
+                const auto resultUnits = GetWindowTextLengthW(GetDlgItem(window, 11));
+                ok = finished && sourceUnits > 0 && resultUnits > 0 && ok;
+                // Counts only; arbitrary local test screenshots must not be logged as plaintext.
+                std::cout << "Fixture direct translation run=" << run+1 << ", source units=" << sourceUnits
+                          << ", result units=" << resultUnits << ", elapsed ms=" << GetTickCount64()-began << '\n';
+            }
+            DeleteObject(fixture);
+        }
         SetWindowTextW(GetDlgItem(window, 10), L"Hello");
         SendMessageW(window, WM_COMMAND, 1, 0);
         SendMessageW(window, WM_COMMAND, 1, 0); // Repeated start is ignored, not queued.
@@ -149,7 +175,7 @@ int wmain(int argc, wchar_t **argv) {
     HWND reopened = OwnWindow();
     ok = reopened && ok;
     if (reopened) {
-        SetWindowTextW(GetDlgItem(reopened, 12), argc == 3 ? argv[2] : L"Z:\\nskry-test-missing-model");
+        SetWindowTextW(GetDlgItem(reopened, 12), argc >= 3 ? argv[2] : L"Z:\\nskry-test-missing-model");
         SetWindowTextW(GetDlgItem(reopened, 10), L"Hello");
         SendMessageW(reopened, WM_COMMAND, 1, 0);
     }

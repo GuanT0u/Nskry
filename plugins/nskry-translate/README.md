@@ -1,4 +1,4 @@
-# Translation 0.2.0 — experimental offline translation
+# Translation 0.2.1 — experimental offline translation
 
 Independent API2 plugin. Select a screenshot, a pinned image, a monitor's static
 frame, or an editor subregion and choose Translation. Windows OCR runs locally,
@@ -10,6 +10,12 @@ manual direction/source review. You can edit the source and translate again, or
 override Auto with either direction. No extra detector model is loaded.
 Copy result copies all translated text; normal text selection also works.
 Settings opens the same window without OCR, model loading or networking.
+
+0.2.1 fixes direct capture OCR lasting longer than the initial wait slice:
+repeated WinRT wait_for calls registered multiple completion handlers and raised
+0x80000018. The worker now queries status with a cancelable timed wait instead;
+no completion callback can outlive the plugin. OCR-stage and translation-stage
+errors are reported separately. Existing runtime/language packs are unchanged.
 
 With the matching Core, OCR 0.6.3+ has a Translate button below its text pane.
 It forwards the existing OCR text through the host's optional text translation v1
@@ -44,6 +50,9 @@ plugin's model or private UI.
 6. For the real-engine regression configure
    `NSKRY_TRANSLATE_TEST_MODELS` to the staged language directory. Ordinary CMake
    builds never download models or freeze Python automatically.
+   The built `NskryTranslationPluginTests.exe <DLL> <language-root> [local-image.png]`
+   also accepts an optional screenshot fixture for three direct-translation runs;
+   it logs only source/result lengths and elapsed times for that image.
 7. Optional local-only package: run `tools/package_development.py
    <build-plugin-stage> <new-build-path>.nskryplugin`. Language packs stay external;
    use `DEVELOPMENT_ONLY.md` release restrictions. This does not install anything.

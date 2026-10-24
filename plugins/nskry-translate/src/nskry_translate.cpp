@@ -3,6 +3,7 @@
 #include "nskry_plugin.h"
 #include "nskry_text_translation.h"
 #include "translation_policy.h"
+#include "ocr_wait.h"
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -239,8 +240,10 @@ template <class Work> void Start(bool ocr, Work work) {
                 } apartment;
                 state->result = work(*state);
             } catch (const winrt::hresult_error &error) {
-                state->error = L"Task failed/canceled (code " + std::to_wstring(error.code().value) +
-                               L"). Check the engine, language pack and input limits.";
+                state->error = (state->ocr ? L"Screenshot text recognition failed (code " : L"Offline translation failed (code ") +
+                    std::to_wstring(error.code().value) + (state->ocr
+                        ? L"). Check Windows OCR languages/image size, or paste source text."
+                        : L"). Check the translation engine, language pack and input limits.");
             } catch (...) {
                 state->error = L"Task failed or canceled. Check the engine, language pack and input limits.";
             }
@@ -307,14 +310,7 @@ std::wstring Recognize(Task &work, const std::vector<uint8_t> &pixels, int width
         writer.DetachBuffer(), Graphics::Imaging::BitmapPixelFormat::Bgra8, width, height,
         Graphics::Imaging::BitmapAlphaMode::Ignore);
     auto operation = engine.RecognizeAsync(bitmap);
-    const auto started = GetTickCount64();
-    while (operation.wait_for(std::chrono::milliseconds(50)) == Foundation::AsyncStatus::Started) {
-        if (WaitForSingleObject(work.cancel, 0) == WAIT_OBJECT_0 ||
-            GetTickCount64() - started > TaskTimeoutMs) {
-            operation.Cancel();
-            winrt::throw_hresult(HRESULT_FROM_WIN32(ERROR_CANCELLED));
-        }
-    }
+    WaitForOcr(operation, work.cancel, TaskTimeoutMs);
     std::wstring text;
     for (const auto &line : operation.GetResults().Lines()) {
         if (!text.empty())
@@ -451,7 +447,7 @@ NskryPluginInfo info{sizeof(info),
                      NSKRY_PLUGIN_API_VERSION,
                      L"Translation",
                      L"nskry-translate",
-                     L"0.2.0",
+                     L"0.2.1",
                      L"Nskry Team",
                      L"Experimental on-demand offline English/Chinese translation.",
                      nullptr,

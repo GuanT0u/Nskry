@@ -16,10 +16,15 @@ add_custom_command(TARGET nskry_translate POST_BUILD
 # Runtime/model preparation is explicit and never a configure/build download.
 # A releasable package additionally needs the runtime's third-party notices.
 if(BUILD_TESTING)
+    add_executable(NskryTranslationAsyncWaitTests "${CMAKE_SOURCE_DIR}/tests/translation_async_wait_tests.cpp")
+    target_include_directories(NskryTranslationAsyncWaitTests PRIVATE src)
+    target_compile_definitions(NskryTranslationAsyncWaitTests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(NskryTranslationAsyncWaitTests PRIVATE windowsapp)
+    add_test(NAME NskryTranslationAsyncWaitTests COMMAND NskryTranslationAsyncWaitTests)
     add_executable(NskryTranslationPluginTests "${CMAKE_SOURCE_DIR}/tests/translation_plugin_tests.cpp")
     target_include_directories(NskryTranslationPluginTests PRIVATE "${CMAKE_SOURCE_DIR}/sdk")
     target_compile_definitions(NskryTranslationPluginTests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
-    target_link_libraries(NskryTranslationPluginTests PRIVATE windowsapp user32 gdi32)
+    target_link_libraries(NskryTranslationPluginTests PRIVATE windowsapp user32 gdi32 gdiplus)
     add_dependencies(NskryTranslationPluginTests nskry_translate)
     if(MSVC)
         target_compile_options(NskryTranslationPluginTests PRIVATE /utf-8)

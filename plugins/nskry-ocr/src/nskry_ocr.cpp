@@ -11,6 +11,7 @@ extern "C" NSKRY_API int32_t NSKRY_CALL nskry_plugin_configure_input_v2(const Ns
         {L"zoom",K::Wheel},{L"pan_x",K::Wheel},{L"pan_y",K::Wheel}});
 }
 #include "ocr_arbitration.h"
+#include "ocr_layout.h"
 #include "model/ocr_process.h"
 
 #include <windowsx.h>
@@ -188,7 +189,8 @@ void AddRecognizedWord(RecognizedLine& line, WordBox box) {
 }
 
 void AddDisplayWord(std::vector<WordBox>& displayWords, WordBox word) {
-    // Only the UI highlight layer needs approximate character boxes. Keep the
+    // Selection/hit testing still needs approximate character boxes, although
+    // default highlighting now uses cached visual-line rectangles. Keep the
     // unmodified Windows word box for spatial arbitration above.
     const bool splitHan = word.text.size() > 1 &&
         std::all_of(word.text.begin(), word.text.end(), [](wchar_t ch) { return IsHan(ch); }) &&
@@ -319,6 +321,7 @@ struct OcrJobResult {
     std::wstring text;
     std::wstring error;
     std::vector<WordBox> words;
+    std::vector<RECT> lineHighlights;
     OcrEngineKind engine{OcrEngineKind::Fast};
     int32_t (*copyBitmapToClipboard)(HBITMAP){};
     void (*openBitmapEditor)(HBITMAP, int, int){};
@@ -327,6 +330,18 @@ struct OcrJobResult {
         if (bitmap) ::DeleteObject(bitmap);
     }
 };
+
+void ApplyTextLayout(OcrJobResult &result, const std::vector<RecognizedLine> &lines) {
+    const auto layout = nskry::ocr::BuildTextLayout(lines);
+    result.text = layout.text;
+    for (size_t index = 0; index < layout.lines.size(); ++index) {
+        result.lineHighlights.push_back(layout.lines[index].rect);
+        for (auto word : layout.lines[index].words) {
+            word.line = index;
+            AddDisplayWord(result.words, std::move(word));
+        }
+    }
+}
 
 struct OcrRequest {
     HBITMAP bitmap{};
@@ -343,7 +358,7 @@ struct OcrRequest {
 };
 
 NskryPluginInfo kInfo{ sizeof(NskryPluginInfo), NSKRY_PLUGIN_API_VERSION,
-    L"Text recognition", L"nskry-ocr", L"0.6.3", L"Nskry Team",
+    L"Text recognition", L"nskry-ocr", L"0.6.4", L"Nskry Team",
     L"On-demand offline text recognition", nullptr,
     NSKRY_CAP_TOOLBAR_ACTION | NSKRY_CAP_POST_CAPTURE, {} };
 
@@ -679,14 +694,7 @@ std::unique_ptr<OcrJobResult> RunWindowsOcr(HBITMAP displayBitmap, int displayWi
         });
         try { DumpOcrTrace(generation, passes, lines, ElapsedMs(requestStart), groups, decisions); }
         catch (...) { /* Optional diagnostics must not turn successful OCR into an error. */ }
-        for (size_t index = 0; index < lines.size(); ++index) {
-            if (!result->text.empty()) result->text += L"\r\n";
-            result->text += lines[index].text;
-            for (auto& word : lines[index].words) {
-                word.line = index;
-                AddDisplayWord(result->words, std::move(word));
-            }
-        }
+        ApplyTextLayout(*result, lines);
         if (result->text.empty()) result->text = L"No text was found in this image.";
     } catch (const winrt::hresult_error& error) {
         result->error = L"Windows OCR could not recognize this image: " + std::wstring(error.message().c_str());
@@ -764,18 +772,20 @@ std::unique_ptr<OcrJobResult> RunOcr(HBITMAP bitmap, int width, int height, RECT
         if (model.status == nskry::ocr::ModelStatus::Canceled || generation != s_generation.load()) return nullptr;
         try { DumpModelTrace(generation, model); } catch (...) {}
         if (model.status != nskry::ocr::ModelStatus::Success) { result->error = model.reply.error; return result; }
+        std::vector<RecognizedLine> displayLines;
         for (size_t index = 0; index < model.reply.lines.size(); ++index) {
             const auto& line = model.reply.lines[index];
-            if (!result->text.empty()) result->text += L"\r\n";
-            result->text += line.text;
+            RecognizedLine display{{line.rect.left, line.rect.top, line.rect.right, line.rect.bottom}, line.text, {}};
             if (line.glyphs.empty()) {
-                AddDisplayWord(result->words, {{line.rect.left, line.rect.top, line.rect.right, line.rect.bottom}, line.text, index});
+                display.words.push_back({display.rect, line.text, index});
             } else for (size_t glyphIndex = 0; glyphIndex < line.glyphs.size(); ++glyphIndex) {
                 const auto& glyph = line.glyphs[glyphIndex];
-                result->words.push_back({{glyph.rect.left, glyph.rect.top, glyph.rect.right, glyph.rect.bottom},
+                display.words.push_back({{glyph.rect.left, glyph.rect.top, glyph.rect.right, glyph.rect.bottom},
                     line.text.substr(glyph.offset, glyph.length), index, glyphIndex > 0});
             }
+            displayLines.push_back(std::move(display));
         }
+        ApplyTextLayout(*result, displayLines);
         if (result->text.empty()) result->text = L"No text was found in this image.";
     } catch (...) { result->error = L"Could not complete offline OCR. Try a smaller area or select Fast OCR."; }
     return result;
@@ -1011,7 +1021,7 @@ private:
         if (NSKRY_OCR_MODEL_ENGINE)
             m_engineButton = Button(m_result->engine == OcrEngineKind::Accurate ? L"Fast OCR" : L"Accurate OCR", kEngineId);
         m_textEdit = ::CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", m_result->error.empty() ? m_result->text.c_str() : m_result->error.c_str(),
-            WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_READONLY | WS_VSCROLL | WS_HSCROLL,
+            WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
             0, 0, 1, 1, m_hwnd, nullptr, nullptr, nullptr);
         for (HWND child : { m_zoomOutButton, m_zoomInButton, m_scaleLabel, m_highlightButton, m_editButton,
                             m_copyButton, m_saveButton, m_rotateButton, m_engineButton, m_translateButton, m_textEdit })
@@ -1025,7 +1035,7 @@ private:
 
     void UpdateTranslationButton() {
         const bool available = s_translationService.available && s_translationService.translate &&
-            s_translationService.available() != 0 && m_result->error.empty() && !m_result->text.empty();
+            s_translationService.available() != 0 && m_result->error.empty() && !m_result->lineHighlights.empty();
         ::EnableWindow(m_translateButton, available);
         ::SetWindowTextW(m_translateButton, available ? L"Translate" : L"Translation unavailable");
     }
@@ -1119,33 +1129,32 @@ private:
         }
         if (memory) ::DeleteDC(memory);
 
-        for (size_t index = 0; index < m_result->words.size(); ++index) {
-            const RECT rect = ToClientRect(m_result->words[index].rect);
-            const bool selected = std::find(m_selected.begin(), m_selected.end(), index) != m_selected.end();
-            if (!m_highlights && !selected) continue;
-            const COLORREF color = selected ? ::GetSysColor(COLOR_HIGHLIGHT) : RGB(63, 156, 255);
-            HDC overlay = ::CreateCompatibleDC(dc);
-            HBITMAP overlayBitmap = overlay ? ::CreateCompatibleBitmap(dc, 1, 1) : nullptr;
-            HGDIOBJ oldOverlay = overlayBitmap ? ::SelectObject(overlay, overlayBitmap) : nullptr;
-            if (oldOverlay && oldOverlay != HGDI_ERROR) {
-                HBRUSH fill = ::CreateSolidBrush(color);
-                RECT pixel{ 0, 0, 1, 1 };
-                ::FillRect(overlay, &pixel, fill);
-                ::DeleteObject(fill);
-                const BLENDFUNCTION blend{ AC_SRC_OVER, 0, static_cast<BYTE>(selected ? 118 : 64), 0 };
-                ::AlphaBlend(dc, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
-                    overlay, 0, 0, 1, 1, blend);
-                ::SelectObject(overlay, oldOverlay);
-            }
-            if (overlayBitmap) ::DeleteObject(overlayBitmap);
-            if (overlay) ::DeleteDC(overlay);
-            HPEN pen = ::CreatePen(PS_SOLID, 1, selected ? ::GetSysColor(COLOR_HIGHLIGHT) : RGB(170, 215, 255));
-            HGDIOBJ oldPen = ::SelectObject(dc, pen);
-            HGDIOBJ oldBrush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
-            ::Rectangle(dc, rect.left, rect.top, rect.right, rect.bottom);
-            ::SelectObject(dc, oldPen); ::SelectObject(dc, oldBrush);
-            ::DeleteObject(pen);
+        const int saved = ::SaveDC(dc);
+        if (saved) ::IntersectClipRect(dc, canvas.left, canvas.top, canvas.right, canvas.bottom);
+        HDC overlay = ::CreateCompatibleDC(dc);
+        HBITMAP pixelBitmap = overlay ? ::CreateCompatibleBitmap(dc, 1, 1) : nullptr;
+        HGDIOBJ previous = pixelBitmap ? ::SelectObject(overlay, pixelBitmap) : nullptr;
+        if (previous && previous != HGDI_ERROR) {
+            const auto fillRects = [&](const std::vector<RECT> &rects, COLORREF color, BYTE alpha) {
+                HBRUSH brush = ::CreateSolidBrush(color);
+                RECT pixel{0,0,1,1};
+                ::FillRect(overlay, &pixel, brush);
+                ::DeleteObject(brush);
+                for (const auto &source : rects) {
+                    const auto rect = ToClientRect(source);
+                    if (rect.right <= rect.left || rect.bottom <= rect.top) continue;
+                    const BLENDFUNCTION blend{AC_SRC_OVER,0,alpha,0};
+                    ::AlphaBlend(dc, rect.left, rect.top, rect.right-rect.left, rect.bottom-rect.top,
+                        overlay, 0,0,1,1,blend);
+                }
+            };
+            if (m_highlights) fillRects(m_result->lineHighlights, RGB(63,156,255), 48);
+            fillRects(nskry::ocr::SelectionRects(m_result->words, m_selected), ::GetSysColor(COLOR_HIGHLIGHT), 118);
+            ::SelectObject(overlay, previous);
         }
+        if (pixelBitmap) ::DeleteObject(pixelBitmap);
+        if (overlay) ::DeleteDC(overlay);
+        if (saved) ::RestoreDC(dc, saved);
         ::SetBkMode(dc, TRANSPARENT); ::SetTextColor(dc, RGB(190, 190, 190));
         const wchar_t* hint = L"Zoom / pan shortcuts: Settings → Hotkeys → Text recognition";
         RECT hintArea{canvas.left + 10, canvas.top + 8, canvas.right - (m_engineAtTop ? 120 : 10), canvas.top + 30};
