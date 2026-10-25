@@ -3,9 +3,9 @@
 #include "nskry_text_translation.h"
 #include <chrono>
 #include <functional>
+#include <gdiplus.h>
 #include <iostream>
 #include <thread>
-#include <gdiplus.h>
 #include <winrt/base.h>
 bool Pump(const std::function<bool()> &done, DWORD timeout = 15000) {
     const auto end = GetTickCount64() + timeout;
@@ -33,9 +33,55 @@ HWND OwnWindow() {
         LPARAM(&result));
     return result;
 }
+unsigned uploadDialogs{};
+bool allowPublicUpload{};
+NskryTranslateTextV1 reentrantProvider{};
+int32_t reentrantStatus{};
+void CALLBACK RejectUpload(HWND, UINT, UINT_PTR, DWORD) {
+    EnumThreadWindows(
+        GetCurrentThreadId(),
+        [](HWND hwnd, LPARAM) -> BOOL {
+            wchar_t title[100]{};
+            GetWindowTextW(hwnd, title, 100);
+            if (!wcscmp(title, L"Confirm online text upload")) {
+                ++uploadDialogs;
+                if (reentrantProvider) {
+                    const wchar_t value[] = L"Public synthetic text";
+                    NskryTextTranslationV1 request{sizeof(request), 1, nullptr, value,
+                                                   uint32_t(wcslen(value))};
+                    reentrantStatus = reentrantProvider(&request, nullptr);
+                }
+                SendMessageW(hwnd, WM_COMMAND, allowPublicUpload ? IDYES : IDNO, 0);
+            }
+            return TRUE;
+        },
+        0);
+}
 int wmain(int argc, wchar_t **argv) {
     if (argc != 2 && argc != 3 && argc != 4)
         return 2;
+    const bool liveFree = argc == 4 && !wcscmp(argv[3], L"--live-free");
+    struct Registry {
+        HKEY key{};
+        std::wstring path;
+        bool active{};
+        ~Registry() {
+            if (active)
+                RegOverridePredefKey(HKEY_CURRENT_USER, nullptr);
+            if (key)
+                RegCloseKey(key);
+            if (active)
+                RegDeleteTreeW(HKEY_CURRENT_USER, path.c_str());
+        }
+    } registry;
+    registry.path = L"Software\\NskryTests\\TranslationUi-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+                    std::to_wstring(GetTickCount64());
+    DWORD created{};
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, registry.path.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr,
+                        &registry.key, &created) ||
+        created != REG_CREATED_NEW_KEY || RegOverridePredefKey(HKEY_CURRENT_USER, registry.key))
+        return 8;
+    registry.active = true;
     winrt::init_apartment(winrt::apartment_type::single_threaded);
     HMODULE dll =
         LoadLibraryExW(argv[1], nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
@@ -54,12 +100,34 @@ int wmain(int argc, wchar_t **argv) {
     if (!settings || !shutdown || !execute || !init || !translateText || !init(nullptr))
         return 4;
     bool ok = settings && shutdown && settings(nullptr);
+    auto checkpoint = [&](const char *name) {
+        if (!ok)
+            std::cerr << "Failed checkpoint: " << name << '\n';
+    };
     HWND window = OwnWindow();
     ok = window && ok;
     if (window) {
+        ok = SendDlgItemMessageW(window, 20, CB_GETCURSEL, 0, 0) == 0 && ok;
+        // Explicit online choice still requires per-request upload authorization.
+        // This test rejects the owned dialog; no external text is uploaded.
+        SendDlgItemMessageW(window, 20, CB_SETCURSEL, 3, 0);
+        const wchar_t source[] = L"Public synthetic hello";
+        NskryTextTranslationV1 online{sizeof(online), 1, nullptr, source, uint32_t(wcslen(source))};
+        reentrantProvider = translateText;
+        const auto timer = SetTimer(nullptr, 0, 20, RejectUpload);
+        if (!timer)
+            return 7;
+        ok = translateText(&online, nullptr) == NSKRY_TRANSLATION_CANCELED && ok;
+        KillTimer(nullptr, timer);
+        reentrantProvider = nullptr;
+        ok = uploadDialogs == 1 && reentrantStatus == NSKRY_TRANSLATION_BUSY &&
+             IsWindowEnabled(GetDlgItem(window, 1)) && !GetWindowTextLengthW(GetDlgItem(window, 11)) && ok;
+        SendDlgItemMessageW(window, 20, CB_SETCURSEL, 0, 0);
+        checkpoint("upload confirmation canceled without task");
         // Missing engine/model must fail without an online fallback or stuck task.
         SetWindowTextW(GetDlgItem(window, 12), L"Z:\\nskry-test-missing-model");
         // Empty/too-long input must not start a task or silently truncate.
+        SetWindowTextW(GetDlgItem(window, 10), L"");
         SendMessageW(window, WM_COMMAND, 1, 0);
         ok = IsWindowEnabled(GetDlgItem(window, 1)) && ok;
         const std::wstring excessive(16001, L'a');
@@ -70,6 +138,7 @@ int wmain(int argc, wchar_t **argv) {
         SendMessageW(window, WM_COMMAND, 1, 0);
         ok = Pump([&] { return IsWindowEnabled(GetDlgItem(window, 1)); }) &&
              !GetWindowTextLengthW(GetDlgItem(window, 11)) && ok;
+        checkpoint("missing engine/model");
         if (argc >= 3) {
             SetWindowTextW(GetDlgItem(window, 12), argv[2]);
             SetWindowTextW(GetDlgItem(window, 10), L"Save the screenshot to the clipboard.");
@@ -81,6 +150,18 @@ int wmain(int argc, wchar_t **argv) {
             std::wcout << L"Offline result: " << translated << L'\n';
             GetWindowTextW(GetDlgItem(window, 14), translated, 2048);
             std::wcout << L"Status: " << translated << L'\n';
+            std::wstring paragraph;
+            for (int i = 0; i < 35; ++i)
+                paragraph += L"Save the screenshot to the clipboard. Keep the application open. ";
+            SetWindowTextW(GetDlgItem(window, 10), paragraph.c_str());
+            SendMessageW(window, WM_COMMAND, 1, 0);
+            ok = Pump([&] { return IsWindowEnabled(GetDlgItem(window, 1)); }, 25000) &&
+                 GetWindowTextLengthW(GetDlgItem(window, 11)) > 0 && ok;
+            wchar_t status[512]{};
+            GetWindowTextW(GetDlgItem(window, 14), status, 512);
+            ok = wcsstr(status, L"bounded parts") && ok;
+            std::wcout << L"Long paragraph status: " << status << L'\n';
+            checkpoint("real long paragraph");
         }
         // Independent screenshot OCR path: only this test's synthetic bitmap.
         HDC screen = GetDC(nullptr), dc = CreateCompatibleDC(screen);
@@ -102,10 +183,11 @@ int wmain(int argc, wchar_t **argv) {
         ReleaseDC(nullptr, screen);
         NskryHostContext context{sizeof(context), NSKRY_PLUGIN_API_VERSION};
         context.capturedBitmap = bitmap;
-        if (execute) execute(&context);
+        if (execute)
+            execute(&context);
         SendMessageW(window, WM_COMMAND, 2, 0); // Cancel recognition: no automatic translation may follow.
         ok = Pump([&] { return IsWindowEnabled(GetDlgItem(window, 1)); }) &&
-            !GetWindowTextLengthW(GetDlgItem(window, 11)) && ok;
+             !GetWindowTextLengthW(GetDlgItem(window, 11)) && ok;
         if (execute)
             execute(&context);
         DeleteObject(bitmap); // execute must have copied borrowed pixels before returning.
@@ -114,6 +196,7 @@ int wmain(int argc, wchar_t **argv) {
         GetWindowTextW(GetDlgItem(window, 10), recognized, 2048);
         std::wcout << L"Synthetic screenshot OCR: " << recognized << L'\n';
         ok = wcsstr(recognized, L"world") != nullptr && ok;
+        checkpoint("screenshot OCR");
         if (argc >= 3) {
             wchar_t automatic[2048]{};
             GetWindowTextW(GetDlgItem(window, 11), automatic, 2048);
@@ -134,17 +217,35 @@ int wmain(int argc, wchar_t **argv) {
             ok = automatic[0] && wcsstr(automatic, L"close") && ok;
             std::wcout << L"Chinese handoff automatically translated: " << automatic << L'\n';
         }
-        if (argc == 4) {
+        if (liveFree) {
+            allowPublicUpload = true;
+            SetWindowTextW(GetDlgItem(window, 10), L"Hello world.");
+            SendDlgItemMessageW(window, 20, CB_SETCURSEL, 3, 0);
+            const auto timer = SetTimer(nullptr, 0, 20, RejectUpload);
+            const auto start = GetTickCount64();
+            SendMessageW(window, WM_COMMAND, 1, 0);
+            KillTimer(nullptr, timer);
+            ok = Pump([&] { return IsWindowEnabled(GetDlgItem(window, 1)); }, 20000) &&
+                 GetWindowTextLengthW(GetDlgItem(window, 11)) > 0 && ok;
+            std::cout << "Public free API full UI elapsed_ms=" << GetTickCount64() - start
+                      << " output_units=" << GetWindowTextLengthW(GetDlgItem(window, 11)) << '\n';
+            allowPublicUpload = false;
+            SendDlgItemMessageW(window, 20, CB_SETCURSEL, 0, 0);
+        }
+        if (argc == 4 && !liveFree) {
             Gdiplus::GdiplusStartupInput input;
             ULONG_PTR token{};
             HBITMAP fixture{};
-            if (Gdiplus::GdiplusStartup(&token, &input, nullptr) != Gdiplus::Ok) return 5;
+            if (Gdiplus::GdiplusStartup(&token, &input, nullptr) != Gdiplus::Ok)
+                return 5;
             {
                 Gdiplus::Bitmap image(argv[3]);
-                if (image.GetLastStatus() == Gdiplus::Ok) image.GetHBITMAP(Gdiplus::Color::White, &fixture);
+                if (image.GetLastStatus() == Gdiplus::Ok)
+                    image.GetHBITMAP(Gdiplus::Color::White, &fixture);
             }
             Gdiplus::GdiplusShutdown(token);
-            if (!fixture) return 6;
+            if (!fixture)
+                return 6;
             context.capturedBitmap = fixture;
             for (int run = 0; run < 3; ++run) {
                 const auto began = GetTickCount64();
@@ -154,8 +255,9 @@ int wmain(int argc, wchar_t **argv) {
                 const auto resultUnits = GetWindowTextLengthW(GetDlgItem(window, 11));
                 ok = finished && sourceUnits > 0 && resultUnits > 0 && ok;
                 // Counts only; arbitrary local test screenshots must not be logged as plaintext.
-                std::cout << "Fixture direct translation run=" << run+1 << ", source units=" << sourceUnits
-                          << ", result units=" << resultUnits << ", elapsed ms=" << GetTickCount64()-began << '\n';
+                std::cout << "Fixture direct translation run=" << run + 1 << ", source units=" << sourceUnits
+                          << ", result units=" << resultUnits << ", elapsed ms=" << GetTickCount64() - began
+                          << '\n';
             }
             DeleteObject(fixture);
         }
@@ -167,6 +269,7 @@ int wmain(int argc, wchar_t **argv) {
         SendMessageW(window, WM_COMMAND, 1, 0);
         SendMessageW(window, WM_CLOSE, 0, 0);
         ok = Pump([&] { return !IsWindow(window); }, 5000) && ok;
+        checkpoint("cancel and close");
     }
     if (shutdown)
         shutdown();
@@ -182,16 +285,47 @@ int wmain(int argc, wchar_t **argv) {
     const auto stopTime = GetTickCount64();
     shutdown();
     ok = !IsWindow(reopened) && GetTickCount64() - stopTime < 5000 && ok;
+    checkpoint("shutdown running task");
     ok = init(nullptr) && settings(nullptr) && ok;
     reopened = OwnWindow();
     if (reopened) {
+        ok = SendDlgItemMessageW(reopened, 20, CB_GETCURSEL, 0, 0) == 0 && ok;
+        // A modeless settings window must not survive its owning result window.
+        SendDlgItemMessageW(reopened, 20, CB_SETCURSEL, 1, 0);
+        SendMessageW(reopened, WM_COMMAND, 21, 0);
+        HWND settingsWindow{};
+        EnumThreadWindows(
+            GetCurrentThreadId(),
+            [](HWND hwnd, LPARAM result) -> BOOL {
+                wchar_t name[100]{};
+                GetClassNameW(hwnd, name, 100);
+                if (!wcscmp(name, L"NskryTranslationOnlineSettingsV1"))
+                    *reinterpret_cast<HWND *>(result) = hwnd;
+                return TRUE;
+            },
+            LPARAM(&settingsWindow));
+        ok = settingsWindow && (GetWindowLongPtrW(GetDlgItem(settingsWindow, 12), GWL_STYLE) & ES_PASSWORD) &&
+             ok;
+        checkpoint("online configuration window");
+        SendDlgItemMessageW(reopened, 20, CB_SETCURSEL, 0, 0);
         SetWindowTextW(GetDlgItem(reopened, 12), L"Z:\\nskry-test-missing-model");
         SetWindowTextW(GetDlgItem(reopened, 10), L"Hello");
         SendMessageW(reopened, WM_COMMAND, 1, 0);
         DestroyWindow(reopened); // Abrupt owner destruction bypasses WM_CLOSE.
+        ok = !IsWindow(settingsWindow) && ok;
     } else {
         ok = false;
     }
+    shutdown();
+    // Remember only an explicit engine selection, inside the isolated registry.
+    ok = settings(nullptr) && ok;
+    reopened = OwnWindow();
+    SendDlgItemMessageW(reopened, 20, CB_SETCURSEL, 3, 0);
+    SendMessageW(reopened, WM_COMMAND, MAKEWPARAM(20, CBN_SELCHANGE), LPARAM(GetDlgItem(reopened, 20)));
+    SendMessageW(reopened, WM_CLOSE, 0, 0);
+    ok = settings(nullptr) && ok;
+    reopened = OwnWindow();
+    ok = reopened && SendDlgItemMessageW(reopened, 20, CB_GETCURSEL, 0, 0) == 3 && ok;
     shutdown();
     FreeLibrary(dll);
     winrt::uninit_apartment();

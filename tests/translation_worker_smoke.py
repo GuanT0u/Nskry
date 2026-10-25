@@ -8,6 +8,7 @@ import ctypes
 from ctypes import wintypes
 import time
 import importlib.util
+import argparse
 
 spec = importlib.util.spec_from_file_location("offline_worker", Path(__file__).resolve().parents[1] /
     "plugins/nskry-translate/src/offline_worker.py")
@@ -21,11 +22,20 @@ class Memory(ctypes.Structure):
 open_process = ctypes.windll.kernel32.OpenProcess
 open_process.restype = wintypes.HANDLE
 
-worker, packs, artifacts = map(Path, sys.argv[1:])
+parser = argparse.ArgumentParser()
+parser.add_argument("worker", type=Path)
+parser.add_argument("packs", type=Path)
+parser.add_argument("artifacts", type=Path)
+parser.add_argument("--long", action="store_true", help="Also measure a public synthetic long paragraph")
+args = parser.parse_args()
+worker, packs, artifacts = args.worker, args.packs, args.artifacts
 root = Path(tempfile.mkdtemp(prefix="translate-smoke-", dir=artifacts))
-for direction, text in [("en-zh", "Save the screenshot to the clipboard."), ("zh-en", "请不要关闭应用程序。")]:
-    source = root / (direction + ".txt")
-    output = root / (direction + ".json")
+fixtures = [("en-zh", "Save the screenshot to the clipboard."), ("zh-en", "请不要关闭应用程序。")]
+if args.long:
+    fixtures.append(("en-zh", "Save the screenshot to the clipboard. Keep the application open. " * 35))
+for index, (direction, text) in enumerate(fixtures):
+    source = root / (str(index) + ".txt")
+    output = root / (str(index) + ".json")
     source.write_bytes(protocol.crypt(text.encode("utf-8")))
     started = time.perf_counter()
     process = subprocess.Popen([str(worker.resolve()), str(packs.resolve()), direction, str(source), str(output)],
@@ -58,7 +68,10 @@ for direction, text in [("en-zh", "Save the screenshot to the clipboard."), ("zh
         raise SystemExit(1)
     reply = json.loads(protocol.crypt(output.read_bytes(), decrypt=True).decode("ascii"))
     assert reply["ok"] and reply["text"].strip()
-    print(json.dumps(reply, ensure_ascii=True))
+    print("direction=", direction, "input_units=", len(text.encode("utf-16-le")) // 2,
+          "output_units=", len(reply["text"].encode("utf-16-le")) // 2, "parts=", reply.get("parts"))
+    if len(text) < 256:
+        print(json.dumps(reply, ensure_ascii=True))
     source.unlink()
     output.unlink()
 root.rmdir()

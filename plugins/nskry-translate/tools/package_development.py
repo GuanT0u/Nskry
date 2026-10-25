@@ -6,16 +6,17 @@ import zipfile
 parser = argparse.ArgumentParser()
 parser.add_argument("stage", type=Path, help="Built DLL stage with complete engine/ directory")
 parser.add_argument("output", type=Path, help="New local development .nskryplugin path")
+parser.add_argument("--online-only", action="store_true", help="Omit the optional offline runtime (no Python/models needed for online engines)")
 args = parser.parse_args()
 repo = Path(__file__).resolve().parents[3]
 plugin = Path(__file__).resolve().parents[1]
 stage = args.stage.resolve()
-if not (stage / "engine/nskry-translate-worker.exe").is_file():
+if not args.online_only and not (stage / "engine/nskry-translate-worker.exe").is_file():
     raise SystemExit("Prepare/freeze the complete engine first")
-files = [(plugin / name, name) for name in ("manifest.json", "README.md", "DEVELOPMENT_ONLY.md")]
+files = [(plugin / name, name) for name in ("manifest.json", "README.md", "ONLINE_ENGINES.md", "DEVELOPMENT_ONLY.md")]
 files += [(repo / name, name) for name in ("LICENSE", "COPYING", "PLUGIN_EXCEPTION")]
 files.append((stage / "nskry-translate.dll", "nskry-translate.dll"))
-for file in (stage / "engine").rglob("*"):
+for file in (() if args.online_only else (stage / "engine").rglob("*")):
     if file.is_symlink() or file.is_junction():
         raise SystemExit("Links are not allowed in plugin packages")
     if file.is_file():

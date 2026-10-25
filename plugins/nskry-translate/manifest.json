@@ -1,10 +1,10 @@
 {
   "manifest_version": 1,
   "id": "nskry-translate",
-  "name": "Translation (experimental offline)",
-  "version": "0.2.1",
+  "name": "Translation (experimental)",
+  "version": "0.3.0",
   "author": "Nskry Team",
-  "description": "On-demand English/Chinese offline translation. Requires its own optional language packs; no OCR plugin dependency.",
+  "description": "On-demand English/Chinese translation: offline, configured OpenAI/LibreTranslate, or optional free online. Online text upload requires confirmation; no OCR plugin dependency.",
   "runtime": {"entry":"nskry-translate.dll","architecture":"x64","api_version":2,"load_policy":"on_demand"},
   "capabilities": ["toolbar_action", "post_capture"],
   "extensions": {"settings_ui": 1, "text_translation": 1},

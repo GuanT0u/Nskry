@@ -1,21 +1,31 @@
-# Translation 0.2.1 — experimental offline translation
+# Translation 0.3.0 — experimental offline and optional online translation
 
 Independent API2 plugin. Select a screenshot, a pinned image, a monitor's static
 frame, or an editor subregion and choose Translation. Windows OCR runs locally,
-then translation starts automatically. Auto chooses English→Chinese or Chinese→English
+then translation starts automatically (online mode requires upload confirmation).
+Auto chooses English→Chinese or Chinese→English
 using a bounded script-based rule; mixed text uses the dominant supported script.
 It is not a universal language classifier (other Latin-alphabet languages can be
 mistaken for English). Unknown/numeric-only or clearly unsupported scripts need
 manual direction/source review. You can edit the source and translate again, or
 override Auto with either direction. No extra detector model is loaded.
 Copy result copies all translated text; normal text selection also works.
+Save text exports UTF-8. Editing the source invalidates the previous result.
 Settings opens the same window without OCR, model loading or networking.
+
+0.3.0 adds configured OpenAI-compatible/LibreTranslate engines and an optional
+free MyMemory engine. First run is offline; an explicit engine choice can be
+remembered, but **every online task requires text-upload confirmation**.
+Read [ONLINE_ENGINES.md](ONLINE_ENGINES.md) for setup, privacy, limits and sources.
+MyMemory has quotas and its terms describe retention/sharing: do not send it
+confidential text. No automatic fallback or background network is introduced.
 
 0.2.1 fixes direct capture OCR lasting longer than the initial wait slice:
 repeated WinRT wait_for calls registered multiple completion handlers and raised
 0x80000018. The worker now queries status with a cancelable timed wait instead;
 no completion callback can outlive the plugin. OCR-stage and translation-stage
-errors are reported separately. Existing runtime/language packs are unchanged.
+errors are reported separately. 0.3.0 retains this fix. Language packs are unchanged;
+the optional worker is updated for bounded long-paragraph splitting.
 
 With the matching Core, OCR 0.6.3+ has a Translate button below its text pane.
 It forwards the existing OCR text through the host's optional text translation v1
@@ -55,7 +65,11 @@ plugin's model or private UI.
    it logs only source/result lengths and elapsed times for that image.
 7. Optional local-only package: run `tools/package_development.py
    <build-plugin-stage> <new-build-path>.nskryplugin`. Language packs stay external;
-   use `DEVELOPMENT_ONLY.md` release restrictions. This does not install anything.
+   use `DEVELOPMENT_ONLY.md` release restrictions. Add `--online-only` to omit
+   the entire optional offline engine/runtime. Both variants have the same
+   plugin ID/version: choose one, not two installed plugins. Online-only needs
+   no Python/model. Selecting Offline then clearly reports the absent engine.
+   This does not install anything.
 
 No system Python is needed by the frozen worker. The current developer runtime
 is not a finalized redistributable: vendor runtime notice collection and a
@@ -68,8 +82,19 @@ No worker/model/polling at init. One active task, 2 inference threads, CPU INT8.
 Measured cold private peak is about 650 MiB; job hard cap 1 GiB, deadline 60 seconds.
 File size is not RAM usage. Four short sentences took about 1.1 seconds including
 fresh-process startup on the development machine, not a low-end guarantee.
-Per paragraph maximum 256 source tokens/output tokens; the UI rejects excessive
-input rather than silently truncating. Close/Cancel interrupts the owned job.
+Input remains limited to 16000 UTF-16 units. Long paragraphs now split at sentence/
+word boundaries when possible, rechecking every fragment's 256-token inference
+cap. Capped output retries smaller source pieces; no partial/truncated paragraph
+is published. A maximum of 128 inference calls and the same 60-second deadline
+apply. Blank lines/line endings survive. Splitting can reduce context and does
+not guarantee quality or 1–2-second completion for long input. Close/Cancel
+interrupts the owned job. Missing packs, limits and runtime errors have distinct
+sanitized messages; old worker success replies remain compatible.
+
+Native online engines do not start Python/models. One task, bounded input, a
+2 MiB response limit and an overall 60-second deadline. Async HTTPS handles and
+callback state belong to the task and are released on completion/cancel/error.
+No persistent session, model pool, idle timer or permanent worker is added.
 
 The worker is atomically assigned to a kill-on-close job before it runs. Input
 and reply use unique per-task files in LocalAppData/Nskry/cache/translation,
@@ -91,12 +116,14 @@ before redistribution. CTranslate2, SentencePiece, Python, NumPy/OpenBLAS,
 setuptools, frozen bootloader and bundled native runtimes also need their own
 complete notices/source obligations; project GPL does not replace those.
 
-## Future providers (not implemented in 0.2.0)
+## Verification and remaining scope
 
-Keep distinct provider categories: user-configured online (BYOK or another user
-credential scheme), approved free online service, lightweight offline, and
-user-configured larger offline engine. No default public/free endpoint has been
-chosen. This MVP has no networking or API key storage, and never silently falls
-back to an online service. Future online adapters must require explicit consent,
-validate HTTPS and redirects, protect credentials, bound requests and support
-cancellation. They must not turn screenshot OCR into continuous uploads.
+Standard CTest never contacts external services. Explicit public synthetic live
+probes: `NskryTranslationOnlineTests.exe --live-free` and
+`NskryTranslationPluginTests.exe <absolute-DLL> <language-root> --live-free`.
+The latter authorizes only its hardcoded public test sentence, not user content.
+MyMemory live requests were verified. No real BYOK key or LibreTranslate server
+was available: their coverage is schema/policy/configuration/transport lifecycle,
+not a claim that every gateway works. Larger optional offline engines, broad
+language detection/targets, streaming and final runtime license clearance remain
+future work. See [development report](../../docs/report/devProgress/translation_0_3_progress.md).

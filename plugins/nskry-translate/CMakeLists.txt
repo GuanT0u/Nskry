@@ -1,7 +1,8 @@
-add_library(nskry_translate SHARED src/nskry_translate.cpp "${CMAKE_SOURCE_DIR}/src/core/json.cpp")
+add_library(nskry_translate SHARED src/nskry_translate.cpp src/worker_reply.cpp src/online_translation.cpp
+    src/translation_http.cpp src/online_config.cpp src/online_settings.cpp "${CMAKE_SOURCE_DIR}/src/core/json.cpp")
 target_include_directories(nskry_translate PRIVATE "${CMAKE_SOURCE_DIR}/sdk" "${CMAKE_SOURCE_DIR}/src")
 target_compile_definitions(nskry_translate PRIVATE NSKRY_PLUGIN_EXPORTS UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN WINRT_LEAN_AND_MEAN)
-target_link_libraries(nskry_translate PRIVATE windowsapp ole32 user32 gdi32 shell32 advapi32 crypt32)
+target_link_libraries(nskry_translate PRIVATE windowsapp ole32 user32 gdi32 shell32 advapi32 crypt32 winhttp comdlg32)
 if(MSVC)
     target_compile_options(nskry_translate PRIVATE /utf-8)
 endif()
@@ -9,13 +10,37 @@ set_target_properties(nskry_translate PROPERTIES OUTPUT_NAME "nskry-translate"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/package")
 add_custom_command(TARGET nskry_translate POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/manifest.json"
-        "${CMAKE_CURRENT_SOURCE_DIR}/README.md" "${CMAKE_SOURCE_DIR}/LICENSE"
+        "${CMAKE_CURRENT_SOURCE_DIR}/README.md" "${CMAKE_CURRENT_SOURCE_DIR}/ONLINE_ENGINES.md" "${CMAKE_SOURCE_DIR}/LICENSE"
         "${CMAKE_SOURCE_DIR}/COPYING" "${CMAKE_SOURCE_DIR}/PLUGIN_EXCEPTION"
         "$<TARGET_FILE_DIR:nskry_translate>"
     VERBATIM)
 # Runtime/model preparation is explicit and never a configure/build download.
 # A releasable package additionally needs the runtime's third-party notices.
 if(BUILD_TESTING)
+    add_executable(NskryTranslationOnlineTests "${CMAKE_SOURCE_DIR}/tests/translation_online_tests.cpp"
+        src/online_translation.cpp src/online_config.cpp src/translation_http.cpp "${CMAKE_SOURCE_DIR}/src/core/json.cpp")
+    target_include_directories(NskryTranslationOnlineTests PRIVATE src "${CMAKE_SOURCE_DIR}/src")
+    target_compile_definitions(NskryTranslationOnlineTests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_link_libraries(NskryTranslationOnlineTests PRIVATE winhttp crypt32 advapi32 ws2_32 psapi)
+    if(MSVC)
+        target_compile_options(NskryTranslationOnlineTests PRIVATE /utf-8)
+    endif()
+    add_test(NAME NskryTranslationOnlineTests COMMAND NskryTranslationOnlineTests)
+    set_tests_properties(NskryTranslationOnlineTests PROPERTIES TIMEOUT 15 RUN_SERIAL TRUE)
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME NskryTranslationWorkerPolicyTests COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/translation_worker_policy_tests.py")
+        set_tests_properties(NskryTranslationWorkerPolicyTests PROPERTIES TIMEOUT 15)
+    endif()
+    add_executable(NskryTranslationReplyTests "${CMAKE_SOURCE_DIR}/tests/translation_reply_tests.cpp"
+        src/worker_reply.cpp "${CMAKE_SOURCE_DIR}/src/core/json.cpp")
+    target_include_directories(NskryTranslationReplyTests PRIVATE src "${CMAKE_SOURCE_DIR}/src")
+    target_compile_definitions(NskryTranslationReplyTests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    if(MSVC)
+        target_compile_options(NskryTranslationReplyTests PRIVATE /utf-8)
+    endif()
+    add_test(NAME NskryTranslationReplyTests COMMAND NskryTranslationReplyTests)
     add_executable(NskryTranslationAsyncWaitTests "${CMAKE_SOURCE_DIR}/tests/translation_async_wait_tests.cpp")
     target_include_directories(NskryTranslationAsyncWaitTests PRIVATE src)
     target_compile_definitions(NskryTranslationAsyncWaitTests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -24,7 +49,7 @@ if(BUILD_TESTING)
     add_executable(NskryTranslationPluginTests "${CMAKE_SOURCE_DIR}/tests/translation_plugin_tests.cpp")
     target_include_directories(NskryTranslationPluginTests PRIVATE "${CMAKE_SOURCE_DIR}/sdk")
     target_compile_definitions(NskryTranslationPluginTests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
-    target_link_libraries(NskryTranslationPluginTests PRIVATE windowsapp user32 gdi32 gdiplus)
+    target_link_libraries(NskryTranslationPluginTests PRIVATE windowsapp user32 gdi32 gdiplus advapi32)
     add_dependencies(NskryTranslationPluginTests nskry_translate)
     if(MSVC)
         target_compile_options(NskryTranslationPluginTests PRIVATE /utf-8)
