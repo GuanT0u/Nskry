@@ -1,9 +1,8 @@
 add_library(nskry_translate SHARED src/nskry_translate.cpp src/worker_reply.cpp src/online_translation.cpp
     src/translation_http.cpp src/online_config.cpp src/online_settings.cpp "${CMAKE_SOURCE_DIR}/src/core/json.cpp")
-add_library(nskry_translation_recognition STATIC src/image_recognition.cpp
-    "${CMAKE_SOURCE_DIR}/plugins/nskry-ocr/src/ocr_layout.cpp")
-target_include_directories(nskry_translation_recognition PUBLIC src PRIVATE
-    "${CMAKE_SOURCE_DIR}/plugins/nskry-ocr/src")
+add_library(nskry_translation_recognition STATIC src/image_recognition.cpp)
+target_include_directories(nskry_translation_recognition PUBLIC src)
+target_link_libraries(nskry_translation_recognition PRIVATE nskry_ocr_layout)
 target_compile_definitions(nskry_translation_recognition PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_link_libraries(nskry_translation_recognition PUBLIC windowsapp user32 gdi32)
 if(MSVC)
@@ -13,8 +12,7 @@ target_link_libraries(nskry_translate PRIVATE nskry_translation_recognition)
 # Source/static reuse, NOT an installed-plugin dependency or cross-DLL call.
 target_compile_definitions(nskry_translation_recognition PRIVATE NSKRY_TRANSLATE_MODEL_OCR=$<BOOL:${NSKRY_OCR_MODEL_ENGINE}>)
 if(NSKRY_OCR_MODEL_ENGINE)
-    target_sources(nskry_translation_recognition PRIVATE "${CMAKE_SOURCE_DIR}/plugins/nskry-ocr/src/model/ocr_process.cpp")
-    target_link_libraries(nskry_translation_recognition PRIVATE nskry_ocr_wire)
+    target_link_libraries(nskry_translation_recognition PRIVATE nskry_ocr_process)
     # Identical owned assets/notices; no lookup of another installed package.
     set(translate_ocr_assets_stamp "${CMAKE_CURRENT_BINARY_DIR}/ocr-assets.ready")
     add_custom_command(OUTPUT "${translate_ocr_assets_stamp}"
@@ -57,7 +55,7 @@ if(BUILD_TESTING)
     add_test(NAME NskryTranslationRecognitionTests COMMAND NskryTranslationRecognitionTests $<TARGET_FILE_DIR:nskry_translate>)
     set_tests_properties(NskryTranslationRecognitionTests PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
     # Explicit public-image/package audit; never run external services in CTest.
-    add_executable(NskryTranslationImageAudit "${CMAKE_SOURCE_DIR}/tests/translation_image_audit.cpp"
+    add_executable(NskryTranslationImageAudit EXCLUDE_FROM_ALL "${CMAKE_SOURCE_DIR}/tests/translation_image_audit.cpp"
         "${CMAKE_SOURCE_DIR}/src/core/json.cpp")
     target_include_directories(NskryTranslationImageAudit PRIVATE "${CMAKE_SOURCE_DIR}/sdk" "${CMAKE_SOURCE_DIR}/src")
     target_compile_definitions(NskryTranslationImageAudit PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)

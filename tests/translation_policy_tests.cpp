@@ -5,6 +5,13 @@
 using namespace nskry::translate;
 int main() {
     bool ok = ValidateText(L"Hello\n\n你好") == InputError::None;
+    ok = !NskryValidText(nullptr, 1, 16000) && !NskryValidText(L"", 0, 16000) && ok;
+    ok = !NskryValidText(L"\t \r\n", 4, 16000) && ok;
+    const wchar_t surrogate[] = {wchar_t(0xd83d), wchar_t(0xde00)};
+    ok = NskryValidText(surrogate, 2, 2) && !NskryValidText(surrogate, 1, 2) &&
+         !NskryValidText(surrogate + 1, 1, 2) && !NskryValidText(surrogate, 2, 1) && ok;
+    const wchar_t embedded[] = {L'a', 0, L'b'};
+    ok = !NskryValidText(embedded, 3, 16000) && ok;
     ok = ValidateText(L"\t \r\n") == InputError::Empty && ok;
     ok = ValidateText(std::wstring(MaxTextUnits, L'a')) == InputError::None && ok;
     ok = ValidateText(std::wstring(MaxTextUnits + 1, L'a')) == InputError::TooLong && ok;

@@ -1,6 +1,7 @@
 #include "nskry_actions.h"
 #include "nskry_plugin.h"
 #include "nskry_text_translation.h"
+#include "nskry_image_recognition.h"
 #include <chrono>
 #include <functional>
 #include <gdiplus.h>
@@ -34,6 +35,28 @@ HWND OwnWindow() {
     return result;
 }
 unsigned uploadDialogs{};
+ULONGLONG recognitionDeadline{};
+bool recognitionReleased{}, recognitionEarlyRelease{}, recognitionCanceled{};
+unsigned cleanupHeartbeats{};
+void CALLBACK CleanupHeartbeat(HWND, UINT, UINT_PTR, DWORD) { ++cleanupHeartbeats; }
+int32_t NSKRY_CALL TestImageAvailable(const wchar_t*) { return 1; }
+int32_t NSKRY_CALL TestImageBegin(const wchar_t*, HBITMAP, uint64_t* ticket) {
+    recognitionDeadline = GetTickCount64() + 700;
+    recognitionReleased = recognitionEarlyRelease = recognitionCanceled = false;
+    *ticket = 1;
+    return NSKRY_IMAGE_PENDING;
+}
+int32_t NSKRY_CALL TestImagePoll(uint64_t, NskryImageTextV1*) {
+    return GetTickCount64() < recognitionDeadline ? NSKRY_IMAGE_PENDING : NSKRY_IMAGE_CANCELED;
+}
+void NSKRY_CALL TestImageCancel(uint64_t) { recognitionCanceled = true; }
+void NSKRY_CALL TestImageRelease(uint64_t) {
+    const auto now = GetTickCount64();
+    recognitionEarlyRelease = now < recognitionDeadline;
+    if (recognitionEarlyRelease)
+        Sleep(DWORD(recognitionDeadline - now));
+    recognitionReleased = true;
+}
 bool allowPublicUpload{};
 NskryTranslateTextV1 reentrantProvider{};
 int32_t reentrantStatus{};
@@ -326,6 +349,36 @@ int wmain(int argc, wchar_t **argv) {
     ok = settings(nullptr) && ok;
     reopened = OwnWindow();
     ok = reopened && SendDlgItemMessageW(reopened, 20, CB_GETCURSEL, 0, 0) == 3 && ok;
+    shutdown();
+    // Deliberately slow cooperative cancellation: owner destruction must return
+    // before completion, and release must wait asynchronously for terminal poll.
+    const auto connect = reinterpret_cast<NskryConnectImageRecognitionV1>(
+        GetProcAddress(dll, "nskry_plugin_connect_image_recognition_v1"));
+    NskryImageRecognitionServiceV1 imageService{sizeof(imageService), 1, TestImageAvailable,
+        TestImageBegin, TestImagePoll, TestImageCancel, TestImageRelease};
+    ok = connect && connect(&imageService) && settings(nullptr) && ok;
+    reopened = OwnWindow();
+    SendDlgItemMessageW(reopened, 22, BM_CLICK, 0, 0);
+    HBITMAP testBitmap = CreateBitmap(20, 20, 1, 32, nullptr);
+    NskryHostContext imageContext{sizeof(imageContext), 2};
+    imageContext.capturedBitmap = testBitmap;
+    const auto executeImage = reinterpret_cast<decltype(&nskry_plugin_execute)>(
+        GetProcAddress(dll, "nskry_plugin_execute"));
+    executeImage(&imageContext);
+    DeleteObject(testBitmap);
+    const auto destroyStart = GetTickCount64();
+    DestroyWindow(reopened);
+    const auto destroyMs = GetTickCount64() - destroyStart;
+    ok = destroyMs < 250 && recognitionCanceled && !recognitionReleased && ok;
+    ok = !settings(nullptr) && !OwnWindow() && ok; // No new UI/task while old one drains.
+    const auto heartbeat = SetTimer(nullptr, 0, 10, CleanupHeartbeat);
+    ok = Pump([] { return recognitionReleased; }, 3000) && !recognitionEarlyRelease && ok;
+    KillTimer(nullptr, heartbeat);
+    ok = heartbeat && cleanupHeartbeats >= 5 && ok;
+    ok = !FindWindowExW(HWND_MESSAGE, nullptr, L"NskryTranslateTaskV1", nullptr) && ok;
+    std::cout << "Delayed-provider owner destruction ms=" << destroyMs
+              << ", UI heartbeats during cleanup=" << cleanupHeartbeats << '\n';
+    ok = settings(nullptr) && ok; // No stale closing flag or outstanding slot.
     shutdown();
     FreeLibrary(dll);
     winrt::uninit_apartment();

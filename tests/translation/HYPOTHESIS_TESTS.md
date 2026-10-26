@@ -5,6 +5,10 @@ No install, application shutdown, model prewarm or external service is involved.
 All models/inputs must already be present locally. Do not use private screenshots
 with the trace probe: it intentionally records crops and recognition candidates.
 
+The public-image workflow audit is also an explicit-only build target:
+`cmake --build <build-directory> --target NskryTranslationImageAudit`.
+It remains available but is not compiled by an ordinary all-target build.
+
 ## OCR controls
 
 Explicitly build `NskryOcrHypothesisProbe` (BUILD_TESTING and the native OCR model

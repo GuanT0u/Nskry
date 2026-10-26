@@ -1,4 +1,5 @@
 #include "core/plugin_manager.h"
+#include "sdk/nskry_text_validation.h"
 #include <array>
 #include <thread>
 
@@ -77,9 +78,8 @@ int32_t PluginManager::BeginImageRecognition(const wchar_t *id, HBITMAP bitmap, 
                     state->status = NSKRY_IMAGE_FAILED;
                 else
                     state->status = fn(&input, &output);
-                const NskryTextTranslationV1 checked{sizeof(checked), 1, nullptr, state->text.data(),
-                                                     output.textLength};
-                if (state->status == NSKRY_IMAGE_SUCCESS && NskryValidTranslation(&checked) &&
+                if (state->status == NSKRY_IMAGE_SUCCESS &&
+                    NskryValidText(state->text.data(), output.textLength, NSKRY_IMAGE_MAX_TEXT) &&
                     !state->text[output.textLength])
                     state->length = output.textLength;
                 else if (state->status != NSKRY_IMAGE_CANCELED)

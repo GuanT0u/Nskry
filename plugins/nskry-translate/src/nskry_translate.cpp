@@ -27,6 +27,42 @@ bool closing{};
 bool starting{}, uploadCanceled{};
 NskryImageRecognitionServiceV1 recognitionService{};
 bool useOcrPlugin{};
+HWND taskDispatch{}; // Exists only while a task needs completion delivery.
+void FinishTask();
+void CloseTaskDispatch() {
+    if (taskDispatch) {
+        KillTimer(taskDispatch, 1);
+        DestroyWindow(taskDispatch);
+        taskDispatch = nullptr;
+    }
+}
+LRESULT CALLBACK TaskProcedure(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
+    if (message == WM_TIMER && wp == 1) {
+        try {
+            FinishTask();
+        } catch (...) {
+            SetWindowTextW(statusLabel, L"Could not deliver the task result. Close or cancel to retry cleanup.");
+        }
+        return 0;
+    }
+    return DefWindowProcW(hwnd, message, wp, lp);
+}
+void OpenTaskDispatch() {
+    WNDCLASSW wc{};
+    wc.hInstance = module;
+    wc.lpfnWndProc = TaskProcedure;
+    wc.lpszClassName = L"NskryTranslateTaskV1";
+    if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+        winrt::throw_last_error();
+    taskDispatch = CreateWindowExW(0, wc.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, module, nullptr);
+    if (!taskDispatch)
+        winrt::throw_last_error();
+    if (!SetTimer(taskDispatch, 1, 50, nullptr)) {
+        const auto error = GetLastError();
+        CloseTaskDispatch();
+        winrt::throw_hresult(HRESULT_FROM_WIN32(error ? error : ERROR_NOT_ENOUGH_MEMORY));
+    }
+}
 struct TranslationFailure {
     std::wstring message;
 };
@@ -255,6 +291,14 @@ void FinishTask() {
     }
     if (!task || !task->done.load())
         return;
+    if (!window) {
+        // Owner destruction must not wait for provider/worker cancellation on
+        // the UI thread. Keep one bounded task until it has actually finished.
+        task.reset();
+        CloseTaskDispatch();
+        closing = false;
+        return;
+    }
     const bool canceled = WaitForSingleObject(task->cancel, 0) == WAIT_OBJECT_0;
     const bool autoTranslate = task->ocr && task->error.empty() && !canceled && !closing;
     std::wstring message =
@@ -267,7 +311,7 @@ void FinishTask() {
     if (!canceled)
         SetWindowTextW(task->ocr ? sourceEdit : resultEdit, task->result.c_str());
     task.reset();
-    KillTimer(window, 1);
+    CloseTaskDispatch();
     EnableWindow(GetDlgItem(window, 1), TRUE);
     EnableWindow(sourceEdit, TRUE);
     EnableWindow(packEdit, TRUE);
@@ -294,6 +338,7 @@ template <class Work> void Start(bool ocr, Work work, bool online = false, uint6
     task->recognitionTicket = recognitionTicket;
     auto *state = task.get();
     try {
+        OpenTaskDispatch(); // Establish completion ownership before starting work.
         if (recognitionTicket)
             state->recognitionBuffer.resize(NSKRY_IMAGE_MAX_TEXT + 1);
         if (!recognitionTicket)
@@ -332,6 +377,7 @@ template <class Work> void Start(bool ocr, Work work, bool online = false, uint6
             });
     } catch (...) {
         task.reset();
+        CloseTaskDispatch();
         throw;
     }
     EnableWindow(GetDlgItem(window, 1), FALSE);
@@ -348,18 +394,6 @@ template <class Work> void Start(bool ocr, Work work, bool online = false, uint6
     SetWindowTextW(statusLabel, ocr      ? L"Recognizing locally…"
                                 : online ? L"Translating online…"
                                          : L"Translating offline…");
-    if (!SetTimer(window, 1, 50, nullptr)) {
-        const auto error = GetLastError();
-        task.reset();
-        EnableWindow(GetDlgItem(window, 1), TRUE);
-        EnableWindow(sourceEdit, TRUE);
-        EnableWindow(packEdit, TRUE);
-        EnableWindow(directionChoice, TRUE);
-        EnableWindow(providerChoice, TRUE);
-        EnableWindow(GetDlgItem(window, 21), TRUE);
-        RefreshProviderControls();
-        winrt::throw_hresult(HRESULT_FROM_WIN32(error ? error : ERROR_NOT_ENOUGH_MEMORY));
-    }
 }
 bool BeginTranslation() {
     if (task || closing || starting)
@@ -499,10 +533,6 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             limits->ptMinTrackSize = {650, 410};
             return 0;
         }
-        if (message == WM_TIMER) {
-            FinishTask();
-            return 0;
-        }
         if (message == WM_ACTIVATE && window)
             RefreshProviderControls();
         if (message == WM_CLOSE) {
@@ -515,10 +545,14 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (message == WM_DESTROY) {
-            // An owner can destroy this window without sending WM_CLOSE.
-            // Never leave an orphaned task/timer waiting for a vanished UI.
-            KillTimer(hwnd, 1);
-            task.reset();
+            // Completion delivery belongs to the temporary message window,
+            // not this UI. DLL shutdown still joins before unloading code.
+            if (task) {
+                closing = true;
+                SetEvent(task->cancel);
+                if (task->recognitionTicket)
+                    recognitionService.cancel(task->recognitionTicket);
+            }
             return 0;
         }
         if (message == WM_NCDESTROY) {
@@ -604,6 +638,8 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, message, wp, lp);
 }
 void Show(HWND owner) {
+    if (!window && task)
+        throw TranslationFailure{L"The previous task is still canceling. Try again shortly."};
     if (window) {
         if (IsIconic(window))
             ShowWindow(window, SW_RESTORE);
@@ -823,11 +859,13 @@ NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext *context) 
 }
 NSKRY_API void NSKRY_CALL nskry_plugin_shutdown() {
     task.reset();
+    CloseTaskDispatch();
     CloseOnlineSettings(module);
     if (window) {
         KillTimer(window, 1);
         DestroyWindow(window);
     }
     UnregisterClassW(L"NskryTranslateV1", module);
+    UnregisterClassW(L"NskryTranslateTaskV1", module);
     recognitionService = {};
 }

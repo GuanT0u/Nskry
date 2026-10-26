@@ -195,6 +195,7 @@ int wmain(int argc, wchar_t **argv) {
     ok = Pump([&] { return !IsWindow(reopened); }) && ok;
     ok = runtime.ShowPluginSettings(translation.id, nullptr) && runtime.ExecutePlugin(translation.id, context) && ok;
     DestroyWindow(Own(L"NskryTranslateV1")); // Owner destruction bypasses WM_CLOSE.
+    ok = Pump([] { return !FindWindowExW(HWND_MESSAGE, nullptr, L"NskryTranslateTaskV1", nullptr); }) && ok;
     ok = !Own(L"NskryTranslateV1") && runtime.BeginImageRecognition(ocr.id.c_str(), bitmap, &ticket) == NSKRY_IMAGE_PENDING && ok;
     runtime.CancelImageRecognition(ticket);
     runtime.ReleaseImageRecognition(ticket);

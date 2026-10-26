@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Additional permission: Nskry Independent Open-Source Plugin Exception 1.0.
 #include "nskry_plugin.h"
+#include "nskry_text_validation.h"
 
 // Optional, UI-thread-only text handoff. This is not a cross-plugin model API.
 // API 2 structs and reserved fields are unchanged. All pointers are borrowed
@@ -48,17 +49,5 @@ inline bool NskryValidTranslation(const NskryTextTranslationV1 *request) {
     if (!request || request->structSize < sizeof(*request) || request->version != 1 || !request->text ||
         !request->textLength || request->textLength > NSKRY_TRANSLATION_MAX_TEXT)
         return false;
-    bool content = false;
-    for (uint32_t i = 0; i < request->textLength; ++i) {
-        const auto c = request->text[i];
-        if (!c)
-            return false;
-        if (c >= 0xd800 && c <= 0xdbff) {
-            if (++i == request->textLength || request->text[i] < 0xdc00 || request->text[i] > 0xdfff)
-                return false;
-        } else if (c >= 0xdc00 && c <= 0xdfff)
-            return false;
-        content = content || (c != L' ' && c != L'\t' && c != L'\r' && c != L'\n');
-    }
-    return content;
+    return NskryValidText(request->text, request->textLength, NSKRY_TRANSLATION_MAX_TEXT);
 }
