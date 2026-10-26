@@ -88,7 +88,7 @@ if(BUILD_TESTING)
     add_test(NAME NskryRecordCaptureTests COMMAND NskryRecordCaptureTests "${CMAKE_BINARY_DIR}")
     set_tests_properties(NskryRecordCaptureTests PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE)
     add_executable(NskryRecordPluginTests ${CMAKE_SOURCE_DIR}/tests/record_plugin_tests.cpp
-        ${CMAKE_SOURCE_DIR}/src/core/plugin_manager.cpp ${CMAKE_SOURCE_DIR}/src/core/plugin_registry.cpp
+        ${CMAKE_SOURCE_DIR}/src/core/plugin_manager.cpp ${CMAKE_SOURCE_DIR}/src/core/plugin_image_recognition.cpp ${CMAKE_SOURCE_DIR}/src/core/plugin_registry.cpp
         ${CMAKE_SOURCE_DIR}/src/core/plugin_manifest.cpp ${CMAKE_SOURCE_DIR}/src/core/json.cpp ${CMAKE_SOURCE_DIR}/src/update/semver.cpp)
     target_include_directories(NskryRecordPluginTests PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src)
     target_compile_definitions(NskryRecordPluginTests PRIVATE WINRT_LEAN_AND_MEAN UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)

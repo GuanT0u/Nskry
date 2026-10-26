@@ -39,6 +39,10 @@ bool PluginManifest::LoadFromFile(const std::wstring& path, PluginManifest& mani
     result.manifestVersion = static_cast<int>(manifestVersion);
     if (const auto *extensions = root.Find(L"extensions")) {
         if (!extensions->IsObject() ||
+            (extensions->Find(L"image_recognition") &&
+             (!extensions->GetUnsigned(L"image_recognition", result.imageRecognitionApi) || result.imageRecognitionApi != 1)) ||
+            (extensions->Find(L"image_recognition_client") &&
+             (!extensions->GetUnsigned(L"image_recognition_client", result.imageRecognitionClientApi) || result.imageRecognitionClientApi != 1)) ||
             (extensions->Find(L"text_translation") &&
              (!extensions->GetUnsigned(L"text_translation", result.textTranslationApi) || result.textTranslationApi != 1)) ||
             (extensions->Find(L"text_translation_client") &&

@@ -16,6 +16,13 @@ contain CUDA/cuDNN or Intel OpenMP components despite CPU-only inference;
 the exact collected dependency set is a release gate, not an assertion that
 these are all necessary or already cleared for redistribution.
 
+0.3.1 default builds additionally own a native `ocr/` recognition worker, ORT,
+OpenCV/Clipper code and pinned PP-OCRv4 model assets. Their original notices and
+licenses are copied into that directory. They are included in BOTH package
+variants, not borrowed from an installed OCR plugin. The online-only variant
+omits the offline TRANSLATION runtime, not the local recognition models.
+The same release dependency/license/source gates still apply.
+
 The model packs retain original cards and revision/hash provenance. En→zh:
 Helsinki-NLP/opus-mt-en-zh (Apache-2.0 per original card); zh→en:
 Helsinki-NLP/opus-mt-zh-en (CC-BY-4.0 per original card). The developer converter

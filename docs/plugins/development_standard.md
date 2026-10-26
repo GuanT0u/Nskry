@@ -7,6 +7,8 @@
 区域/窗口跟随采集v2、额外capture动作与设置UI见 [录屏扩展v2](recording_extensions_v2.md)。
 用户主动发起的 OCR→翻译交接见 [文字翻译扩展v1](text_translation_extension_v1.md)；
 它不是任意跨插件服务或前置依赖解析，不允许直接调用另一个包的私有 DLL。
+用户显式启用的截图识别联动见 [可选本地图像识别v1](image_recognition_extension_v1.md)：
+由宿主复制/限额调度并在 UI 线程领取结果，不把 OCR 变成翻译的必装前置，不替代通用依赖解析。
 
 适用官方及独立第三方作者。先阅读 [基础能力契约](../architecture/core_plugin_contract.md)
 与 [第三方安全政策](third_party_policy.md)。官方身份不改变 SDK 约束。
@@ -50,6 +52,7 @@ ID 使用可归属的命名空间；`nskry-*` 名称不自动证明官方身份�
 当前 API 2 没有跨插件依赖管理。禁止隐式依赖，非空 `requires_plugins` 会拒绝；这是版本限制，不是永久禁止前置。
 共享轻算法优先私有静态库，通用 UI 优先 Core，重引擎按需 worker。
 未来提供跨插件服务须升级 SDK/manifest 协议，不能直接使用 reserved 字段或猜测目录。
+已定义的窄范围文字/图像交接须使用各自版本化扩展；指定提供者 ID 后仍须核对其启用状态、兼容性和声明能力，不能仅凭名称或 ID 猜测功能或信任身份。
 
 ## 3. 生命周期与资源
 

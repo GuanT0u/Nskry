@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "reviewed_on": "2026-10-25",
+  "baseline_method": "Human visual transcription and semantic acceptance criteria written before running Nskry OCR/translation. Do not replace the baseline with program output.",
+  "metrics": {
+    "ocr": "Report whitespace-insensitive, case/punctuation-sensitive character edit distance and CER, plus exact Han/Latin/digit content. Text outside the main readable sign is not part of its reference; extra OCR text is still reported.",
+    "translation": "Reference wording is illustrative, not exact-match output. Manually check every meaning unit, role assignment, repetitions, proper names and numbers; keyword/regex hits are diagnostic only, not proof of correct translation."
+  },
+  "fixtures": [
+    {
+      "id": "english_phototest",
+      "file": "english_phototest.png",
+      "source_url": "https://github.com/tesseract-ocr/test/blob/main/testing/phototest.tif",
+      "raw_url": "https://raw.githubusercontent.com/tesseract-ocr/test/main/testing/phototest.tif",
+      "original_sha256": "d2241a1eb6d6cd2eb6544b8e228c2862c852b7467d16ed636caa32179b780692",
+      "sha256": "9da95bf17c0448e04a506d0526d043f61b76dbc93e1c39002562ab73131732c6",
+      "conversion": "TIFF decoded and saved as lossless PNG with Windows System.Drawing; no crop, rescale, sharpening or text replacement.",
+      "width": 640,
+      "height": 480,
+      "source_language": "en",
+      "target_language": "zh",
+      "expected_source": "This is a lot of 12 point text to test the\nocr code and see if it works on all types\nof file format.\nThe quick brown dog jumped over the\nlazy fox. The quick brown dog jumped\nover the lazy fox. The quick brown dog\njumped over the lazy fox. The quick\nbrown dog jumped over the lazy fox.",
+      "reference_translation": "这是一大段12磅字号的文字，用来测试OCR代码，看看它是否适用于所有类型的文件格式。\n敏捷的棕色狗跳过了懒狐狸。敏捷的棕色狗跳过了懒狐狸。敏捷的棕色狗跳过了懒狐狸。敏捷的棕色狗跳过了懒狐狸。",
+      "meaning_units": [
+        "12 point refers to font size, not twelve separate passages, points or words.",
+        "The text tests OCR code and whether it works on all file-format types.",
+        "A quick brown DOG jumps over a lazy FOX, not the familiar reversed pangram.",
+        "The dog/fox event occurs four times in the source; do not silently omit repetitions.",
+        "Soft visual line wraps must not turn the same sentence into unrelated fragments."
+      ]
+    },
+    {
+      "id": "chinese_public_sign",
+      "file": "chinese_public.jpg",
+      "source_url": "https://github.com/PaddlePaddle/PaddleOCR/blob/release/2.7/doc/imgs/12.jpg",
+      "raw_url": "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/release/2.7/doc/imgs/12.jpg",
+      "sha256": "3ac37804e4e292f68c8960d553485147516cdc2e4154afeec6ca742a70e71dca",
+      "conversion": "Original public JPEG; no image changes. No PaddleOCR engine is installed or used by this test.",
+      "width": 720,
+      "height": 1150,
+      "source_language": "zh",
+      "target_language": "en",
+      "expected_source": "上海斯格威铂尔曼大酒店\n打浦路15号\n绿洲仕格维花园公寓\n打浦路25 29 35号",
+      "reference_translation": "Shanghai Sigewei/Pullman Grand Hotel\n15 Dapu Road\nOasis Shigewei Garden Apartments\n25, 29 and 35 Dapu Road",
+      "scope": "The four large readable text rows on the green direction sign. Arrows and tiny partial background text are excluded from the text reference; no inference from a brand dictionary is required.",
+      "meaning_units": [
+        "First entity is a Shanghai hotel; preserving its Chinese proper name or a reasonable transliteration is acceptable, inventing a different hotel is not.",
+        "The hotel address is number 15, Dapu Road.",
+        "Second entity is a garden-apartment property; proper-name spelling may vary but its identity/type must not be replaced.",
+        "The apartment addresses include ALL of 25, 29 and 35, Dapu Road.",
+        "Keep both properties and the correct address-to-property association; do not hallucinate text from the foliage."
+      ]
+    }
+  ]
+}

@@ -31,10 +31,50 @@ class Engine:
     def translate_batch(self, batch, **kwargs):
         assert kwargs == {"beam_size": 2, "max_input_length": 256, "max_decoding_length": 256}
         self.calls.append(batch[0])
-        return [types.SimpleNamespace(hypotheses=[batch[0][:-1]])]
+        content = batch[0][1:-1] if batch[0][0] == ">>cmn_Hans<<" else batch[0][:-1]
+        return [types.SimpleNamespace(hypotheses=[content])]
 
 
 class PolicyTests(unittest.TestCase):
+    def setUp(self):
+        prefix = patch.object(worker, "source_prefix", side_effect=lambda pack, direction:
+                              [">>cmn_Hans<<"] if direction == "en-zh" else [])
+        self.addCleanup(prefix.stop)
+        self.real_prefix = worker.source_prefix
+        prefix.start()
+
+    def test_required_model_marker_is_validated_not_silently_tokenized_as_text(self):
+        with patch.object(Path, "stat", return_value=types.SimpleNamespace(st_size=100)):
+            with patch.object(Path, "read_text", return_value='["</s>", ">>cmn_Hans<<"]'):
+                self.assertEqual(self.real_prefix(Path("unused"), "en-zh"), [">>cmn_Hans<<"])
+            with patch.object(Path, "read_text", return_value='["</s>"]'):
+                with self.assertRaisesRegex(worker.TranslationError, "pack_load"):
+                    self.real_prefix(Path("unused"), "en-zh")
+        self.assertEqual(self.real_prefix(Path("unused"), "zh-en"), [])
+
+    def test_sentence_units_are_lossless_without_removing_source_repetition(self):
+        for text in ["One sentence. Another! Last?", "你好！再见。下次见？", "3.14 is a number. End.",
+                     "U.S. formats work. A. Smith agrees!", 'He said "Go!" Then left.',
+                     "line without punctuation", "Same sentence. Same sentence. Same sentence."]:
+            with self.subTest(text=text):
+                self.assertEqual("".join(worker.sentence_slices(text)), text)
+        self.assertEqual(list(worker.sentence_slices("Same sentence. " * 4)), ["Same sentence. "] * 4)
+        self.assertEqual(list(worker.sentence_slices("3.14 is a number. End.")),
+                         ["3.14 is a number. ", "End."])
+        self.assertEqual(list(worker.sentence_slices("U.S. formats work. A. Smith agrees!")),
+                         ["U.S. formats work. ", "A. Smith agrees!"])
+
+    def test_sentence_inference_does_not_merge_repeated_source_events(self):
+        modules = {"ctranslate2": types.SimpleNamespace(Translator=Engine),
+                   "sentencepiece": types.SimpleNamespace(SentencePieceProcessor=Tokenizer)}
+        Engine.calls = []
+        with patch.dict(sys.modules, modules), patch.object(Path, "is_file", return_value=True):
+            text = "A repeated event. " * 4
+            self.assertEqual(worker.translate(Path("unused"), "en-zh", text), text)
+            self.assertEqual(len(Engine.calls), 4)
+            self.assertTrue(all(call[0] == ">>cmn_Hans<<" and "".join(call[1:-1]) == "A repeated event."
+                                for call in Engine.calls))
+
     def test_dpapi_roundtrip_and_corruption(self):
         raw = "private synthetic fixture: 中文".encode("utf-8")
         encrypted = worker.crypt(raw)
@@ -70,7 +110,7 @@ class PolicyTests(unittest.TestCase):
         class ExpandingEngine(Engine):
             def translate_batch(self, batch, **kwargs):
                 self.calls.append(batch[0])
-                return [types.SimpleNamespace(hypotheses=[batch[0][:-1] * 2])]
+                return [types.SimpleNamespace(hypotheses=[batch[0][1:-1] * 2])]
         modules = {"ctranslate2": types.SimpleNamespace(Translator=ExpandingEngine),
                    "sentencepiece": types.SimpleNamespace(SentencePieceProcessor=Tokenizer)}
         Engine.calls = []

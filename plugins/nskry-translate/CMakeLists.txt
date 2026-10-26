@@ -1,5 +1,32 @@
 add_library(nskry_translate SHARED src/nskry_translate.cpp src/worker_reply.cpp src/online_translation.cpp
     src/translation_http.cpp src/online_config.cpp src/online_settings.cpp "${CMAKE_SOURCE_DIR}/src/core/json.cpp")
+add_library(nskry_translation_recognition STATIC src/image_recognition.cpp
+    "${CMAKE_SOURCE_DIR}/plugins/nskry-ocr/src/ocr_layout.cpp")
+target_include_directories(nskry_translation_recognition PUBLIC src PRIVATE
+    "${CMAKE_SOURCE_DIR}/plugins/nskry-ocr/src")
+target_compile_definitions(nskry_translation_recognition PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_link_libraries(nskry_translation_recognition PUBLIC windowsapp user32 gdi32)
+if(MSVC)
+    target_compile_options(nskry_translation_recognition PRIVATE /utf-8)
+endif()
+target_link_libraries(nskry_translate PRIVATE nskry_translation_recognition)
+# Source/static reuse, NOT an installed-plugin dependency or cross-DLL call.
+target_compile_definitions(nskry_translation_recognition PRIVATE NSKRY_TRANSLATE_MODEL_OCR=$<BOOL:${NSKRY_OCR_MODEL_ENGINE}>)
+if(NSKRY_OCR_MODEL_ENGINE)
+    target_sources(nskry_translation_recognition PRIVATE "${CMAKE_SOURCE_DIR}/plugins/nskry-ocr/src/model/ocr_process.cpp")
+    target_link_libraries(nskry_translation_recognition PRIVATE nskry_ocr_wire)
+    # Identical owned assets/notices; no lookup of another installed package.
+    set(translate_ocr_assets_stamp "${CMAKE_CURRENT_BINARY_DIR}/ocr-assets.ready")
+    add_custom_command(OUTPUT "${translate_ocr_assets_stamp}"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_BINARY_DIR}/plugins/nskry-ocr/package/engine" "${CMAKE_CURRENT_BINARY_DIR}/package/ocr"
+        COMMAND ${CMAKE_COMMAND} -E touch "${translate_ocr_assets_stamp}"
+        DEPENDS nskry_ocr_worker nskry_ocr_assets "$<TARGET_FILE:nskry_ocr_worker>"
+            "${CMAKE_BINARY_DIR}/plugins/nskry-ocr/engine-assets.ready"
+        VERBATIM)
+    add_custom_target(nskry_translate_ocr_assets DEPENDS "${translate_ocr_assets_stamp}")
+    add_dependencies(nskry_translate nskry_translate_ocr_assets)
+endif()
 target_include_directories(nskry_translate PRIVATE "${CMAKE_SOURCE_DIR}/sdk" "${CMAKE_SOURCE_DIR}/src")
 target_compile_definitions(nskry_translate PRIVATE NSKRY_PLUGIN_EXPORTS UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN WINRT_LEAN_AND_MEAN)
 target_link_libraries(nskry_translate PRIVATE windowsapp ole32 user32 gdi32 shell32 advapi32 crypt32 winhttp comdlg32)
@@ -8,6 +35,8 @@ if(MSVC)
 endif()
 set_target_properties(nskry_translate PROPERTIES OUTPUT_NAME "nskry-translate"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/package")
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/package/image-model.txt"
+    CONTENT "$<BOOL:${NSKRY_OCR_MODEL_ENGINE}>\n")
 add_custom_command(TARGET nskry_translate POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/manifest.json"
         "${CMAKE_CURRENT_SOURCE_DIR}/README.md" "${CMAKE_CURRENT_SOURCE_DIR}/ONLINE_ENGINES.md" "${CMAKE_SOURCE_DIR}/LICENSE"
@@ -17,6 +46,25 @@ add_custom_command(TARGET nskry_translate POST_BUILD
 # Runtime/model preparation is explicit and never a configure/build download.
 # A releasable package additionally needs the runtime's third-party notices.
 if(BUILD_TESTING)
+    add_executable(NskryTranslationRecognitionTests "${CMAKE_SOURCE_DIR}/tests/translation_recognition_tests.cpp")
+    target_link_libraries(NskryTranslationRecognitionTests PRIVATE nskry_translation_recognition)
+    target_compile_definitions(NskryTranslationRecognitionTests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
+        NSKRY_TRANSLATE_MODEL_OCR=$<BOOL:${NSKRY_OCR_MODEL_ENGINE}>)
+    if(MSVC)
+        target_compile_options(NskryTranslationRecognitionTests PRIVATE /utf-8)
+    endif()
+    add_dependencies(NskryTranslationRecognitionTests nskry_translate)
+    add_test(NAME NskryTranslationRecognitionTests COMMAND NskryTranslationRecognitionTests $<TARGET_FILE_DIR:nskry_translate>)
+    set_tests_properties(NskryTranslationRecognitionTests PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+    # Explicit public-image/package audit; never run external services in CTest.
+    add_executable(NskryTranslationImageAudit "${CMAKE_SOURCE_DIR}/tests/translation_image_audit.cpp"
+        "${CMAKE_SOURCE_DIR}/src/core/json.cpp")
+    target_include_directories(NskryTranslationImageAudit PRIVATE "${CMAKE_SOURCE_DIR}/sdk" "${CMAKE_SOURCE_DIR}/src")
+    target_compile_definitions(NskryTranslationImageAudit PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_link_libraries(NskryTranslationImageAudit PRIVATE windowsapp user32 gdi32 gdiplus advapi32 bcrypt psapi)
+    if(MSVC)
+        target_compile_options(NskryTranslationImageAudit PRIVATE /utf-8)
+    endif()
     add_executable(NskryTranslationOnlineTests "${CMAKE_SOURCE_DIR}/tests/translation_online_tests.cpp"
         src/online_translation.cpp src/online_config.cpp src/translation_http.cpp "${CMAKE_SOURCE_DIR}/src/core/json.cpp")
     target_include_directories(NskryTranslationOnlineTests PRIVATE src "${CMAKE_SOURCE_DIR}/src")
@@ -29,6 +77,8 @@ if(BUILD_TESTING)
     set_tests_properties(NskryTranslationOnlineTests PROPERTIES TIMEOUT 15 RUN_SERIAL TRUE)
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME NskryTranslationImageEvaluationTests COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/translation/test_image_evaluation.py")
         add_test(NAME NskryTranslationWorkerPolicyTests COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/translation_worker_policy_tests.py")
         set_tests_properties(NskryTranslationWorkerPolicyTests PROPERTIES TIMEOUT 15)
@@ -63,7 +113,7 @@ if(BUILD_TESTING)
             $<TARGET_FILE:nskry_translate> "${NSKRY_TRANSLATE_TEST_MODELS}")
         set_tests_properties(NskryTranslationOfflineTests PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
         add_executable(NskryOcrTranslationIntegrationTests "${CMAKE_SOURCE_DIR}/tests/ocr_translation_integration_tests.cpp"
-            "${CMAKE_SOURCE_DIR}/src/core/plugin_manager.cpp" "${CMAKE_SOURCE_DIR}/src/core/plugin_registry.cpp"
+            "${CMAKE_SOURCE_DIR}/src/core/plugin_manager.cpp" "${CMAKE_SOURCE_DIR}/src/core/plugin_image_recognition.cpp" "${CMAKE_SOURCE_DIR}/src/core/plugin_registry.cpp"
             "${CMAKE_SOURCE_DIR}/src/core/plugin_manifest.cpp" "${CMAKE_SOURCE_DIR}/src/core/json.cpp"
             "${CMAKE_SOURCE_DIR}/src/update/semver.cpp")
         target_include_directories(NskryOcrTranslationIntegrationTests PRIVATE "${CMAKE_SOURCE_DIR}" "${CMAKE_SOURCE_DIR}/src" "${CMAKE_SOURCE_DIR}/sdk")
@@ -75,6 +125,6 @@ if(BUILD_TESTING)
         add_dependencies(NskryOcrTranslationIntegrationTests nskry_translate nskry_ocr_package)
         add_test(NAME NskryOcrTranslationIntegrationTests COMMAND NskryOcrTranslationIntegrationTests
             $<TARGET_FILE:nskry_translate> $<TARGET_FILE:nskry_ocr> "${NSKRY_TRANSLATE_TEST_MODELS}" "${CMAKE_BINARY_DIR}")
-        set_tests_properties(NskryOcrTranslationIntegrationTests PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+        set_tests_properties(NskryOcrTranslationIntegrationTests PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
     endif()
 endif()

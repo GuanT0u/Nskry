@@ -1,7 +1,7 @@
-# Translation 0.3.0 — experimental offline and optional online translation
+# Translation 0.3.2 — experimental offline and optional online translation
 
 Independent API2 plugin. Select a screenshot, a pinned image, a monitor's static
-frame, or an editor subregion and choose Translation. Windows OCR runs locally,
+frame, or an editor subregion and choose Translation. OCR runs locally,
 then translation starts automatically (online mode requires upload confirmation).
 Auto chooses English→Chinese or Chinese→English
 using a bounded script-based rule; mixed text uses the dominant supported script.
@@ -12,6 +12,24 @@ override Auto with either direction. No extra detector model is loaded.
 Copy result copies all translated text; normal text selection also works.
 Save text exports UTF-8. Editing the source invalidates the previous result.
 Settings opens the same window without OCR, model loading or networking.
+
+0.3.1 fixes the direct-image path: default builds ship their OWN on-demand native
+PP-OCRv4 worker/model/notices under `ocr/`, reusing source/static code and pinned
+assets at build time, not another installed plugin's DLL or directory. A single
+recognition process exits before translation starts. Geometric row/paragraph
+reconstruction preserves nearby wrapped text without blindly joining columns.
+Both online-only and offline-enabled packages include this local OCR runtime;
+"online-only" now means no offline TRANSLATION runtime, not no local OCR model.
+Model-free builds remain possible with `NSKRY_OCR_MODEL_ENGINE=OFF`; these use
+Windows OCR explicitly and have different accuracy, not silent runtime fallback.
+Missing accurate-OCR assets fail with a repair/paste-text message.
+
+The offline worker now supplies the pinned en→zh model's required source-side
+`>>cmn_Hans<<` language marker (counted inside the token budget). It translates
+complete sentence units after OCR paragraph reconstruction, preserving repeated
+SOURCE sentences instead of banning repeated target n-grams. No dictionary or
+sample-specific spelling repair is used. This reduces tested repetition but is
+not a guarantee of faithful translation, correct proper names or punctuation.
 
 0.3.0 adds configured OpenAI-compatible/LibreTranslate engines and an optional
 free MyMemory engine. First run is offline; an explicit engine choice can be
@@ -36,9 +54,10 @@ Closing OCR does not close a handed-off translation window. Update Core + both
 plugins for this integration; the external language packs do not need conversion again.
 
 The source bitmap is copied before execute returns. OCR does not depend on the
-OCR plugin. Missing Windows language resources may reduce recognition quality;
-manual source entry remains available. This MVP does not reuse the heavier OCR
-plugin's model or private UI.
+OCR plugin. Recognition source/engine assets are reused at build time and owned
+by this package at runtime, without an OCR-plugin prerequisite or private-UI call.
+Manual source entry remains available. Complex photos may still have mistakes;
+review both source and translation, especially names, addresses and numbers.
 
 ## Development setup (explicit, not part of normal build)
 
@@ -66,9 +85,12 @@ plugin's model or private UI.
 7. Optional local-only package: run `tools/package_development.py
    <build-plugin-stage> <new-build-path>.nskryplugin`. Language packs stay external;
    use `DEVELOPMENT_ONLY.md` release restrictions. Add `--online-only` to omit
-   the entire optional offline engine/runtime. Both variants have the same
+   the entire optional offline translation engine/runtime. Both variants have the same
    plugin ID/version: choose one, not two installed plugins. Online-only needs
-   no Python/model. Selecting Offline then clearly reports the absent engine.
+   no Python/translation model but still includes the native local OCR model.
+   Selecting Offline then clearly reports the absent translation engine.
+   A model-free configured build must explicitly use `--without-image-model`;
+   the packaging tool checks that this matches the build's `image-model.txt`.
    This does not install anything.
 
 No system Python is needed by the frozen worker. The current developer runtime
@@ -79,12 +101,17 @@ component or public bundled package is enabled before these gates pass.
 ## Resource/privacy limits
 
 No worker/model/polling at init. One active task, 2 inference threads, CPU INT8.
+The optional native OCR stage has its own bounded process (up to 4 threads,
+1 GiB private hard cap, 20-second deadline); it releases all model/process
+resources before starting offline translation. Their separate peak memories
+must not be added as if both models remain resident. No OCR/translation model
+is loaded when opening Settings or receiving already recognized text.
 Measured cold private peak is about 650 MiB; job hard cap 1 GiB, deadline 60 seconds.
 File size is not RAM usage. Four short sentences took about 1.1 seconds including
 fresh-process startup on the development machine, not a low-end guarantee.
 Input remains limited to 16000 UTF-16 units. Long paragraphs now split at sentence/
 word boundaries when possible, rechecking every fragment's 256-token inference
-cap. Capped output retries smaller source pieces; no partial/truncated paragraph
+cap, including the target-language marker and EOS. Capped output retries smaller source pieces; no partial/truncated paragraph
 is published. A maximum of 128 inference calls and the same 60-second deadline
 apply. Blank lines/line endings survive. Splitting can reduce context and does
 not guarantee quality or 1–2-second completion for long input. Close/Cancel
@@ -127,3 +154,24 @@ was available: their coverage is schema/policy/configuration/transport lifecycle
 not a claim that every gateway works. Larger optional offline engines, broad
 language detection/targets, streaming and final runtime license clearance remain
 future work. See [development report](../../docs/report/devProgress/translation_0_3_progress.md).
+## 0.3.2 recognition update
+
+In Settings → Plugins → Translation → Settings, check **Use installed OCR plugin
+for screenshot translation** to use an installed/enabled OCR 0.6.5+ through an
+updated Core. The same checkbox appears in the Translation window. Default is
+OFF. Changing it does not load a DLL/model or start a task. If the chosen OCR
+provider is missing/disabled/busy/too old, an error explains the choice; uncheck
+to use independent built-in recognition. There is no automatic fallback or
+installation. OCR's selected Accurate/Fast mode applies, without opening a
+second OCR window. OCR → Translate still forwards existing text without another
+recognition pass, regardless of this checkbox.
+
+Built-in recognition now preserves CTC emission geometry and conservatively
+recovers numeric grouping from pixel whitespace plus timing/ink-center spacing.
+It does not guess address names or split by digit count. Ambiguous cases stay
+unchanged; individual wrong/missing characters are still possible. Review source
+text before relying on a translation. For another recognition option, try the
+optional OCR plugin. Both current default Accurate backends share PP-OCRv4, so
+installing it alone is not a guarantee of higher accuracy. Offline translation
+still has name/domain errors; raising beam/precision was not a reliable fix and
+is not enabled. No extra fixed whole-image OCR passes or idle resource use.

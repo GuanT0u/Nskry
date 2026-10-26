@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "nskry-ocr",
   "name": "Text recognition",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "author": "Nskry Team",
   "description": "On-demand offline Chinese and English text recognition, with a lightweight Windows OCR option.",
   "runtime": {
@@ -12,7 +12,7 @@
     "load_policy": "on_demand"
   },
   "capabilities": ["toolbar_action", "post_capture"],
-  "extensions": {"text_translation_client": 1},
+  "extensions": {"text_translation_client": 1, "image_recognition": 1},
   "shortcuts": [
     {"id":"launch","label":"Recognize a selected region","scope":"capture","default":"","general_jump":true},
     {"id":"copy","label":"Copy selected text","scope":"key","default":"Ctrl+C"},

@@ -18,6 +18,7 @@ add_executable(Nskry WIN32
     src/core/json.cpp
     src/core/plugin_manifest.cpp
     src/core/plugin_manager.cpp
+    src/core/plugin_image_recognition.cpp
     src/core/plugin_package_manager.cpp
     src/core/plugin_update_manager.cpp
     src/core/update_task.cpp
@@ -233,7 +234,7 @@ if (BUILD_TESTING)
         target_compile_options(NskryPluginLegacyInputFixture PRIVATE /utf-8)
     endif()
     add_executable(NskryPluginRuntimeTests tests/plugin_runtime_tests.cpp
-        src/core/plugin_manager.cpp src/core/plugin_registry.cpp src/core/plugin_manifest.cpp
+        src/core/plugin_manager.cpp src/core/plugin_image_recognition.cpp src/core/plugin_registry.cpp src/core/plugin_manifest.cpp
         src/core/json.cpp src/update/semver.cpp)
     target_include_directories(NskryPluginRuntimeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} src sdk)
     target_compile_definitions(NskryPluginRuntimeTests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN WINRT_LEAN_AND_MEAN)
@@ -245,7 +246,7 @@ if (BUILD_TESTING)
     target_include_directories(NskryTextClientFixture PRIVATE sdk)
     target_compile_definitions(NskryTextClientFixture PRIVATE NSKRY_TEST_TEXT_CLIENT)
     add_executable(NskryTextTranslationRuntimeTests tests/text_translation_runtime_tests.cpp
-        src/core/plugin_manager.cpp src/core/plugin_registry.cpp src/core/plugin_manifest.cpp
+        src/core/plugin_manager.cpp src/core/plugin_image_recognition.cpp src/core/plugin_registry.cpp src/core/plugin_manifest.cpp
         src/core/json.cpp src/update/semver.cpp)
     target_include_directories(NskryTextTranslationRuntimeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} src sdk)
     target_compile_definitions(NskryTextTranslationRuntimeTests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX WINRT_LEAN_AND_MEAN)
@@ -258,6 +259,19 @@ if (BUILD_TESTING)
         $<TARGET_FILE:NskryPluginRuntimeFixture> $<TARGET_FILE:NskryTextClientFixture>
         $<TARGET_FILE:NskryPluginLegacyInputFixture> "${CMAKE_BINARY_DIR}")
     set_tests_properties(NskryTextTranslationRuntimeTests PROPERTIES TIMEOUT 15)
+    add_executable(NskryImageRecognitionRuntimeTests tests/image_recognition_runtime_tests.cpp
+        src/core/plugin_manager.cpp src/core/plugin_image_recognition.cpp src/core/plugin_registry.cpp
+        src/core/plugin_manifest.cpp src/core/json.cpp src/update/semver.cpp)
+    target_include_directories(NskryImageRecognitionRuntimeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} src sdk)
+    target_compile_definitions(NskryImageRecognitionRuntimeTests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX WINRT_LEAN_AND_MEAN)
+    if(MSVC)
+        target_compile_options(NskryImageRecognitionRuntimeTests PRIVATE /utf-8)
+    endif()
+    add_dependencies(NskryImageRecognitionRuntimeTests NskryPluginRuntimeFixture NskryTextClientFixture NskryPluginLegacyInputFixture)
+    add_test(NAME NskryImageRecognitionRuntimeTests COMMAND NskryImageRecognitionRuntimeTests
+        $<TARGET_FILE:NskryPluginRuntimeFixture> $<TARGET_FILE:NskryTextClientFixture>
+        $<TARGET_FILE:NskryPluginLegacyInputFixture> "${CMAKE_BINARY_DIR}")
+    set_tests_properties(NskryImageRecognitionRuntimeTests PROPERTIES TIMEOUT 15)
     set(update_fixture_dir "${CMAKE_BINARY_DIR}/update-fixture")
     file(MAKE_DIRECTORY "${update_fixture_dir}")
     configure_file(tests/update_package_fixture.json "${update_fixture_dir}/manifest.json" COPYONLY)

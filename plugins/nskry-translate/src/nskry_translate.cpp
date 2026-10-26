@@ -2,7 +2,8 @@
 #include "nskry_actions.h"
 #include "nskry_plugin.h"
 #include "nskry_text_translation.h"
-#include "ocr_wait.h"
+#include "nskry_image_recognition.h"
+#include "image_recognition.h"
 #include "online_settings.h"
 #include "online_translation.h"
 #include "translation_policy.h"
@@ -16,12 +17,7 @@
 #include <thread>
 #include <vector>
 #include <wincrypt.h>
-#include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Foundation.h>
-#include <winrt/Windows.Globalization.h>
-#include <winrt/Windows.Graphics.Imaging.h>
-#include <winrt/Windows.Media.Ocr.h>
-#include <winrt/Windows.Storage.Streams.h>
 
 namespace {
 using namespace nskry::translate;
@@ -29,6 +25,8 @@ HWND window{}, sourceEdit{}, resultEdit{}, packEdit{}, directionChoice{}, status
 HMODULE module{};
 bool closing{};
 bool starting{}, uploadCanceled{};
+NskryImageRecognitionServiceV1 recognitionService{};
+bool useOcrPlugin{};
 struct TranslationFailure {
     std::wstring message;
 };
@@ -42,10 +40,14 @@ struct Task {
     bool ocr{};
     bool online{};
     unsigned parts{};
+    uint64_t recognitionTicket{};
+    std::vector<wchar_t> recognitionBuffer; // Allocated once for an opt-in OCR task, not each timer tick.
     ~Task() {
         SetEvent(cancel);
         if (thread.joinable())
             thread.join();
+        if (recognitionTicket && recognitionService.release)
+            recognitionService.release(recognitionTicket); // UI thread, before any provider DLL unload.
         if (cancel)
             CloseHandle(cancel);
     }
@@ -59,6 +61,16 @@ void RefreshProviderControls() {
     const bool hasResult = !task && GetWindowTextLengthW(resultEdit) > 0;
     EnableWindow(GetDlgItem(window, 3), hasResult);
     EnableWindow(GetDlgItem(window, 5), hasResult);
+    // An older Core must still let a persisted opt-in be switched OFF.
+    EnableWindow(GetDlgItem(window, 22), !task && (recognitionService.available || useOcrPlugin));
+    const bool available = recognitionService.available && recognitionService.available(L"nskry-ocr");
+    SetWindowTextW(GetDlgItem(window, 23),
+                   !recognitionService.available ? L"OCR integration requires an updated Core. Built-in "
+                                                   L"recognition still works when this option is off."
+                   : available ? L"OCR plugin available. Uses its selected mode; review recognition before "
+                                 L"relying on a translation."
+                               : L"For another recognition option, install/enable an updated OCR plugin. "
+                                 L"Translation also works without it.");
 }
 std::wstring Text(HWND control) {
     const auto size = GetWindowTextLengthW(control);
@@ -222,6 +234,25 @@ std::wstring RunOffline(Task &work, const std::wstring &text, const std::wstring
     return std::move(decoded.text);
 }
 void FinishTask() {
+    if (task && task->recognitionTicket && !task->done.load()) {
+        if (WaitForSingleObject(task->cancel, 0) == WAIT_OBJECT_0)
+            recognitionService.cancel(task->recognitionTicket);
+        auto &text = task->recognitionBuffer;
+        wchar_t error[256]{};
+        NskryImageTextV1 output{sizeof(output), 1, text.data(), uint32_t(text.size()), 0, error, 256};
+        const auto status = recognitionService.poll(task->recognitionTicket, &output);
+        if (status == NSKRY_IMAGE_PENDING)
+            return;
+        if (status == NSKRY_IMAGE_SUCCESS && ValidateText(text.data()) == InputError::None)
+            task->result = text.data();
+        else if (status == NSKRY_IMAGE_CANCELED)
+            SetEvent(task->cancel);
+        else
+            task->error = error[0] ? error
+                                   : L"OCR plugin unavailable or failed. No fallback was used. Uncheck the "
+                                     L"OCR option to use built-in recognition.";
+        task->done.store(true);
+    }
     if (!task || !task->done.load())
         return;
     const bool canceled = WaitForSingleObject(task->cancel, 0) == WAIT_OBJECT_0;
@@ -249,7 +280,7 @@ void FinishTask() {
     else if (autoTranslate)
         BeginTranslation();
 }
-template <class Work> void Start(bool ocr, Work work, bool online = false) {
+template <class Work> void Start(bool ocr, Work work, bool online = false, uint64_t recognitionTicket = 0) {
     if (task)
         return;
     task = std::make_unique<Task>();
@@ -260,38 +291,45 @@ template <class Work> void Start(bool ocr, Work work, bool online = false) {
     }
     task->ocr = ocr;
     task->online = online;
+    task->recognitionTicket = recognitionTicket;
     auto *state = task.get();
     try {
-        state->thread = std::thread([state, work = std::move(work)] {
-            try {
-                winrt::init_apartment(winrt::apartment_type::multi_threaded);
-                struct Apartment {
-                    ~Apartment() {
-                        winrt::uninit_apartment();
+        if (recognitionTicket)
+            state->recognitionBuffer.resize(NSKRY_IMAGE_MAX_TEXT + 1);
+        if (!recognitionTicket)
+            state->thread = std::thread([state, work = std::move(work)] {
+                try {
+                    winrt::init_apartment(winrt::apartment_type::multi_threaded);
+                    struct Apartment {
+                        ~Apartment() {
+                            winrt::clear_factory_cache();
+                            winrt::uninit_apartment();
+                        }
+                    } apartment;
+                    state->result = work(*state);
+                } catch (const TranslationFailure &error) {
+                    state->error = error.message;
+                } catch (const std::wstring &error) {
+                    state->error = error; // Only locally constructed, sanitized provider/transport messages.
+                } catch (const winrt::hresult_error &error) {
+                    if (error.code() == HRESULT_FROM_WIN32(ERROR_TIMEOUT)) {
+                        state->error = L"Task timed out after 60 seconds. Select a smaller region; the "
+                                       L"worker was stopped.";
+                    } else {
+                        state->error =
+                            (state->ocr ? L"Screenshot text recognition failed (code "
+                                        : L"Translation failed (code ") +
+                            std::to_wstring(error.code().value) +
+                            (state->ocr
+                                 ? L"). Check the local OCR runtime/image size, or paste source text."
+                                 : L"). Check the translation engine, language pack and input limits.");
                     }
-                } apartment;
-                state->result = work(*state);
-            } catch (const TranslationFailure &error) {
-                state->error = error.message;
-            } catch (const std::wstring &error) {
-                state->error = error; // Only locally constructed, sanitized provider/transport messages.
-            } catch (const winrt::hresult_error &error) {
-                if (error.code() == HRESULT_FROM_WIN32(ERROR_TIMEOUT)) {
+                } catch (...) {
                     state->error =
-                        L"Task timed out after 60 seconds. Select a smaller region; the worker was stopped.";
-                } else {
-                    state->error =
-                        (state->ocr ? L"Screenshot text recognition failed (code "
-                                    : L"Translation failed (code ") +
-                        std::to_wstring(error.code().value) +
-                        (state->ocr ? L"). Check Windows OCR languages/image size, or paste source text."
-                                    : L"). Check the translation engine, language pack and input limits.");
+                        L"Task failed or canceled. Check the engine, language pack and input limits.";
                 }
-            } catch (...) {
-                state->error = L"Task failed or canceled. Check the engine, language pack and input limits.";
-            }
-            state->done.store(true);
-        });
+                state->done.store(true);
+            });
     } catch (...) {
         task.reset();
         throw;
@@ -302,6 +340,7 @@ template <class Work> void Start(bool ocr, Work work, bool online = false) {
     EnableWindow(directionChoice, FALSE);
     EnableWindow(providerChoice, FALSE);
     EnableWindow(GetDlgItem(window, 21), FALSE);
+    EnableWindow(GetDlgItem(window, 22), FALSE);
     EnableWindow(GetDlgItem(window, 4), FALSE);
     SetWindowTextW(resultEdit, L""); // Never offer a stale translation for a new request.
     EnableWindow(GetDlgItem(window, 3), FALSE);
@@ -433,29 +472,6 @@ void SaveResult() {
     SetWindowTextW(statusLabel, file ? L"Translation saved as UTF-8 text."
                                      : L"Could not write the complete translation file.");
 }
-std::wstring Recognize(Task &work, const std::vector<uint8_t> &pixels, int width, int height) {
-    using namespace winrt::Windows;
-    auto engine = Media::Ocr::OcrEngine::TryCreateFromLanguage(Globalization::Language(L"zh-Hans"));
-    if (!engine)
-        engine = Media::Ocr::OcrEngine::TryCreateFromUserProfileLanguages();
-    if (!engine || width > int(Media::Ocr::OcrEngine::MaxImageDimension()) ||
-        height > int(Media::Ocr::OcrEngine::MaxImageDimension()))
-        winrt::throw_hresult(E_BOUNDS);
-    Storage::Streams::DataWriter writer;
-    writer.WriteBytes(pixels);
-    auto bitmap = Graphics::Imaging::SoftwareBitmap::CreateCopyFromBuffer(
-        writer.DetachBuffer(), Graphics::Imaging::BitmapPixelFormat::Bgra8, width, height,
-        Graphics::Imaging::BitmapAlphaMode::Ignore);
-    auto operation = engine.RecognizeAsync(bitmap);
-    WaitForOcr(operation, work.cancel, TaskTimeoutMs);
-    std::wstring text;
-    for (const auto &line : operation.GetResults().Lines()) {
-        if (!text.empty())
-            text += L"\r\n";
-        text += line.Text();
-    }
-    return text;
-}
 LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
     try {
         if (message == WM_SIZE) {
@@ -466,8 +482,10 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             MoveWindow(GetDlgItem(hwnd, 21), 300, 8, 180, 26, TRUE);
             MoveWindow(packEdit, 8, 42, width - 160, 26, TRUE);
             MoveWindow(GetDlgItem(hwnd, 4), width - 144, 42, 136, 26, TRUE);
-            MoveWindow(sourceEdit, 8, 80, (width - 24) / 2, height - 160, TRUE);
-            MoveWindow(resultEdit, width / 2 + 4, 80, width / 2 - 12, height - 160, TRUE);
+            MoveWindow(GetDlgItem(hwnd, 22), 8, 78, width - 16, 26, TRUE);
+            MoveWindow(GetDlgItem(hwnd, 23), 8, 106, width - 16, 24, TRUE);
+            MoveWindow(sourceEdit, 8, 136, (width - 24) / 2, height - 216, TRUE);
+            MoveWindow(resultEdit, width / 2 + 4, 136, width / 2 - 12, height - 216, TRUE);
             MoveWindow(directionChoice, 8, height - 72, 120, 120, TRUE);
             MoveWindow(GetDlgItem(hwnd, 1), 136, height - 72, 100, 26, TRUE);
             MoveWindow(GetDlgItem(hwnd, 2), 244, height - 72, 100, 26, TRUE);
@@ -478,13 +496,15 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         }
         if (message == WM_GETMINMAXINFO) {
             auto *limits = reinterpret_cast<MINMAXINFO *>(lp);
-            limits->ptMinTrackSize = {650, 350};
+            limits->ptMinTrackSize = {650, 410};
             return 0;
         }
         if (message == WM_TIMER) {
             FinishTask();
             return 0;
         }
+        if (message == WM_ACTIVATE && window)
+            RefreshProviderControls();
         if (message == WM_CLOSE) {
             if (task) {
                 closing = true;
@@ -507,6 +527,25 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             return DefWindowProcW(hwnd, message, wp, lp);
         }
         if (message == WM_COMMAND) {
+            if (LOWORD(wp) == 22 && !task) {
+                const DWORD enabled = SendMessageW(GetDlgItem(hwnd, 22), BM_GETCHECK, 0, 0) == BST_CHECKED;
+                if (enabled &&
+                    (!recognitionService.available || !recognitionService.available(L"nskry-ocr"))) {
+                    SendMessageW(GetDlgItem(hwnd, 22), BM_SETCHECK,
+                                 useOcrPlugin ? BST_CHECKED : BST_UNCHECKED, 0);
+                    SetWindowTextW(statusLabel,
+                                   L"Install/enable an updated OCR plugin first. No plugin was loaded.");
+                    return 0;
+                }
+                if (RegSetKeyValueW(HKEY_CURRENT_USER, Key, L"UseOcrPluginV1", REG_DWORD, &enabled,
+                                    sizeof(enabled)) == ERROR_SUCCESS)
+                    useOcrPlugin = enabled != 0;
+                else {
+                    SendMessageW(GetDlgItem(hwnd, 22), BM_SETCHECK,
+                                 useOcrPlugin ? BST_CHECKED : BST_UNCHECKED, 0);
+                    SetWindowTextW(statusLabel, L"Could not save recognition preference.");
+                }
+            }
             if (LOWORD(wp) == 10 && HIWORD(wp) == EN_CHANGE && !task) {
                 // A previous translation must not look current after the source
                 // has been edited. Programmatic OCR completion happens while
@@ -616,6 +655,14 @@ void Show(HWND owner) {
     // every online translation still requires a new upload confirmation.
     SendMessageW(providerChoice, CB_SETCURSEL, preferred, 0);
     child(L"BUTTON", L"Configure engine", WS_TABSTOP, 21);
+    child(L"BUTTON", L"Use installed OCR plugin for screenshot translation (optional)",
+          BS_AUTOCHECKBOX | WS_TABSTOP, 22);
+    child(L"STATIC", L"", 0, 23);
+    DWORD useProvider{}, preferenceBytes = sizeof(useProvider);
+    useOcrPlugin = RegGetValueW(HKEY_CURRENT_USER, Key, L"UseOcrPluginV1", RRF_RT_REG_DWORD, nullptr,
+                                &useProvider, &preferenceBytes) == ERROR_SUCCESS &&
+                   useProvider == 1;
+    SendMessageW(GetDlgItem(window, 22), BM_SETCHECK, useOcrPlugin ? BST_CHECKED : BST_UNCHECKED, 0);
     statusLabel = child(L"STATIC",
                         L"Select a region to recognize and translate automatically. You can edit the source "
                         L"and translate again.",
@@ -629,7 +676,8 @@ void Show(HWND owner) {
     SetWindowTextW(packEdit, root.c_str());
     if (!sourceEdit || !resultEdit || !packEdit || !directionChoice || !providerChoice || !statusLabel ||
         !GetDlgItem(window, 1) || !GetDlgItem(window, 2) || !GetDlgItem(window, 3) ||
-        !GetDlgItem(window, 4) || !GetDlgItem(window, 5) || !GetDlgItem(window, 21)) {
+        !GetDlgItem(window, 4) || !GetDlgItem(window, 5) || !GetDlgItem(window, 21) ||
+        !GetDlgItem(window, 22) || !GetDlgItem(window, 23)) {
         DestroyWindow(window);
         winrt::throw_hresult(E_OUTOFMEMORY);
     }
@@ -642,7 +690,7 @@ NskryPluginInfo info{sizeof(info),
                      NSKRY_PLUGIN_API_VERSION,
                      L"Translation",
                      L"nskry-translate",
-                     L"0.3.0",
+                     L"0.3.2",
                      L"Nskry Team",
                      L"Experimental on-demand Chinese/English translation with optional online engines.",
                      nullptr,
@@ -660,6 +708,14 @@ NSKRY_API const NskryPluginInfo *NSKRY_CALL nskry_plugin_info() {
     return &info;
 }
 NSKRY_API int32_t NSKRY_CALL nskry_plugin_init(const NskryHostContext *) {
+    return 1;
+}
+extern "C" NSKRY_API int32_t NSKRY_CALL
+nskry_plugin_connect_image_recognition_v1(const NskryImageRecognitionServiceV1 *service) {
+    if (!service || service->structSize < sizeof(*service) || service->version != 1 || !service->available ||
+        !service->begin || !service->poll || !service->cancel || !service->release)
+        return 0;
+    recognitionService = *service;
     return 1;
 }
 extern "C" NSKRY_API int32_t NSKRY_CALL nskry_plugin_show_settings_v1(HWND owner) {
@@ -721,6 +777,26 @@ NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext *context) 
         if (task || closing || starting)
             return;
         SendMessageW(directionChoice, CB_SETCURSEL, 0, 0);
+        SetWindowTextW(sourceEdit, L"");
+        SetWindowTextW(resultEdit, L"");
+        if (useOcrPlugin) {
+            uint64_t ticket{};
+            if (!recognitionService.available || !recognitionService.available(L"nskry-ocr") ||
+                recognitionService.begin(L"nskry-ocr", context->capturedBitmap, &ticket) !=
+                    NSKRY_IMAGE_PENDING) {
+                SetWindowTextW(statusLabel,
+                               L"Selected OCR plugin is missing, disabled, busy or incompatible. "
+                               L"Enable/update it, or uncheck the OCR option. No fallback was used.");
+                return;
+            }
+            try {
+                Start(true, [](Task &) { return std::wstring{}; }, false, ticket);
+            } catch (...) {
+                recognitionService.release(ticket);
+                throw;
+            }
+            return;
+        }
         BITMAP bitmap{};
         if (!GetObjectW(context->capturedBitmap, sizeof(bitmap), &bitmap) || bitmap.bmWidth < 1 ||
             bitmap.bmHeight < 1 || bitmap.bmWidth > 4096 || bitmap.bmHeight > 4096 ||
@@ -738,7 +814,7 @@ NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext *context) 
         if (rows != bitmap.bmHeight)
             winrt::throw_hresult(E_FAIL);
         Start(true, [pixels = std::move(pixels), w = bitmap.bmWidth, h = bitmap.bmHeight](Task &work) {
-            return Recognize(work, pixels, w, h);
+            return RecognizeImage(pixels, w, h, PluginDirectory(), work.cancel);
         });
     } catch (...) {
         if (statusLabel)
@@ -753,4 +829,5 @@ NSKRY_API void NSKRY_CALL nskry_plugin_shutdown() {
         DestroyWindow(window);
     }
     UnregisterClassW(L"NskryTranslateV1", module);
+    recognitionService = {};
 }

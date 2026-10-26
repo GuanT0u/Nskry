@@ -115,6 +115,9 @@ bool TestManifestDependencyContract() {
         "optional host-mediated text handoff metadata accepted");
     ok &= Expect(!load(R"(,"extensions":{"text_translation":2})"), "unknown text provider version rejected");
     ok &= Expect(!load(R"(,"extensions":{"text_translation_client":true})"), "invalid text client version rejected");
+    ok &= Expect(load(R"(,"extensions":{"image_recognition":1,"image_recognition_client":1})"), "optional image service accepted");
+    ok &= Expect(!load(R"(,"extensions":{"image_recognition":2})"), "unknown image service version rejected");
+    ok &= Expect(!load(R"(,"extensions":{"image_recognition_client":true})"), "invalid image client version rejected");
     ok &= Expect(load(R"(,"extensions":{"region_capture":2,"capture_actions":1,"settings_ui":1},"capture_actions":[{"id":"gif","label":"Record GIF"}])"),
                  "capture v2 and extra metadata actions accepted without loading DLL");
     ok &= Expect(!load(R"(,"extensions":{"region_capture":3})"), "unknown capture version rejected");

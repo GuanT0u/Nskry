@@ -31,6 +31,13 @@ if(BUILD_TESTING)
         target_compile_options(NskryOcrLayoutTests PRIVATE /utf-8)
     endif()
     add_test(NAME NskryOcrLayoutTests COMMAND NskryOcrLayoutTests)
+    add_executable(NskryOcrSpacingHypothesisTests "${CMAKE_SOURCE_DIR}/tests/ocr_spacing_hypothesis_tests.cpp" src/ocr_layout.cpp)
+    target_include_directories(NskryOcrSpacingHypothesisTests PRIVATE src)
+    target_link_libraries(NskryOcrSpacingHypothesisTests PRIVATE nskry_ocr_wire)
+    if(MSVC)
+        target_compile_options(NskryOcrSpacingHypothesisTests PRIVATE /utf-8)
+    endif()
+    add_test(NAME NskryOcrSpacingHypothesisTests COMMAND NskryOcrSpacingHypothesisTests)
 endif()
 
 set(NSKRY_OCR_PACKAGE_FILES manifest.json nskry-ocr.dll LICENSE COPYING PLUGIN_EXCEPTION)
@@ -44,6 +51,27 @@ if (NSKRY_OCR_MODEL_ENGINE)
         "${NSKRY_OCR_DEPS_DIR}/opencv-4.10.0/modules/imgproc/include"
         "${CMAKE_BINARY_DIR}")
     target_link_libraries(nskry_ocr_inference PUBLIC nskry_ocr_wire nskry_ort opencv_imgproc)
+    if(BUILD_TESTING)
+        # Explicit only: no extra tracing, tensor retention or model runs in
+        # shipped workers, ordinary CTest, or application startup.
+        add_executable(NskryOcrHypothesisProbe EXCLUDE_FROM_ALL
+            "${CMAKE_SOURCE_DIR}/tests/ocr_hypothesis_probe.cpp" src/model/ocr_inference.cpp
+            "${CMAKE_SOURCE_DIR}/src/core/json.cpp" "${NSKRY_CLIPPER_DIR}/src/clipper.cpp")
+        target_include_directories(NskryOcrHypothesisProbe PRIVATE src "${CMAKE_SOURCE_DIR}/src" "${NSKRY_CLIPPER_DIR}/src")
+        target_include_directories(NskryOcrHypothesisProbe SYSTEM PRIVATE
+            "${NSKRY_OCR_DEPS_DIR}/opencv-4.10.0/modules/core/include"
+            "${NSKRY_OCR_DEPS_DIR}/opencv-4.10.0/modules/imgproc/include" "${CMAKE_BINARY_DIR}")
+        target_compile_definitions(NskryOcrHypothesisProbe PRIVATE NSKRY_OCR_HYPOTHESIS_PROBE=1)
+        target_link_libraries(NskryOcrHypothesisProbe PRIVATE nskry_ocr_wire nskry_ort opencv_imgproc gdiplus gdi32)
+        set_target_properties(NskryOcrHypothesisProbe PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/diagnostics")
+        if(MSVC)
+            target_compile_options(NskryOcrHypothesisProbe PRIVATE /utf-8)
+        endif()
+        add_custom_command(TARGET NskryOcrHypothesisProbe POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NSKRY_ORT_DIR}/lib/onnxruntime.dll"
+                "${NSKRY_ORT_DIR}/lib/onnxruntime_providers_shared.dll" "$<TARGET_FILE_DIR:NskryOcrHypothesisProbe>"
+            VERBATIM)
+    endif()
     if (MSVC)
         target_compile_options(nskry_ocr_inference PRIVATE /utf-8)
         set_source_files_properties("${NSKRY_CLIPPER_DIR}/src/clipper.cpp" PROPERTIES COMPILE_OPTIONS /wd4828)

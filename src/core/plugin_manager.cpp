@@ -28,6 +28,7 @@ void PluginManager::Initialize(PluginRegistry &registry, const NskryHostContext 
 
 void PluginManager::Shutdown() {
     m_initialized = false; // No new text handoffs from closing clients.
+    ReleaseImageRecognition(m_imageTicket); // Join before any DLL is unloaded, regardless of map order.
     for (auto it = m_plugins.begin(); it != m_plugins.end();) {
         const std::wstring id = it->first;
         ++it;
@@ -87,6 +88,15 @@ bool PluginManager::LoadPlugin(const PluginRecord &record) {
         ::GetProcAddress(module, "nskry_plugin_translate_text_v1"));
     const auto connectTranslation = reinterpret_cast<NskryConnectTextTranslationV1>(
         ::GetProcAddress(module, "nskry_plugin_connect_text_translation_v1"));
+    const auto recognizeImage = reinterpret_cast<NskryRecognizeImageV1>(
+        ::GetProcAddress(module, "nskry_plugin_recognize_image_v1"));
+    const auto connectRecognition = reinterpret_cast<NskryConnectImageRecognitionV1>(
+        ::GetProcAddress(module, "nskry_plugin_connect_image_recognition_v1"));
+    if ((record.manifest.imageRecognitionApi && !recognizeImage) ||
+        (record.manifest.imageRecognitionClientApi && !connectRecognition)) {
+        ::FreeLibrary(module);
+        return false;
+    }
     if ((record.manifest.textTranslationApi && !translateText) ||
         (record.manifest.textTranslationClientApi && !connectTranslation)) {
         ::FreeLibrary(module);
@@ -128,6 +138,19 @@ bool PluginManager::LoadPlugin(const PluginRecord &record) {
             if (m_graphicsProvider)
                 m_graphicsProvider(m_hostContext);
             initAttempted = true;
+            if (record.manifest.imageRecognitionClientApi) {
+                const NskryImageRecognitionServiceV1 service{sizeof(service), 1,
+                    [](const wchar_t* id) -> int32_t { return PluginManager::Instance().HasImageRecognition(id); },
+                    [](const wchar_t* id, HBITMAP image, uint64_t* ticket) -> int32_t {
+                        return PluginManager::Instance().BeginImageRecognition(id, image, ticket);
+                    },
+                    [](uint64_t ticket, NskryImageTextV1* result) -> int32_t {
+                        return PluginManager::Instance().PollImageRecognition(ticket, result);
+                    },
+                    [](uint64_t ticket) { PluginManager::Instance().CancelImageRecognition(ticket); },
+                    [](uint64_t ticket) { PluginManager::Instance().ReleaseImageRecognition(ticket); }};
+                if (!connectRecognition(&service)) throw std::runtime_error("Image recognition extension rejected");
+            }
             if (record.manifest.textTranslationClientApi) {
                 const NskryTextTranslationServiceV1 service{sizeof(service), 1,
                     []() -> int32_t { return PluginManager::Instance().HasTextTranslation() ? 1 : 0; },
@@ -161,6 +184,7 @@ bool PluginManager::LoadPlugin(const PluginRecord &record) {
     entry.fnCaptureAction = captureAction;
     entry.fnShowSettings = showSettings;
     entry.fnTranslateText = translateText;
+    entry.fnRecognizeImage = record.manifest.imageRecognitionApi ? recognizeImage : nullptr;
     entry.hModule = module;
     entry.id = record.manifest.id;
     entry.fnExecute = fnExecute;
@@ -187,6 +211,7 @@ bool PluginManager::Unload(const std::wstring &pluginId) {
     const auto it = m_plugins.find(pluginId);
     if (it == m_plugins.end())
         return false;
+    if (m_imageProvider == pluginId) ReleaseImageRecognition(m_imageTicket);
     if (it->second.fnShutdown) {
         try {
             it->second.fnShutdown();

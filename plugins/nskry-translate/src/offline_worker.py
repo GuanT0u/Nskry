@@ -18,6 +18,57 @@ class TranslationError(ValueError):
         self.code = code
 
 
+def source_prefix(pack, direction):
+    # The pinned multilingual OPUS en->zh model card REQUIRES a target-language
+    # marker on the SOURCE. This is model tokenization, not text correction.
+    if direction != "en-zh":
+        return []
+    vocabulary = pack / "int8/shared_vocabulary.json"
+    try:
+        if vocabulary.stat().st_size > 8 * 1024 * 1024:
+            raise ValueError("vocabulary size")
+        tokens = json.loads(vocabulary.read_text(encoding="utf-8"))
+        if not isinstance(tokens, list) or ">>cmn_Hans<<" not in tokens:
+            raise ValueError("required model language marker missing")
+    except (OSError, ValueError):
+        raise TranslationError("pack_load") from None
+    return [">>cmn_Hans<<"]
+
+
+def sentence_slices(text):
+    """Lossless sentence units for the sentence-trained model, not soft OCR rows.
+
+    Do not forbid target n-gram repetitions: the SOURCE may repeat legitimately.
+    No dictionary, source-specific repair, or output de-duplication is involved.
+    Decimals, initials and dotted acronyms are not sentence boundaries. Quoted
+    endings and consecutive terminal punctuation stay attached to the sentence.
+    """
+    start = 0
+    index = 0
+    while index < len(text):
+        c = text[index]
+        if c not in ".!?。！？":
+            index += 1
+            continue
+        if c == ".":
+            prefix = text[start:index + 1]
+            if re.search(r"(?:^|\s)(?:[A-Za-z]\.)+$", prefix):
+                index += 1
+                continue
+        end = index + 1
+        while end < len(text) and text[end] in ".!?。！？\"'”’」』）)]}":
+            end += 1
+        if c in ".!?" and end < len(text) and not text[end].isspace():
+            index = end
+            continue
+        while end < len(text) and text[end].isspace():
+            end += 1
+        yield text[start:end]
+        start = index = end
+    if start < len(text):
+        yield text[start:]
+
+
 def split_text(text, tokenizer, budget=MAX_TOKENS - 1):
     """Lossless character slices; re-tokenize each slice, never truncate tokens.
 
@@ -101,6 +152,7 @@ def translate(root, direction, text, metrics=None):
     except ImportError:
         raise TranslationError("runtime_missing") from None
     try:
+        prefix = source_prefix(pack, direction)
         source = sentencepiece.SentencePieceProcessor(model_file=str(pack / "source.spm"))
         target = sentencepiece.SentencePieceProcessor(model_file=str(pack / "target.spm"))
         engine = ctranslate2.Translator(str(pack / "int8"), device="cpu", compute_type="int8",
@@ -113,7 +165,7 @@ def translate(root, direction, text, metrics=None):
         nonlocal calls
         if calls >= MAX_PARTS:
             raise TranslationError("work_limit")
-        tokens = source.encode(content, out_type=str) + ["</s>"]
+        tokens = prefix + source.encode(content, out_type=str) + ["</s>"]
         if len(tokens) > MAX_TOKENS:
             raise TranslationError("input_tokens")
         calls += 1
@@ -124,7 +176,7 @@ def translate(root, direction, text, metrics=None):
             # slices rather than publish a silently truncated first translation.
             if len(content) < 2:
                 raise TranslationError("output_limit")
-            smaller = split_text(content, source, max(1, (len(tokens) - 1) // 2))
+            smaller = split_text(content, source, max(1, (len(tokens) - len(prefix) - 1) // 2))
             if len(smaller) < 2:
                 raise TranslationError("output_limit")
             return join_parts(smaller)
@@ -155,7 +207,9 @@ def translate(root, direction, text, metrics=None):
         if not content.strip():
             output.append(line)
             continue
-        output.append(join_parts(split_text(content, source)) + ending)
+        parts = (part for sentence in sentence_slices(content)
+                 for part in split_text(sentence, source, MAX_TOKENS - len(prefix) - 1))
+        output.append(join_parts(parts) + ending)
     if metrics is not None:
         metrics["parts"] = calls
     return "".join(output)

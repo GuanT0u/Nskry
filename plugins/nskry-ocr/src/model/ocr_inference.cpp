@@ -2,6 +2,7 @@
 // PaddleOCR/RapidOCR pipeline (Apache-2.0); see THIRD_PARTY_NOTICES.md.
 #include "ocr_inference.h"
 #include "ctc_decode.h"
+#include "crop_spacing.h"
 #include <windows.h>
 #include <onnxruntime_cxx_api.h>
 #include <opencv2/core.hpp>
@@ -16,6 +17,12 @@
 #include <stdexcept>
 
 namespace nskry::ocr {
+#ifdef NSKRY_OCR_HYPOTHESIS_PROBE
+// Defined only by the opt-in diagnostic executable. Production workers do not
+// compile this observer or retain crops/tensors/logs.
+void ObserveHypothesisCrop(const cv::Mat& crop, int tensorWidth, std::span<const float> probabilities,
+    size_t steps, size_t classes, const std::vector<std::wstring>& vocabulary);
+#endif
 namespace {
 using Clock = std::chrono::steady_clock;
 using Quad = std::array<cv::Point2f, 4>;
@@ -246,8 +253,13 @@ wire::Reply RecognizeModel(std::span<const uint8_t> bgra, int width, int height,
         const size_t steps = static_cast<size_t>(shape[1]), classes = static_cast<size_t>(shape[2]);
         const auto* data = predictions.GetTensorData<float>();
         for (size_t i = 0; i < count; ++i) {
+#ifdef NSKRY_OCR_HYPOTHESIS_PROBE
+            ObserveHypothesisCrop(crops[order[first + i]].pixels, tensorWidth,
+                {data + i * steps * classes, steps * classes}, steps, classes, vocabulary);
+#endif
             auto text = DecodeCtc({data + i * steps * classes, steps * classes}, steps, classes, vocabulary,
                                   static_cast<float>(tensorWidth) / contentWidths[i]);
+            RecoverCropSpacing(text, crops[order[first + i]].pixels);
             if (text.text.empty() || text.confidence < .5f) continue;
             const size_t index = order[first + i]; const auto& quad = boxes[index];
             auto& line = recognized[index];

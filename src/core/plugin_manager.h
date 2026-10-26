@@ -6,6 +6,8 @@
 #include "sdk/nskry_commands.h"
 #include "sdk/nskry_actions.h"
 #include "sdk/nskry_text_translation.h"
+#include "sdk/nskry_image_recognition.h"
+#include <memory>
 #include <functional>
 #include <atomic>
 #include <string>
@@ -24,6 +26,7 @@ struct PluginEntry {
     NskryExecuteCaptureActionV1 fnCaptureAction = nullptr;
     NskryShowSettingsV1 fnShowSettings = nullptr;
     NskryTranslateTextV1 fnTranslateText = nullptr;
+    NskryRecognizeImageV1 fnRecognizeImage = nullptr;
     struct InputReport {
         enum class Status {
             NotLoaded,
@@ -70,6 +73,11 @@ class PluginManager {
     bool ShowPluginSettings(const std::wstring &pluginId, HWND owner);
     bool HasTextTranslation() const; // Metadata discovery only, UI thread.
     int32_t TranslateText(const NskryTextTranslationV1 *, NskryTranslationResultV1 *);
+    bool HasImageRecognition(const wchar_t* providerId) const;
+    int32_t BeginImageRecognition(const wchar_t*, HBITMAP, uint64_t*);
+    int32_t PollImageRecognition(uint64_t, NskryImageTextV1*);
+    void CancelImageRecognition(uint64_t);
+    void ReleaseImageRecognition(uint64_t);
     void SetCaptureService(const NskryCaptureServiceV1& service) { m_captureService = service; }
     void SetCaptureServiceV2(const NskryCaptureServiceV2& service) { m_captureServiceV2 = service; }
     bool IsLoaded(const std::wstring &pluginId) const;
@@ -100,6 +108,10 @@ class PluginManager {
     bool m_initialized = false;
     std::atomic<DWORD> m_uiThread{0};
     bool m_textDispatching = false;
+    struct ImageJob;
+    std::shared_ptr<ImageJob> m_imageJob;
+    uint64_t m_imageTicket = 0;
+    std::wstring m_imageProvider;
     std::function<std::wstring(const ShortcutDefinition &)> m_shortcutProvider;
     std::function<void(NskryHostContext &)> m_graphicsProvider;
 };

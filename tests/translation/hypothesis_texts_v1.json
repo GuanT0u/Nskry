@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "created_on": "2026-10-26",
+  "purpose": "Human-authored public synthetic text controls, fixed before this experiment. No OCR or image edits; no output repair.",
+  "cases": [
+    {"id":"en_font_original","direction":"en-zh","text":"This is a lot of 12 point text to test the ocr code and see if it works on all types of file format.","meaning":"12 point is font size; text tests OCR and file-format support."},
+    {"id":"en_font_explicit","direction":"en-zh","text":"Text is set in a 12-point font.","meaning":"12-point type size, not twelve paragraphs or words."},
+    {"id":"en_roles","direction":"en-zh","text":"The quick brown dog jumped over the lazy fox.","meaning":"Brown DOG jumps over lazy FOX; preserve roles."},
+    {"id":"en_repeated","direction":"en-zh","text":"The quick brown dog jumped over the lazy fox. The quick brown dog jumped over the lazy fox. The quick brown dog jumped over the lazy fox. The quick brown dog jumped over the lazy fox.","meaning":"Exactly four events, not deduplicated or expanded."},
+    {"id":"en_addresses","direction":"en-zh","text":"The addresses are 25, 29 and 35 Dapu Road.","meaning":"All three separate address numbers and the road identity remain."},
+    {"id":"en_general","direction":"en-zh","text":"Save the screenshot to the clipboard.","meaning":"Screenshot, not audio recording; save/copy to clipboard."},
+    {"id":"zh_road","direction":"zh-en","text":"打浦路15号","meaning":"Number 15 Dapu Road; reasonable road-name transliteration, no invented road."},
+    {"id":"zh_addresses_spaces","direction":"zh-en","text":"打浦路25 29 35号","meaning":"Separate 25, 29, 35 Dapu Road."},
+    {"id":"zh_addresses_punctuation","direction":"zh-en","text":"地址：打浦路25、29、35号。","meaning":"Same three address numbers with explicit separators and context."},
+    {"id":"zh_font","direction":"zh-en","text":"这段文字使用12磅字号。","meaning":"12-point font size."},
+    {"id":"zh_hotel","direction":"zh-en","text":"上海斯格威铂尔曼大酒店","meaning":"Shanghai hotel; proper-name transliteration or preserving the name is acceptable, no invented identity."},
+    {"id":"zh_general","direction":"zh-en","text":"请将截图保存到剪贴板。","meaning":"Save/copy screenshot to clipboard."}
+  ]
+}

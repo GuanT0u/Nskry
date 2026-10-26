@@ -1,6 +1,8 @@
 #include "nskry_plugin.h"
 #include "nskry_input.h"
 #include "nskry_text_translation.h"
+#include "nskry_image_recognition.h"
+#include <functional>
 
 extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_configure_input_v1(const NskryInputConfigV1* config) {
     nskry::input::Configure(config);
@@ -358,7 +360,7 @@ struct OcrRequest {
 };
 
 NskryPluginInfo kInfo{ sizeof(NskryPluginInfo), NSKRY_PLUGIN_API_VERSION,
-    L"Text recognition", L"nskry-ocr", L"0.6.4", L"Nskry Team",
+    L"Text recognition", L"nskry-ocr", L"0.6.5", L"Nskry Team",
     L"On-demand offline text recognition", nullptr,
     NSKRY_CAP_TOOLBAR_ACTION | NSKRY_CAP_POST_CAPTURE, {} };
 
@@ -577,7 +579,8 @@ winrt::Windows::Graphics::Imaging::SoftwareBitmap ToSoftwareBitmap(HBITMAP bitma
 std::unique_ptr<OcrJobResult> RunWindowsOcr(HBITMAP displayBitmap, int displayWidth, int displayHeight, RECT anchor,
                                      uint64_t generation,
                                      int32_t (*copyBitmap)(HBITMAP) = nullptr,
-                                     void (*openEditor)(HBITMAP, int, int) = nullptr) {
+                                     void (*openEditor)(HBITMAP, int, int) = nullptr,
+                                     const std::function<bool()>& externalCancel = {}) {
     struct OcrBitmapGuard { HBITMAP value{}; ~OcrBitmapGuard() { if (value) ::DeleteObject(value); } } guard;
     OcrBitmapGuard original{displayBitmap};
     auto result = std::make_unique<OcrJobResult>();
@@ -591,14 +594,35 @@ std::unique_ptr<OcrJobResult> RunWindowsOcr(HBITMAP displayBitmap, int displayWi
     result->openBitmapEditor = openEditor;
     const auto requestStart = std::chrono::steady_clock::now();
     std::vector<OcrPassResult> passes;
+    const auto canceled = [&] { return externalCancel ? externalCancel() : generation != s_generation.load(); };
+    const auto recognize = [&](const auto& engine, HBITMAP input) {
+        // Keep the WinRT bitmap alive across status polling, just as the old
+        // synchronous full expression retained it until .get() completed.
+        const auto softwareBitmap = ToSoftwareBitmap(input);
+        auto operation = engine.RecognizeAsync(softwareBitmap);
+        // Status polling lives only during this request and registers no DLL
+        // callbacks that could outlive cancellation/unload.
+        while (operation.Status() == winrt::Windows::Foundation::AsyncStatus::Started) {
+            if (canceled() || ElapsedMs(requestStart) > 28000) {
+                operation.Cancel();
+                winrt::throw_hresult(HRESULT_FROM_WIN32(canceled() ? ERROR_CANCELLED : ERROR_TIMEOUT));
+            }
+            ::Sleep(15);
+        }
+        return operation.GetResults();
+    };
     try {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        // The final MTA may end between superseded requests. Release WinRT's
+        // DLL-local cached factories before tearing it down, not after it has
+        // invalidated apartment-bound factory state used by the next request.
+        struct Apartment { ~Apartment() { winrt::clear_factory_cache(); winrt::uninit_apartment(); } } apartment;
         const auto engine = CreatePreferredOcrEngine();
         if (!engine) {
             result->error = L"Windows OCR has no language pack for your profile. Install an OCR language in Windows Settings, then try again.";
             return result;
         }
-        if (generation != s_generation.load()) return nullptr;
+        if (canceled()) return nullptr;
         int ocrWidth{}, ocrHeight{};
         const auto fastStart = std::chrono::steady_clock::now();
         // Benchmark override only. Production keeps the existing auto-scale
@@ -614,7 +638,7 @@ std::unique_ptr<OcrJobResult> RunWindowsOcr(HBITMAP displayBitmap, int displayWi
         const double fastPreprocessMs = ElapsedMs(fastStart);
         const auto fastEngineStart = std::chrono::steady_clock::now();
         {
-            const auto recognized = engine.RecognizeAsync(ToSoftwareBitmap(guard.value)).get();
+            const auto recognized = recognize(engine, guard.value);
             lines = ReadLines(recognized, ocrWidth, ocrHeight, displayWidth, displayHeight);
         }
         passes.push_back({ OcrPassKind::Fast, static_cast<double>(ocrWidth) / displayWidth,
@@ -623,7 +647,7 @@ std::unique_ptr<OcrJobResult> RunWindowsOcr(HBITMAP displayBitmap, int displayWi
         // particular, do not keep the large scaled bitmap during later passes.
         ::DeleteObject(guard.value);
         guard.value = nullptr;
-        if (generation != s_generation.load()) return nullptr;
+        if (canceled()) return nullptr;
 
         if (NeedsEnhancedPass(lines)) {
             const int textHeight = MedianLineHeight(lines);
@@ -631,7 +655,7 @@ std::unique_ptr<OcrJobResult> RunWindowsOcr(HBITMAP displayBitmap, int displayWi
                 textHeight < 18 ? 3.0 : textHeight < 28 ? 2.0 : 1.0;
             bool darkBackground = false;
             auto runTreatment = [&](OcrTreatment treatment) {
-                if (generation != s_generation.load()) return;
+                if (canceled()) return;
                 struct BitmapGuard { HBITMAP value{}; ~BitmapGuard() { if (value) ::DeleteObject(value); } } scaled, prepared;
                 const auto preprocessStart = std::chrono::steady_clock::now();
                 int width{}, height{};
@@ -644,8 +668,8 @@ std::unique_ptr<OcrJobResult> RunWindowsOcr(HBITMAP displayBitmap, int displayWi
                 if (!prepared.value) return;
                 const double preprocessMs = ElapsedMs(preprocessStart);
                 const auto engineStart = std::chrono::steady_clock::now();
-                const auto recognized = engine.RecognizeAsync(ToSoftwareBitmap(prepared.value)).get();
-                if (generation != s_generation.load()) return;
+                const auto recognized = recognize(engine, prepared.value);
+                if (canceled()) return;
                 auto candidate = ReadLines(recognized, width, height, displayWidth, displayHeight);
                 const OcrPassKind kind = treatment == OcrTreatment::Enhanced ? OcrPassKind::Enhanced :
                     treatment == OcrTreatment::Binary ? OcrPassKind::Binary : OcrPassKind::InvertEnhanced;
@@ -655,7 +679,7 @@ std::unique_ptr<OcrJobResult> RunWindowsOcr(HBITMAP displayBitmap, int displayWi
             };
             try { runTreatment(OcrTreatment::Enhanced); }
             catch (...) { /* Preserve the successful fast pass. */ }
-            if (generation != s_generation.load()) return nullptr;
+            if (canceled()) return nullptr;
             std::vector<std::vector<RecognizedLine>> comparison;
             for (const auto& pass : passes) comparison.push_back(pass.lines);
             const auto localGroups = nskry::ocr::AlignLines(comparison);
@@ -671,7 +695,7 @@ std::unique_ptr<OcrJobResult> RunWindowsOcr(HBITMAP displayBitmap, int displayWi
                 catch (...) { /* Preserve prior passes. */ }
             }
         }
-        if (generation != s_generation.load()) return nullptr;
+        if (canceled()) return nullptr;
         std::vector<std::vector<RecognizedLine>> rawLines;
         std::vector<nskry::ocr::AlignedLineGroup> groups;
         std::vector<nskry::ocr::ArbitrationDecision> decisions;
@@ -695,7 +719,7 @@ std::unique_ptr<OcrJobResult> RunWindowsOcr(HBITMAP displayBitmap, int displayWi
         try { DumpOcrTrace(generation, passes, lines, ElapsedMs(requestStart), groups, decisions); }
         catch (...) { /* Optional diagnostics must not turn successful OCR into an error. */ }
         ApplyTextLayout(*result, lines);
-        if (result->text.empty()) result->text = L"No text was found in this image.";
+        if (result->text.empty() && !externalCancel) result->text = L"No text was found in this image.";
     } catch (const winrt::hresult_error& error) {
         result->error = L"Windows OCR could not recognize this image: " + std::wstring(error.message().c_str());
     } catch (const std::exception& error) {
@@ -746,8 +770,10 @@ void DumpModelTrace(uint64_t generation, const nskry::ocr::ModelResult& model) {
 }
 
 std::unique_ptr<OcrJobResult> RunOcr(HBITMAP bitmap, int width, int height, RECT anchor, uint64_t generation,
-    OcrEngineKind engine, int32_t (*copyBitmap)(HBITMAP), void (*openEditor)(HBITMAP, int, int)) {
-    if (engine == OcrEngineKind::Fast) return RunWindowsOcr(bitmap, width, height, anchor, generation, copyBitmap, openEditor);
+    OcrEngineKind engine, int32_t (*copyBitmap)(HBITMAP), void (*openEditor)(HBITMAP, int, int),
+    const std::function<bool()>& externalCancel = {}) {
+    if (engine == OcrEngineKind::Fast) return RunWindowsOcr(bitmap, width, height, anchor, generation, copyBitmap, openEditor, externalCancel);
+    const auto canceled = [&] { return externalCancel ? externalCancel() : generation != s_generation.load(); };
     struct BitmapGuard { HBITMAP value; ~BitmapGuard() { if (value) ::DeleteObject(value); } } original{bitmap};
     auto result = std::make_unique<OcrJobResult>();
     result->bitmap = bitmap; result->width = width; result->height = height; result->anchor = anchor;
@@ -764,14 +790,15 @@ std::unique_ptr<OcrJobResult> RunOcr(HBITMAP bitmap, int width, int height, RECT
                 directory / L"models/ch_PP-OCRv4_det_infer.onnx", directory / L"models/ch_PP-OCRv4_rec_infer.onnx"})
             complete = std::filesystem::is_regular_file(file, error) && complete;
         if (complete) model = nskry::ocr::RunModelProcess(bitmap, width, height, executable,
-            [generation] { return generation != s_generation.load(); });
+            canceled);
         else {
             model.status = nskry::ocr::ModelStatus::Unavailable;
             model.reply.error = L"The offline OCR engine or its models are missing. Reinstall the complete OCR plugin package, or select Fast OCR.";
         }
-        if (model.status == nskry::ocr::ModelStatus::Canceled || generation != s_generation.load()) return nullptr;
+        if (model.status == nskry::ocr::ModelStatus::Canceled || canceled()) return nullptr;
         try { DumpModelTrace(generation, model); } catch (...) {}
         if (model.status != nskry::ocr::ModelStatus::Success) { result->error = model.reply.error; return result; }
+        if (!model.workerExited) { result->error = L"The OCR worker did not finish cleanly. No partial result was used."; return result; }
         std::vector<RecognizedLine> displayLines;
         for (size_t index = 0; index < model.reply.lines.size(); ++index) {
             const auto& line = model.reply.lines[index];
@@ -786,7 +813,7 @@ std::unique_ptr<OcrJobResult> RunOcr(HBITMAP bitmap, int width, int height, RECT
             displayLines.push_back(std::move(display));
         }
         ApplyTextLayout(*result, displayLines);
-        if (result->text.empty()) result->text = L"No text was found in this image.";
+        if (result->text.empty() && !externalCancel) result->text = L"No text was found in this image.";
     } catch (...) { result->error = L"Could not complete offline OCR. Try a smaller area or select Fast OCR."; }
     return result;
 }
@@ -963,19 +990,16 @@ public:
 
 private:
     static constexpr wchar_t kClassName[] = L"NskryOcrResult";
-    static inline std::once_flag s_classOnce;
-
     static void RegisterClass() {
-        std::call_once(s_classOnce, [] {
-            WNDCLASSEXW wc{};
-            wc.cbSize = sizeof(wc);
-            wc.lpfnWndProc = WndProc;
-            wc.hInstance = ::GetModuleHandleW(nullptr);
-            wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-            wc.hbrBackground = nullptr;
-            wc.lpszClassName = kClassName;
-            ::RegisterClassExW(&wc);
-        });
+        // Registration must work again after shutdown/re-init, not just once
+        // per DLL lifetime. Existing registration is harmlessly reused.
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = WndProc;
+        wc.hInstance = ::GetModuleHandleW(nullptr);
+        wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+        wc.lpszClassName = kClassName;
+        ::RegisterClassExW(&wc);
     }
 
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
@@ -1445,6 +1469,42 @@ bool CreateDispatchWindow() {
 
 extern "C" NSKRY_API const NskryPluginInfo* NSKRY_CALL nskry_plugin_info() { return &kInfo; }
 
+extern "C" NSKRY_API int32_t NSKRY_CALL nskry_plugin_recognize_image_v1(
+    const NskryImageInputV1* input, NskryImageTextV1* output) {
+    if (!NskryValidImageText(output)) return NSKRY_IMAGE_INVALID;
+    output->text[0] = output->error[0] = 0; output->textLength = 0;
+    if (!input || input->structSize < sizeof(*input) || input->version != 1 || !input->cancel ||
+        input->width < 1 || input->height < 1 || input->width > 4096 || input->height > 4096 ||
+        uint64_t(input->width) * input->height > 4194304) return NSKRY_IMAGE_INVALID;
+    const auto canceled = [&] { return WaitForSingleObject(input->cancel, 0) == WAIT_OBJECT_0; };
+    try {
+        if (canceled()) return NSKRY_IMAGE_CANCELED;
+        int width{}, height{};
+        if (!GetBitmapSize(input->bitmap, width, height) || width != input->width || height != input->height)
+            return NSKRY_IMAGE_INVALID;
+        auto copy = CopyBitmap(input->bitmap);
+        if (!copy) return NSKRY_IMAGE_FAILED;
+        // Same selected pipeline as OCR UI, but independent cancellation and
+        // no result/progress HWND, callbacks, global request queue or generation.
+        auto result = RunOcr(copy, width, height, {}, 0, PreferredEngine(), nullptr, nullptr, canceled);
+        if (canceled() || !result) return NSKRY_IMAGE_CANCELED;
+        if (!result->error.empty()) {
+            NskryImageMessage(output, result->error.c_str());
+            return NSKRY_IMAGE_FAILED;
+        }
+        if (result->text.empty() || result->text.size() > NSKRY_IMAGE_MAX_TEXT) {
+            NskryImageMessage(output, L"No usable text, or the result exceeds 16000 UTF-16 units. Select a smaller area.");
+            return NSKRY_IMAGE_FAILED;
+        }
+        output->textLength = uint32_t(result->text.size());
+        lstrcpynW(output->text, result->text.c_str(), output->capacity);
+        return NSKRY_IMAGE_SUCCESS;
+    } catch (...) {
+        NskryImageMessage(output, L"OCR provider failed. Select a smaller image or change the OCR engine.");
+        return NSKRY_IMAGE_FAILED;
+    }
+}
+
 extern "C" NSKRY_API int32_t NSKRY_CALL nskry_plugin_connect_text_translation_v1(
     const NskryTextTranslationServiceV1 *service) {
     if (!service || service->structSize < sizeof(*service) || service->version != 1 ||
@@ -1512,4 +1572,8 @@ extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_shutdown() {
         ::DestroyWindow(s_dispatchWindow);
         s_dispatchWindow = nullptr;
     }
+    // Registered classes also retain DLL procedure pointers. Remove them only
+    // after their windows/worker have gone, before the host can FreeLibrary.
+    for (const auto* name : {L"NskryOcrResult", L"NskryOcrProgress", L"NskryOcrDispatch"})
+        ::UnregisterClassW(name, ::GetModuleHandleW(nullptr));
 }
