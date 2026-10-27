@@ -39,6 +39,14 @@ HRESULT __cdecl Read(void *, uint8_t *pixels, uint32_t capacity) {
         }
     return S_OK;
 }
+HRESULT __cdecl OpenV2(const NskryCaptureRequestV2* request, void** value, NskryCaptureDescriptionV1* desc,
+                      wchar_t* error, uint32_t capacity) {
+    return Open(request->physicalRegion,request->fps,value,desc,error,capacity);
+}
+HRESULT __cdecl Bounds(void*,RECT* region) {
+    *region={0,0,LONG(width),LONG(height)};
+    return S_OK;
+}
 void __cdecl Close(void *value) {
     delete static_cast<int *>(value);
     --captures;
@@ -297,15 +305,18 @@ int wmain(int argc, wchar_t **argv) {
         winrt::uninit_apartment();
         return result;
     }
-    if (argc != 7) {
-        std::cerr << "Usage: benchmark output-directory width height active-seconds hardware|software cycles\n";
+    if (argc != 7 && argc != 8 && argc != 9) {
+        std::cerr << "Usage: benchmark output-directory width height active-seconds hardware|software cycles [30|60 [--settle]]\n";
         return 2;
     }
     const int w = Number(argv[2], 160, 1920), h = Number(argv[3], 90, 1920), seconds = Number(argv[4], 1, 1800),
               cycles = Number(argv[6], 1, 20);
     const bool hardware = !wcscmp(argv[5], L"hardware");
+    const int fps = argc >= 8 ? Number(argv[7], 30, 60) : 20;
+    const bool settle = argc == 9 && !wcscmp(argv[8], L"--settle");
     if (w < 0 || h < 0 || seconds < 0 || cycles < 0 || w % 2 || h % 2 || int64_t(w) * h > 1920 * 1080 ||
-        (!hardware && wcscmp(argv[5], L"software")))
+        (!hardware && wcscmp(argv[5], L"software")) ||
+        (argc>=8 && fps!=30 && fps!=60) || (argc==9 && !settle))
         return 2;
     width = w;
     height = h;
@@ -346,7 +357,10 @@ int wmain(int argc, wchar_t **argv) {
         for (int i = 0; i < cycles; ++i) {
             sample(i, "idle", {});
             const auto path = root / (L"cycle-" + std::to_wstring(i) + L".mp4");
-            RecordSession session(capture, {0, 0, w, h}, path.wstring(), hardware);
+            SessionOptions options;
+            options.fps = fps;
+            options.capture={sizeof(NskryCaptureServiceV2),2,OpenV2,Read,Bounds,Close};
+            RecordSession session(capture, {0, 0, w, h}, path.wstring(), hardware, options);
             session.Start();
             if (!Pump([&] { return session.Status().state == State::Recording || Finished(session); }) ||
                 Finished(session)) {
@@ -402,7 +416,16 @@ int wmain(int argc, wchar_t **argv) {
             sample(i, "quiet", s);
             completed.emplace_back(path, s.duration, s.frames);
         }
-        // Decoder caches must not contaminate the next recording cycle baseline.
+        // Measure recording teardown before introducing this diagnostic's
+        // decoder caches/threads into the process.
+        if (settle && !result) {
+            const auto stopped=GetTickCount64();
+            Pump([&] { return GetTickCount64()-stopped>=5000; },6000);
+            sample(cycles,"settle_5s",{});
+            Pump([&] { return GetTickCount64()-stopped>=30000; },26000);
+            sample(cycles,"settle_30s",{});
+        }
+        // Decoder caches must not contaminate the recording baselines above.
         for (const auto &[path, duration, frames] : completed)
             if (std::abs(Verify(path, frames) - duration) > 100000)
                 result = 1;

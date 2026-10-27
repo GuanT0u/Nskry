@@ -69,8 +69,8 @@ if (NSKRY_OCR_MODEL_ENGINE)
         # Explicit only: no extra tracing, tensor retention or model runs in
         # shipped workers, ordinary CTest, or application startup.
         add_executable(NskryOcrHypothesisProbe EXCLUDE_FROM_ALL
-            "${CMAKE_SOURCE_DIR}/tests/ocr_hypothesis_probe.cpp" src/model/ocr_inference.cpp
-            "${CMAKE_SOURCE_DIR}/src/core/json.cpp" "${NSKRY_CLIPPER_DIR}/src/clipper.cpp")
+            "${CMAKE_SOURCE_DIR}/tests/ocr_hypothesis_probe.cpp" src/model/ocr_inference.cpp "${NSKRY_CLIPPER_DIR}/src/clipper.cpp")
+        target_link_libraries(NskryOcrHypothesisProbe PRIVATE nskry_json)
         target_include_directories(NskryOcrHypothesisProbe PRIVATE src "${CMAKE_SOURCE_DIR}/src" "${NSKRY_CLIPPER_DIR}/src")
         target_include_directories(NskryOcrHypothesisProbe SYSTEM PRIVATE
             "${NSKRY_OCR_DEPS_DIR}/opencv-4.10.0/modules/core/include"
@@ -115,22 +115,16 @@ if (NSKRY_OCR_MODEL_ENGINE)
         "${NSKRY_OCR_DEPS_DIR}/opencv-4.10.0/LICENSE" "${NSKRY_OCR_DEPS_DIR}/opencv-4.10.0/3rdparty/zlib/LICENSE"
         "${NSKRY_OCR_DEPS_DIR}/opencv-4.10.0/modules/core/src/softfloat.cpp" "${NSKRY_CLIPPER_DIR}/src/clipper.hpp" "${NSKRY_CLIPPER_DIR}/LICENSE")
     set(NSKRY_OCR_ASSET_STAMP "${CMAKE_CURRENT_BINARY_DIR}/engine-assets.ready")
-    add_custom_command(OUTPUT "${NSKRY_OCR_ASSET_STAMP}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${NSKRY_OCR_STAGE}/engine/models" "${NSKRY_OCR_STAGE}/engine/licenses"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NSKRY_ORT_DIR}/lib/onnxruntime.dll" "${NSKRY_ORT_DIR}/lib/onnxruntime_providers_shared.dll" "${NSKRY_OCR_STAGE}/engine"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NSKRY_OCR_MODELS_DIR}/ch_PP-OCRv4_det_infer.onnx" "${NSKRY_OCR_MODELS_DIR}/ch_PP-OCRv4_rec_infer.onnx" "${NSKRY_OCR_STAGE}/engine/models"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.md" "${NSKRY_OCR_STAGE}/engine/THIRD_PARTY_NOTICES.md"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NSKRY_ORT_DIR}/LICENSE" "${NSKRY_OCR_STAGE}/engine/licenses/onnxruntime-LICENSE.txt"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NSKRY_ORT_DIR}/ThirdPartyNotices.txt" "${NSKRY_OCR_STAGE}/engine/licenses/onnxruntime-ThirdPartyNotices.txt"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NSKRY_OCR_DEPS_DIR}/opencv-4.10.0/LICENSE" "${NSKRY_OCR_STAGE}/engine/licenses/OpenCV-LICENSE.txt"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NSKRY_OCR_DEPS_DIR}/opencv-4.10.0/3rdparty/zlib/LICENSE" "${NSKRY_OCR_STAGE}/engine/licenses/zlib-LICENSE.txt"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NSKRY_OCR_DEPS_DIR}/opencv-4.10.0/modules/core/src/softfloat.cpp" "${NSKRY_OCR_STAGE}/engine/licenses/OpenCV-SoftFloat-source.txt"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NSKRY_CLIPPER_DIR}/src/clipper.hpp" "${NSKRY_OCR_STAGE}/engine/licenses/clipper.hpp"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NSKRY_CLIPPER_DIR}/LICENSE" "${NSKRY_OCR_STAGE}/engine/licenses/pyclipper-LICENSE.txt"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NSKRY_OCR_DEPS_DIR}/Boost-LICENSE.txt" "${NSKRY_OCR_DEPS_DIR}/RapidOCR-LICENSE.txt" "${NSKRY_OCR_STAGE}/engine/licenses"
-        COMMAND ${CMAKE_COMMAND} -E touch "${NSKRY_OCR_ASSET_STAMP}"
-        DEPENDS ${engine_assets} VERBATIM)
-    add_custom_target(nskry_ocr_assets DEPENDS "${NSKRY_OCR_ASSET_STAMP}")
+    # Ordered alongside engine_assets. Model hash checks above remain mandatory.
+    set(engine_paths onnxruntime.dll onnxruntime_providers_shared.dll
+        models/ch_PP-OCRv4_det_infer.onnx models/ch_PP-OCRv4_rec_infer.onnx
+        THIRD_PARTY_NOTICES.md licenses/onnxruntime-LICENSE.txt licenses/onnxruntime-ThirdPartyNotices.txt
+        licenses/Boost-LICENSE.txt licenses/RapidOCR-LICENSE.txt licenses/OpenCV-LICENSE.txt
+        licenses/zlib-LICENSE.txt licenses/OpenCV-SoftFloat-source.txt licenses/clipper.hpp licenses/pyclipper-LICENSE.txt)
+    set_target_properties(nskry_ocr_inference PROPERTIES
+        NSKRY_RUNTIME_SOURCES "${engine_assets}" NSKRY_RUNTIME_PATHS "${engine_paths}")
+    include("${CMAKE_SOURCE_DIR}/cmake/ocr_runtime_assets.cmake")
+    nskry_stage_ocr_runtime(nskry_ocr_assets "${NSKRY_OCR_STAGE}/engine" "${NSKRY_OCR_ASSET_STAMP}")
     add_dependencies(nskry_ocr nskry_ocr_worker nskry_ocr_assets)
     list(APPEND NSKRY_OCR_PACKAGE_FILES engine)
     list(APPEND NSKRY_OCR_PACKAGE_DEPS nskry_ocr_worker "$<TARGET_FILE:nskry_ocr_worker>" "${NSKRY_OCR_ASSET_STAMP}")

@@ -45,9 +45,18 @@ int Benchmark() {
             convert(input.data(), output.data(), width, height);
         return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     };
-    const auto oldMs = measure(Reference, reference), newMs = measure(BgraToNv12, actual);
-    std::cout << "1080p conversion only, iterations=" << iterations << " scalar_reference_ms=" << oldMs
-              << " optimized_ms=" << newMs << " byte_equal=" << (reference == actual) << '\n';
+    std::cout << "1080p conversion only, iterations=" << iterations << " avx2=" << HasAvx2PixelConversion() << '\n';
+    for (int round=0; round<5; ++round) {
+        double oldMs{}, newMs{};
+        if (round % 2) {
+            newMs=measure(BgraToNv12, actual); oldMs=measure(BgraToNv12Sse2, reference);
+        } else {
+            oldMs=measure(BgraToNv12Sse2, reference); newMs=measure(BgraToNv12, actual);
+        }
+        std::cout << "round=" << round << " sse2_ms=" << oldMs << " selected_ms=" << newMs
+                  << " byte_equal=" << (reference == actual) << '\n';
+        if (reference != actual) return 8;
+    }
     return reference == actual ? 0 : 8;
 }
 } // namespace
@@ -159,5 +168,16 @@ int main(int argc, char **argv) {
             if (output[i] != 0xAB)
                 return 7;
     }
-    std::cout << "Private wire bounds, handle parsing and NV12 conversion equivalence passed.\n";
+    for (unsigned offset : {1u, 3u, 7u, 15u}) {
+        constexpr unsigned width=24, height=14, count=width*height;
+        std::vector<uint8_t> bgra(count*4+offset), output(count*3/2+offset+16,0xAB), reference(count*3/2);
+        for (auto& v : bgra) v=uint8_t(rng());
+        BgraToNv12(bgra.data()+offset, output.data()+offset, width, height);
+        Reference(bgra.data()+offset, reference.data(), width, height);
+        if (!std::equal(reference.begin(),reference.end(),output.begin()+offset)) return 12;
+        for (unsigned i=0; i<offset; ++i) if(output[i]!=0xAB) return 13;
+        for (size_t i=offset+reference.size(); i<output.size(); ++i) if(output[i]!=0xAB) return 14;
+    }
+    std::cout << "Private wire bounds, unaligned buffers and exact NV12 conversion passed, avx2="
+              << HasAvx2PixelConversion() << '\n';
 }

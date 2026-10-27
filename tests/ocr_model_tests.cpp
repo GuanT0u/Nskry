@@ -102,6 +102,14 @@ int wmain(int argc, wchar_t** argv) {
         if (image.GetLastStatus() != Gdiplus::Ok || image.GetHBITMAP(Gdiplus::Color(0, 0, 0), &bitmap) != Gdiplus::Ok)
             throw std::runtime_error("Missing image fixture");
         struct Guard { HBITMAP value; ~Guard() { DeleteObject(value); } } guard{bitmap};
+        const auto pixelWidth = image.GetWidth(), pixelHeight = image.GetHeight();
+        std::vector<uint8_t> rawPixels(uint64_t(pixelWidth)*pixelHeight*4);
+        BITMAPINFO rawInfo{};
+        rawInfo.bmiHeader={sizeof(BITMAPINFOHEADER),LONG(pixelWidth),-LONG(pixelHeight),1,32,BI_RGB};
+        HDC rawDc=GetDC(nullptr);
+        const auto rows=rawDc ? GetDIBits(rawDc,bitmap,0,pixelHeight,rawPixels.data(),&rawInfo,DIB_RGB_COLORS) : 0;
+        if(rawDc) ReleaseDC(nullptr,rawDc);
+        if(rows!=pixelHeight) throw std::runtime_error("Cannot prepare raw pixel equivalence input");
         std::ofstream out(std::filesystem::path(argv[6]), std::ios::binary);
         if (!out) throw std::runtime_error("Cannot write benchmark report");
         out << "{\"image\":" << Json(argv[2]) << ",\"cold_process_runs\":[";
@@ -110,6 +118,20 @@ int wmain(int argc, wchar_t** argv) {
             const auto result = RunModelProcess(bitmap, image.GetWidth(), image.GetHeight(), argv[1], [] { return false; });
             if (result.status != ModelStatus::Success) { std::cerr << Json(result.reply.error) << '\n'; throw std::runtime_error("Model OCR failed"); }
             if (!result.workerExited || !result.processId || !Exited(result.processId)) throw std::runtime_error("Worker remained alive");
+            if(run==1) {
+                const auto raw=RunModelPixels(rawPixels,pixelWidth,pixelHeight,argv[1],[] { return false; });
+                if(raw.status!=ModelStatus::Success || !raw.workerExited || !Exited(raw.processId))
+                    throw std::runtime_error("Raw pixel worker failed or remained alive");
+                const auto normalized=[](wire::Reply reply) {
+                    reply.loadMs=reply.inferenceMs=reply.cpuMs=0;
+                    reply.peakWorkingSetBytes=reply.peakCommitBytes=0;
+                    for(auto& line : reply.lines) line.confidence=0;
+                    return wire::Encode(reply);
+                };
+                if(normalized(result.reply)!=normalized(raw.reply))
+                    throw std::runtime_error("Bitmap/raw text or glyph geometry differs");
+                std::cout << "Raw/bitmap text and geometry identical; raw_total_ms=" << raw.elapsedMs << '\n';
+            }
             std::wstring text;
             for (const auto& line : result.reply.lines) {
                 text += line.text;

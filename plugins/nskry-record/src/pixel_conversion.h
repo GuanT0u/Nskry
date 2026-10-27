@@ -51,7 +51,7 @@ inline void Block(const uint8_t *a, const uint8_t *b, uint8_t *ya, uint8_t *yb, 
 } // namespace pixels
 // Tightly packed BT.709 limited-range NV12. Caller validates even dimensions
 // and owns both buffers. SSE2 is baseline on x64, not AVX/modern-CPU-only.
-inline void BgraToNv12(const uint8_t *bgra, uint8_t *output, unsigned width, unsigned height) {
+inline void BgraToNv12Sse2(const uint8_t *bgra, uint8_t *output, unsigned width, unsigned height) {
     const auto clamp = [](int n) { return uint8_t(std::clamp(n, 0, 255)); };
     auto *uv = output + uint64_t(width) * height;
     for (unsigned y = 0; y < height; y += 2) {
@@ -81,4 +81,6 @@ inline void BgraToNv12(const uint8_t *bgra, uint8_t *output, unsigned width, uns
         }
     }
 }
+bool HasAvx2PixelConversion();
+void BgraToNv12(const uint8_t *bgra, uint8_t *output, unsigned width, unsigned height);
 } // namespace nskry::record

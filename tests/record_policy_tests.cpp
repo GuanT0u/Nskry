@@ -51,6 +51,16 @@ int main() {
     s.Submitted(10000000);
     if (s.Due(10000001) || s.next != 10500000)
         return 11;
+    FrameSchedule phase(60);
+    phase.Submitted(0);
+    const auto interval=phase.interval;
+    phase.Submitted(interval+2000);
+    if(phase.next!=interval*2) return 18; // No accumulation of capture/timer lateness.
+    phase.Submitted(interval*100+interval*3/4);
+    if(phase.next-(interval*100+interval*3/4)<interval/2 ||
+       phase.Due(interval*100+interval*3/4)) return 19;
+    phase.Submitted(INT64_MAX-1);
+    if(phase.next!=INT64_MAX) return 20;
     Timeline publish;
     if (FrameSchedule(0).interval != 10000000 || FrameSchedule(999).interval != 166666)
         return 13;

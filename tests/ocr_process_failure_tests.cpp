@@ -17,6 +17,11 @@ int wmain(int argc, wchar_t** argv) {
     void* bits{}; HBITMAP bitmap = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
     if (!bitmap) return 3;
     bool okay = true; DWORD before{}, after{};
+    const std::vector<uint8_t> pixels(64 * 32 * 4, 90);
+    auto rawResult = RunModelPixels(std::span<const uint8_t>(pixels).first(31), 64, 32, argv[1], [] { return false; });
+    okay &= Check(rawResult.status == ModelStatus::Failed && !rawResult.processId, "short raw pixels launch no process");
+    rawResult = RunModelPixels(pixels, 64, 32, argv[1], [] { return true; });
+    okay &= Check(rawResult.status == ModelStatus::Canceled && !rawResult.processId, "pre-cancel raw pixels launches no process");
     auto result = RunModelProcess(bitmap, 64, 32, L"not-a-real-ocr-worker.exe", [] { return false; });
     okay &= Check(result.status == ModelStatus::Unavailable && !result.processId, "missing executable is explicit");
     result = RunModelProcess(bitmap, 0, 32, argv[1], [] { return false; });
@@ -34,6 +39,9 @@ int wmain(int argc, wchar_t** argv) {
         okay &= Check(result.status == ModelStatus::Failed && result.workerExited && Exited(result.processId), "repeated malformed replies reaped");
     }
     SetEnvironmentVariableW(L"NSKRY_OCR_FAKE_MODE", L"hang");
+    rawResult = RunModelPixels(pixels, 64, 32, argv[1], [] { return false; }, 120);
+    okay &= Check(rawResult.status == ModelStatus::Failed && rawResult.workerExited && Exited(rawResult.processId),
+                  "raw pixel timeout reaps owned worker");
     auto start = std::chrono::steady_clock::now();
     result = RunModelProcess(bitmap, 64, 32, argv[1], [] { return false; }, 120);
     auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();

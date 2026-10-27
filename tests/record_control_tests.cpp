@@ -7,6 +7,9 @@
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mfreadwrite.h>
 #include <winrt/base.h>
 using namespace nskry::record;
 extern "C" int32_t NSKRY_CALL nskry_plugin_command_v1(const NskryCommandV1 *, NskryCommandResultV1 *);
@@ -19,11 +22,50 @@ void RecordControlTestUpdate();
 void RecordControlTestEnableResult(const std::wstring &);
 bool RecordControlTestPreviewReady();
 bool RecordControlTestPreviewAlive();
+bool RecordControlTestCleanupPending();
+bool RecordControlTestExportAlive();
+void RecordControlTestExportCopy(const std::wstring &, const std::wstring &);
 extern "C" int32_t NSKRY_CALL nskry_plugin_connect_capture_v2(const NskryCaptureServiceV2 *);
 extern "C" int32_t NSKRY_CALL nskry_plugin_capture_action_v1(const NskryCaptureActionV1 *);
 extern "C" int32_t NSKRY_CALL nskry_plugin_show_settings_v1(HWND);
 namespace {
 std::atomic<int> captures{};
+HANDLE closeEntered{}, closeAllowed{};
+std::atomic<bool> delayClose{};
+unsigned heartbeats{};
+void CALLBACK Heartbeat(HWND, UINT, UINT_PTR, DWORD) { ++heartbeats; }
+bool DecodeFirstFrame(const std::filesystem::path &path) {
+    if (FAILED(MFStartup(MF_VERSION)))
+        return false;
+    bool decoded = false;
+    try {
+        winrt::com_ptr<IMFSourceReader> reader;
+        winrt::check_hresult(MFCreateSourceReaderFromURL(path.c_str(), nullptr, reader.put()));
+        winrt::com_ptr<IMFMediaType> type;
+        winrt::check_hresult(MFCreateMediaType(type.put()));
+        winrt::check_hresult(type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
+        winrt::check_hresult(type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12));
+        winrt::check_hresult(reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, type.get()));
+        for (int i = 0; i < 10; ++i) {
+            DWORD flags{};
+            LONGLONG stamp{};
+            winrt::com_ptr<IMFSample> sample;
+            winrt::check_hresult(reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr,
+                                                    &flags, &stamp, sample.put()));
+            if (sample) {
+                DWORD length{};
+                winrt::check_hresult(sample->GetTotalLength(&length));
+                decoded = length != 0;
+                break;
+            }
+            if (flags & MF_SOURCE_READERF_ENDOFSTREAM)
+                break;
+        }
+    } catch (...) {
+    }
+    MFShutdown();
+    return decoded;
+}
 HRESULT __cdecl Open(RECT, uint32_t, void **value, NskryCaptureDescriptionV1 *d, wchar_t *, uint32_t) {
     *value = new int(1);
     *d = {sizeof(*d), 1, 160, 90, 640};
@@ -35,6 +77,10 @@ HRESULT __cdecl Read(void *, uint8_t *pixels, uint32_t count) {
     return S_OK;
 }
 void __cdecl Close(void *value) {
+    if (delayClose) {
+        SetEvent(closeEntered);
+        WaitForSingleObject(closeAllowed, 3000);
+    }
     delete static_cast<int *>(value);
     --captures;
 }
@@ -203,6 +249,56 @@ int wmain(int argc, wchar_t **argv) {
     ok = hwnd && IsWindowVisible(GetDlgItem(hwnd, 15)) && !IsWindowVisible(GetDlgItem(hwnd, 9)) && !captures && ok;
     // Do not invoke Explorer or touch the user's recording cache in this regression.
     SendMessageW(hwnd, WM_COMMAND, 3, 0);
+    // Owner destruction bypasses WM_CLOSE: no capture/worker may be orphaned.
+    closeEntered = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    closeAllowed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    const auto orphanPath = root / L"owner-destroyed.mp4";
+    hwnd = RecordControlTestStart(capture, {0, 0, 160, 90}, orphanPath.wstring());
+    ok = hwnd && Pump([] { return RecordControlTestStatus().frames >= 2; }) && ok;
+    delayClose = true;
+    const auto destroyStart = GetTickCount64();
+    DestroyWindow(hwnd);
+    const auto destroyMs = GetTickCount64() - destroyStart;
+    ok = destroyMs < 250 && RecordControlTestCleanupPending() && ok;
+    ok = Pump([] { return WaitForSingleObject(closeEntered, 0) == WAIT_OBJECT_0; }) && ok;
+    const auto heartbeat = SetTimer(nullptr, 0, 10, Heartbeat);
+    const auto untilCleanup = GetTickCount64() + 150;
+    Pump([&] { return GetTickCount64() >= untilCleanup; });
+    KillTimer(nullptr, heartbeat);
+    ok = heartbeat && heartbeats >= 5 && captures == 1 && ok;
+    ok = !RecordControlTestStart(capture, {0, 0, 160, 90}, (root / L"must-not-start.mp4").wstring()) && ok;
+    SetEvent(closeAllowed);
+    ok = Pump([] { return !RecordControlTestCleanupPending(); }) && !captures &&
+         !RecordControlTestAlive() && std::filesystem::exists(orphanPath) && DecodeFirstFrame(orphanPath) && ok;
+    delayClose = false;
+    CloseHandle(closeEntered);
+    CloseHandle(closeAllowed);
+    std::cout << "Abrupt recording close ms=" << destroyMs << ", UI heartbeats=" << heartbeats << '\n';
+
+    // Preview can wait for a held drag indefinitely. Destroying its UI must
+    // cancel that request, release the decoder, and preserve the source file.
+    hwnd = RecordControlTestStart(capture, {0, 0, 160, 90}, (root / L"owner-preview.mp4").wstring());
+    RecordControlTestEnableResult((root / L"owner-preview.mp4").wstring());
+    ok = hwnd && Pump([] { return RecordControlTestStatus().frames >= 2; }) && ok;
+    SendMessageW(hwnd, WM_COMMAND, 2, 0);
+    ok = Pump([] { return !RecordControlTestAlive(); }) && ok;
+    SendMessageW(hwnd, WM_COMMAND, 4, 0);
+    range = GetDlgItem(hwnd, 14);
+    SendMessageW(range, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(16, 16));
+    ok = RecordControlTestPreviewAlive() && ok;
+    DestroyWindow(hwnd);
+    ok = Pump([] { return !RecordControlTestCleanupPending(); }) && !RecordControlTestPreviewAlive() &&
+         !RecordControlTestPreviewReady() && std::filesystem::exists(root / L"owner-preview.mp4") && ok;
+
+    ok = nskry_plugin_show_settings_v1(nullptr) != 0 && ok;
+    hwnd = OwnControl();
+    RecordControlTestExportCopy(orphanPath.wstring(), (root / L"owner-export.mp4").wstring());
+    DestroyWindow(hwnd);
+    ok = Pump([] { return !RecordControlTestCleanupPending(); }) && !RecordControlTestExportAlive() &&
+         std::filesystem::exists(orphanPath) && ok;
+    ok = !FindWindowExW(HWND_MESSAGE, nullptr, L"NskryRecordCleanupV1", nullptr) && ok;
+    ok = nskry_plugin_show_settings_v1(nullptr) != 0 && ok;
+    SendMessageW(OwnControl(), WM_CLOSE, 0, 0);
     nskry_plugin_shutdown();
     for (const auto &file : std::filesystem::directory_iterator(root))
         ok = !file.path().filename().wstring().starts_with(L".nskry-record-") && ok;

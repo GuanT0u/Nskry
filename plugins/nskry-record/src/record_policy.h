@@ -90,7 +90,10 @@ inline bool ValidFrameFormat(uint32_t width, uint32_t height, uint32_t fps) {
     return width >= 2 && height >= 2 && width <= 1920 && height <= 1920 && !(width & 1) && !(height & 1) &&
            (width <= 1080 || height <= 1080) && uint64_t(width) * height <= 1920 * 1080 && fps >= 1 && fps <= 60;
 }
-// Single pending sample + latest frame: no catch-up burst after a slow encoder.
+// Single pending sample + latest frame. Follow the active-time grid so small
+// capture/timer delays do not accumulate into a persistently lower frame rate.
+// Skip missed slots, with at least half an interval before the next sample;
+// never drain a backlog or spin to catch up after a slow encoder.
 struct FrameSchedule {
     explicit FrameSchedule(unsigned fps = 20) : interval(10000000 / std::clamp(fps, 1u, 60u)) {
     }
@@ -98,7 +101,12 @@ struct FrameSchedule {
         return now >= next;
     }
     void Submitted(int64_t now) {
-        next = now + interval;
+        now = (std::max)(int64_t(0), now);
+        if (now >= INT64_MAX - interval) {
+            next = INT64_MAX;
+            return;
+        }
+        next = (std::max)((now / interval + 1) * interval, now + interval / 2);
     }
     int64_t next{}, interval;
 };

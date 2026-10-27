@@ -39,7 +39,7 @@ ModelResult Failed(const wchar_t* message) {
     ModelResult result; result.reply.error = message; return result;
 }
 }
-ModelResult RunModelProcess(HBITMAP bitmap, int width, int height,
+static ModelResult RunModelInput(HBITMAP bitmap, std::span<const uint8_t> bgra, bool raw, int width, int height,
     const std::filesystem::path& executable, const std::function<bool()>& canceled, DWORD timeoutMs) {
     const auto started = Clock::now();
     const auto isCanceled = [&] { return canceled && canceled(); };
@@ -55,8 +55,9 @@ ModelResult RunModelProcess(HBITMAP bitmap, int width, int height,
     if (pixels <= wire::MaxPixels) input.pixelBytes = static_cast<uint32_t>(pixels * 4);
     if (!wire::ValidInput(input)) return Failed(L"This image is too large for offline OCR. Select a smaller area (up to 16 megapixels).");
     BITMAP bitmapInfo{};
-    if (!bitmap || GetObjectW(bitmap, sizeof(bitmapInfo), &bitmapInfo) != sizeof(bitmapInfo) ||
-        bitmapInfo.bmWidth != width || std::abs(bitmapInfo.bmHeight) != height)
+    if (raw ? bgra.size() != input.pixelBytes
+            : (!bitmap || GetObjectW(bitmap, sizeof(bitmapInfo), &bitmapInfo) != sizeof(bitmapInfo) ||
+               bitmapInfo.bmWidth != width || std::abs(bitmapInfo.bmHeight) != height))
         return Failed(L"The OCR image dimensions do not match its bitmap.");
     SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
     Handle mapping(CreateFileMappingW(INVALID_HANDLE_VALUE, &security, PAGE_READWRITE, 0, sizeof(input) + input.pixelBytes, nullptr));
@@ -65,13 +66,24 @@ ModelResult RunModelProcess(HBITMAP bitmap, int width, int height,
         MappingView view{MapViewOfFile(mapping.Get(), FILE_MAP_WRITE, 0, 0, sizeof(input) + input.pixelBytes)};
         if (!view.value) return Failed(L"Could not prepare the OCR image buffer.");
         std::memcpy(view.value, &input, sizeof(input));
-        BITMAPINFO info{}; info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        info.bmiHeader.biWidth = width; info.bmiHeader.biHeight = -height;
-        info.bmiHeader.biPlanes = 1; info.bmiHeader.biBitCount = 32; info.bmiHeader.biCompression = BI_RGB;
-        HDC dc = GetDC(nullptr);
-        const int rows = dc ? GetDIBits(dc, bitmap, 0, height, static_cast<uint8_t*>(view.value) + sizeof(input), &info, DIB_RGB_COLORS) : 0;
-        if (dc) ReleaseDC(nullptr, dc);
-        if (rows != height) return Failed(L"Could not read the image for OCR.");
+        if (raw) {
+            std::memcpy(static_cast<uint8_t*>(view.value) + sizeof(input), bgra.data(), bgra.size());
+        } else {
+            BITMAPINFO info{};
+            info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            info.bmiHeader.biWidth = width;
+            info.bmiHeader.biHeight = -height;
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+            HDC dc = GetDC(nullptr);
+            const int rows = dc ? GetDIBits(dc, bitmap, 0, height,
+                static_cast<uint8_t*>(view.value) + sizeof(input), &info, DIB_RGB_COLORS) : 0;
+            if (dc)
+                ReleaseDC(nullptr, dc);
+            if (rows != height)
+                return Failed(L"Could not read the image for OCR.");
+        }
     }
     HANDLE rawRead{}, rawWrite{};
     if (!CreatePipe(&rawRead, &rawWrite, &security, 65536)) return Failed(L"Could not create the OCR result channel.");
@@ -146,5 +158,13 @@ ModelResult RunModelProcess(HBITMAP bitmap, int width, int height,
     }
     result.status = result.reply.error.empty() ? ModelStatus::Success : ModelStatus::Failed;
     return finish(std::move(result));
+}
+ModelResult RunModelProcess(HBITMAP bitmap, int width, int height,
+    const std::filesystem::path& executable, const std::function<bool()>& canceled, DWORD timeoutMs) {
+    return RunModelInput(bitmap, {}, false, width, height, executable, canceled, timeoutMs);
+}
+ModelResult RunModelPixels(std::span<const uint8_t> bgra, int width, int height,
+    const std::filesystem::path& executable, const std::function<bool()>& canceled, DWORD timeoutMs) {
+    return RunModelInput(nullptr, bgra, true, width, height, executable, canceled, timeoutMs);
 }
 } // namespace nskry::ocr

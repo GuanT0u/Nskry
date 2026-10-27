@@ -4,7 +4,6 @@
 #include <winrt/base.h>
 #if NSKRY_TRANSLATE_MODEL_OCR
 #include "model/ocr_process.h"
-#include <cstring>
 #else
 #include "ocr_wait.h"
 #include <winrt/Windows.Foundation.Collections.h>
@@ -34,20 +33,7 @@ std::wstring RecognizeImage(const std::vector<unsigned char> &pixels, int width,
                 L"Local image recognition runtime missing. Use the complete Translation "
                 L"package (including ocr/), or paste text. No OCR plugin installation is required.");
     }
-    BITMAPINFO info{};
-    info.bmiHeader = {sizeof(BITMAPINFOHEADER), width, -height, 1, 32, BI_RGB};
-    void *data{};
-    struct Bitmap {
-        HBITMAP value{};
-        ~Bitmap() {
-            if (value)
-                DeleteObject(value);
-        }
-    } bitmap{CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &data, nullptr, 0)};
-    if (!bitmap.value || !data)
-        winrt::throw_hresult(E_OUTOFMEMORY);
-    std::memcpy(data, pixels.data(), pixels.size());
-    auto result = nskry::ocr::RunModelProcess(bitmap.value, width, height, engine, canceled, 20000);
+    auto result = nskry::ocr::RunModelPixels(pixels, width, height, engine, canceled, 20000);
     if (result.status == nskry::ocr::ModelStatus::Canceled || canceled())
         winrt::throw_hresult(HRESULT_FROM_WIN32(ERROR_CANCELLED));
     if (result.status != nskry::ocr::ModelStatus::Success || !result.workerExited)

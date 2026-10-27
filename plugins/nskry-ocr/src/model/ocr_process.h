@@ -17,4 +17,9 @@ struct ModelResult {
 ModelResult RunModelProcess(HBITMAP bitmap, int width, int height,
     const std::filesystem::path& executable, const std::function<bool()>& canceled,
     DWORD timeoutMs = 20000);
+// Private static-library entry for an already-owned, tightly packed top-down
+// BGRA image. Borrowed only until this synchronous call returns; no SDK change.
+ModelResult RunModelPixels(std::span<const uint8_t> bgra, int width, int height,
+    const std::filesystem::path& executable, const std::function<bool()>& canceled,
+    DWORD timeoutMs = 20000);
 } // namespace nskry::ocr

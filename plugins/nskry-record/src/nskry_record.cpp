@@ -20,6 +20,8 @@ NskryCaptureServiceV1 service{};
 NskryCaptureServiceV2 serviceV2{};
 std::unique_ptr<RecordSession> session;
 HWND window{}, statusLabel{}, pauseButton{}, stopButton{}, discardButton{};
+HWND cleanupWindow{};
+bool cleanupPending = false;
 HWND fpsChoice{}, qualityChoice{}, followChoice{}, defaultsButton{}, trimButton{}, trimStart{}, trimEnd{}, trimApply{},
     trimCancel{};
 HWND cacheButton{};
@@ -53,7 +55,7 @@ NskryPluginInfo info{sizeof(info),
                      NSKRY_PLUGIN_API_VERSION,
                      L"Screen recording",
                      L"nskry-record",
-                     L"0.4.0",
+                     L"0.4.1",
                      L"Nskry Team",
                      L"On-demand MP4/GIF region recording with optional window follow. No audio.",
                      nullptr,
@@ -66,6 +68,61 @@ void Update();
 void Error(const wchar_t *text);
 void LayoutControl();
 void BeginExport(bool trim);
+void CloseCleanupWindow() {
+    if (cleanupWindow) {
+        KillTimer(cleanupWindow, 1);
+        DestroyWindow(cleanupWindow);
+        cleanupWindow = nullptr;
+    }
+    cleanupPending = false;
+}
+void DrainClosedControl() {
+    if (session) {
+        const auto state = session->Status().state;
+        if (state != State::Done && state != State::Failed)
+            return;
+        session.reset(); // Terminal state is published after capture/encoder release.
+    }
+    if (previewTask) {
+        if (!previewTask->Done())
+            return;
+        previewTask.reset();
+    }
+    if (exportTask) {
+        if (!exportTask->Status().done)
+            return;
+        // A completed save belongs to the user. Keep the original recording
+        // and any completed trim too; abrupt owner destruction is not discard.
+        exportTask.reset();
+    }
+    previewFrame = {};
+    resultPath.clear();
+    exportPath.clear();
+    completed = copied = delivered = trimMode = setup = closing = false;
+    closePromptActive = false;
+    CloseCleanupWindow();
+}
+LRESULT CALLBACK CleanupProcedure(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
+    if (message == WM_TIMER && wp == 1) {
+        try {
+            DrainClosedControl();
+        } catch (...) {
+            // Keep ownership for shutdown if allocation/status retrieval fails.
+        }
+        return 0;
+    }
+    return DefWindowProcW(hwnd, message, wp, lp);
+}
+bool PrepareCleanupWindow() {
+    WNDCLASSW wc{};
+    wc.hInstance = module;
+    wc.lpfnWndProc = CleanupProcedure;
+    wc.lpszClassName = L"NskryRecordCleanupV1";
+    if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+        return false;
+    cleanupWindow = CreateWindowExW(0, wc.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, module, nullptr);
+    return cleanupWindow != nullptr;
+}
 void QueuePreview(int64_t time) {
     if (previewFailed)
         return;
@@ -788,11 +845,36 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         areaWindow = nullptr;
         KillTimer(hwnd, Poll);
         window = nullptr;
+        setup = false;
+        if (session || previewTask || exportTask) {
+            cleanupPending = true;
+            if (session)
+                session->Stop(false); // Finalize captured footage; never keep recording without UI.
+            if (previewTask)
+                previewTask->Cancel();
+            if (exportTask)
+                exportTask->Cancel();
+            if (!SetTimer(cleanupWindow, 1, 50, nullptr)) {
+                // Resource exhaustion: keep safe DLL ownership and stop work,
+                // even if synchronous teardown is the only remaining option.
+                session.reset();
+                previewTask.reset();
+                exportTask.reset();
+                DrainClosedControl();
+            }
+        } else {
+            // A destroyed result window must not leave a permanent busy flag.
+            resultPath.clear(); // Keep unsaved footage; no implicit discard.
+            completed = copied = delivered = trimMode = false;
+            CloseCleanupWindow();
+        }
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 bool ShowControl(RECT region) {
+    if (cleanupPending)
+        return false;
     WNDCLASSEXW wc{sizeof(wc)};
     wc.lpfnWndProc = Procedure;
     wc.hInstance = module;
@@ -814,6 +896,10 @@ bool ShowControl(RECT region) {
                         initial.bottom - initial.top, nullptr, nullptr, module, nullptr);
     if (!window)
         return false;
+    if (!PrepareCleanupWindow()) {
+        DestroyWindow(window);
+        return false;
+    }
     // Refuse recording if the OS cannot exclude this control window. No black UI box in output.
     if (!SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE)) {
         DestroyWindow(window);
@@ -897,7 +983,7 @@ NSKRY_API int32_t NSKRY_CALL nskry_plugin_init(const NskryHostContext *ctx) {
 }
 NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext *ctx) {
     try {
-        if (session || setup || completed || exportTask || selectingOutput || failurePromptActive) {
+        if (cleanupPending || session || setup || completed || exportTask || selectingOutput || failurePromptActive) {
             if (window)
                 SetForegroundWindow(window);
             return;
@@ -962,7 +1048,7 @@ NSKRY_API int32_t NSKRY_CALL nskry_plugin_capture_action_v1(const NskryCaptureAc
     if (!action || action->structSize < sizeof(*action) || action->version != 1 || !action->id ||
         wcscmp(action->id, L"gif") || !action->context)
         return 0;
-    if (session || setup || completed || exportTask) {
+    if (cleanupPending || session || setup || completed || exportTask) {
         if (window)
             SetForegroundWindow(window);
         LayoutControl();
@@ -975,7 +1061,7 @@ NSKRY_API int32_t NSKRY_CALL nskry_plugin_capture_action_v1(const NskryCaptureAc
 }
 NSKRY_API int32_t NSKRY_CALL nskry_plugin_show_settings_v1(HWND owner) {
     try {
-        if (session || setup || completed || exportTask) {
+        if (cleanupPending || session || setup || completed || exportTask) {
             if (window)
                 SetForegroundWindow(window);
             return 1;
@@ -1045,7 +1131,9 @@ NSKRY_API void NSKRY_CALL nskry_plugin_shutdown() {
     setup = false;
     if (window)
         DestroyWindow(window);
+    CloseCleanupWindow();
     UnregisterClassW(ClassName, module);
+    UnregisterClassW(L"NskryRecordCleanupV1", module);
     UnregisterClassW(L"NskryRecordTrimRangeV1", module);
     if (areaWindow)
         DestroyWindow(areaWindow);
@@ -1095,5 +1183,15 @@ bool RecordControlTestPreviewReady() {
 }
 bool RecordControlTestPreviewAlive() {
     return bool(previewTask);
+}
+bool RecordControlTestCleanupPending() {
+    return cleanupPending;
+}
+bool RecordControlTestExportAlive() {
+    return bool(exportTask);
+}
+void RecordControlTestExportCopy(const std::wstring &input, const std::wstring &output) {
+    exportTask = std::make_unique<ExportTask>();
+    exportTask->Start(input, output, {}, false, 0, 0, false);
 }
 #endif

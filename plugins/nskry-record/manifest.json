@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "nskry-record",
   "name": "Screen recording",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "author": "Nskry Team",
   "description": "MP4/H.264 or separate GIF recording; optional window follow, 30/60 fps video presets, post-record save/copy and trim. No audio.",
   "runtime": {"entry": "nskry-record.dll", "architecture": "x64", "api_version": 2, "load_policy": "on_demand"},

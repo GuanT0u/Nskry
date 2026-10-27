@@ -1,4 +1,11 @@
-# Translation 0.3.2 — experimental offline and optional online translation
+# Translation 0.3.3 — experimental offline and optional online translation
+
+0.3.3 removes the temporary GDI bitmap roundtrip from built-in native image
+recognition and separates the bounded offline process runner from the window.
+Models, decoding settings, upload consent and optional OCR-provider behavior
+remain the same. No engine is kept warm after a task. The explicit developer
+`tools/profile_runtime.py` diagnoses local cold-load stages; it is not packaged
+or run by the plugin.
 
 Independent API2 plugin. Select a screenshot, a pinned image, a monitor's static
 frame, or an editor subregion and choose Translation. OCR runs locally,

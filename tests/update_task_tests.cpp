@@ -1,6 +1,7 @@
 #include "core/update_task.h"
 #include "update/downloader.h"
 #include <chrono>
+#include <atomic>
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
@@ -10,6 +11,8 @@
 #include <ws2tcpip.h>
 using namespace nskry;
 namespace {
+unsigned heartbeats{};
+void CALLBACK Heartbeat(HWND, UINT, UINT_PTR, DWORD) { ++heartbeats; }
 bool Check(bool ok, const char *message) {
     if (!ok)
         std::cerr << message << '\n';
@@ -115,6 +118,33 @@ int wmain() {
     task.Cancel();
     ok &= Check(GetTickCount64() - cancelStart < 100 && PumpUntil([&] { return !task.Busy(); }) && !cancelledCallback,
                 "nonblocking cancel drops stale UI callback");
+    // Cancellation may need time to release network/temp resources. UI must
+    // continue dispatching, and the bounded task slot must not be reused early.
+    std::atomic<bool> started{}, cleaning{};
+    bool staleDelivered = false;
+    task.Start([&](std::stop_token stop) {
+        started = true;
+        std::unique_lock lock(mutex);
+        cv.wait(lock, stop, [] { return false; });
+        cleaning = true;
+        lock.unlock();
+        Sleep(350); // Test-only delayed resource teardown.
+        return UpdateTaskResult{};
+    }, [&](UpdateTaskResult) { staleDelivered = true; });
+    ok &= Check(PumpUntil([&] { return started.load(); }), "delayed cleanup starts");
+    const auto slowCancelStart = GetTickCount64();
+    task.Cancel();
+    const auto slowCancelMs = GetTickCount64() - slowCancelStart;
+    const auto heartbeat = SetTimer(nullptr, 0, 10, Heartbeat);
+    ok &= Check(slowCancelMs < 100 && task.Busy() &&
+        !task.Start([](std::stop_token) { return UpdateTaskResult{}; }, {}), "cancel keeps bounded busy slot");
+    ok &= Check(PumpUntil([&] { return !task.Busy(); }) && cleaning && !staleDelivered,
+                "delayed teardown releases task without stale UI delivery");
+    KillTimer(nullptr, heartbeat);
+    ok &= Check(heartbeat && heartbeats >= 5 &&
+        !FindWindowExW(HWND_MESSAGE, nullptr, L"NskryUpdateCompletion", nullptr),
+        "UI remains responsive and completion window is released");
+    std::cout << "Delayed update cancel ms=" << slowCancelMs << ", UI heartbeats=" << heartbeats << '\n';
     bool failed = false;
     task.Start([](std::stop_token) -> UpdateTaskResult { throw std::runtime_error("test failure"); },
                [&](UpdateTaskResult result) { failed = !result.message.empty(); });
