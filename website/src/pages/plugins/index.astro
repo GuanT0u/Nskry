@@ -1,0 +1,18 @@
+---
+import Site from '../../layouts/Site.astro';
+import {link} from '../../lib/links';
+import {loadData,statusLabel} from '../../lib/data.mjs';
+const {plugins}=loadData();
+---
+<Site title="插件市场"><p class="eyebrow">Plugin directory</p><h1>让工具，适合你的工作。</h1><p class="lead">按需选择功能，保留轻量的日常使用体验。</p><p class="notice">这里展示当前项目维护的开发中插件。正式下载将在发行检查完成后提供。第三方收录不等于官方认证。</p>
+<div class="filters" hidden id="filters"><label>查找插件<input type="search" id="search" placeholder="名称、功能或标签"/></label><label>发布者类型<select id="origin"><option value="all">全部</option><option value="official">项目官方维护</option><option value="third-party">独立第三方</option></select></label></div><p id="count" aria-live="polite" class="muted">共 {plugins.length} 个插件</p>
+<div class="grid">{plugins.map(p=><article class="card" data-plugin data-origin={p.origin} data-search={`${p.name} ${p.summary} ${p.tags.join(' ')}`.toLowerCase()}><span class="badge">{statusLabel(p.status)}</span><h2><a href={link(`plugins/${p.id}/`)}>{p.name}</a></h2><p>{p.summary}</p><p class="muted">{p.origin==='official'?'项目官方维护':'独立第三方'} · {p.version}</p>{p.tags.map(t=><span class="tag">{t}</span>)}<p><a href={link(`plugins/${p.id}/`)}>查看详情 →</a></p></article>)}</div>
+<p class="muted">尚无独立第三方条目。希望收录你的插件？查看<a href={link('developers/')}>开发者指南</a>。</p>
+<script>
+const filters=document.querySelector<HTMLElement>('#filters');
+if(filters) filters.hidden=false;
+const search=document.querySelector<HTMLInputElement>('#search')!;
+const origin=document.querySelector<HTMLSelectElement>('#origin')!;
+function filter(){let n=0;document.querySelectorAll<HTMLElement>('[data-plugin]').forEach(card=>{card.hidden=!(card.dataset.search!.includes(search.value.trim().toLowerCase()) && (origin.value==='all'||card.dataset.origin===origin.value));if(!card.hidden)n++;});document.querySelector('#count')!.textContent=n?`找到 ${n} 个插件`:'没有匹配的插件，请尝试其他关键词。';}
+search.addEventListener('input',filter);origin.addEventListener('change',filter);
+</script></Site>

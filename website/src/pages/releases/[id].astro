@@ -1,0 +1,5 @@
+---
+import Site from '../../layouts/Site.astro';import Assets from '../../components/Assets.astro';import {loadData,statusLabel} from '../../lib/data.mjs';import {getCollection,render} from 'astro:content';
+export async function getStaticPaths(){const articles=await getCollection('releases');return loadData().releases.map(r=>({params:{id:r.id},props:{r,entry:articles.find(e=>e.id===r.id)}}));}const {r,entry}=Astro.props;if(!entry)throw new Error('Missing release article');const {Content}=await render(entry);
+---
+<Site title={`Nskry ${r.version}`}><p class="eyebrow">{r.date} · {statusLabel(r.status)}</p><h1>Nskry {r.version}</h1><article class="prose"><Content/></article><Assets assets={r.assets} withdrawn={r.status==='withdrawn'}/><p><a href={r.source}>对应版本源码与构建资料</a></p></Site>

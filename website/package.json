@@ -1,0 +1,22 @@
+{
+  "name": "nskry-website",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "node scripts/astro.mjs dev --host 127.0.0.1",
+    "preview": "node scripts/astro.mjs preview --host 127.0.0.1",
+    "validate": "node scripts/validate.mjs",
+    "test": "node --test scripts/data.test.mjs",
+    "build": "npm run validate && node scripts/astro.mjs build && node scripts/check-output.mjs",
+    "catalog:preview": "node scripts/catalog-preview.mjs"
+  },
+  "dependencies": {
+    "astro": "7.4.2",
+    "semver": "7.7.3",
+    "zod": "4.6.7"
+  }
+}

@@ -1,0 +1,11 @@
+---
+import Site from '../layouts/Site.astro';
+import { link } from '../lib/links';
+import { loadData } from '../lib/data.mjs';
+const {plugins}=loadData();
+---
+<Site title="轻巧地捕捉，按需地扩展">
+<section class="hero"><div><p class="eyebrow">A little tool for what matters</p><h1>留住画面。<br/>专注眼前。</h1><p class="lead">截图、钉住、监控。一款轻量的 Windows 桌面工具，用按需插件完成长截图、识别、翻译与录屏。</p><div class="actions"><a class="button" href={link('download/')}>获取 Nskry ↗</a><a class="button secondary" href={link('guide/')}>从这里开始</a></div><p class="muted">Windows x64 · 开源免费 · 功能按需启用</p></div><div class="preview" role="img" aria-label="框选截图操作的示意图，并非软件实机截图"><div class="window"><div class="window-top">Nskry / Capture a moment</div><div class="selection"><p>把需要的信息，留在手边。</p><p><strong>截取 · 编辑 · 钉住</strong></p><p>从一个范围开始，完成你的下一步。</p></div><div class="toolbar">复制　 保存　 钉住　 ···</div></div><p class="preview-label">交互示意 · Ctrl + Alt + A 开始截图</p></div></section>
+<section><p class="eyebrow">Made for your desktop</p><div class="grid">{[['一个范围，多种用途','框选后复制、保存或钉住，也可以为窗口创建实时监控。'],['编辑是基础能力','裁剪、缩放、标注和区段切除，都由共享图片编辑器提供。'],['需要时，再多做一点','插件在使用时加载，任务完成后释放引擎资源。']].map(([title,text])=><article class="card"><h3>{title}</h3><p>{text}</p></article>)}</div></section>
+<section><div class="section-head"><div><p class="eyebrow">Extend your workflow</p><h2>按需要选择插件</h2></div><a href={link('plugins/')}>浏览全部插件 →</a></div><div class="grid">{plugins.map(p=><article class="card"><span class="badge">开发中</span><h3><a href={link(`plugins/${p.id}/`)}>{p.name}</a></h3><p>{p.summary}</p><a href={link(`plugins/${p.id}/`)}>了解功能 →</a></article>)}</div></section>
+</Site>

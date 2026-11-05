@@ -10,6 +10,10 @@
 #include <commdlg.h>
 #include <filesystem>
 #include <memory>
+#include <mmdeviceapi.h>
+#include <audiopolicy.h>
+#include <functiondiscoverykeys_devpkey.h>
+#include <vector>
 #include <string>
 #include <windowsx.h>
 #include <winrt/base.h>
@@ -37,7 +41,116 @@ bool pendingClose = false, pendingDiscard = false;
 int pendingExport = -1, layoutMode = -1;
 RECT layoutBounds{};
 RECT areaBounds{}, setupRegion{};
-HWND setupSource{};
+HWND setupSource{}, audioChoice{}, audioLabel{};
+struct AudioChoice {
+    std::wstring label;
+    AudioSource source;
+};
+std::vector<AudioChoice> audioSources;
+
+void AddAudioApplication(DWORD pid, std::wstring label = {}) {
+    if (!pid || pid == GetCurrentProcessId() || audioSources.size() >= 256 ||
+        std::any_of(audioSources.begin(), audioSources.end(),
+                    [pid](const AudioChoice &choice) { return choice.source.pid == pid; }))
+        return;
+    winrt::handle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
+    FILETIME created{}, exited{}, kernel{}, user{};
+    if (!process || !GetProcessTimes(process.get(), &created, &exited, &kernel, &user))
+        return;
+    if (label.empty()) {
+        wchar_t executable[1024]{};
+        DWORD length = ARRAYSIZE(executable);
+        if (QueryFullProcessImageNameW(process.get(), 0, executable, &length))
+            label = std::filesystem::path(executable).filename().wstring();
+        else
+            label = L"Audio session";
+    }
+    ULARGE_INTEGER time{};
+    time.LowPart = created.dwLowDateTime;
+    time.HighPart = created.dwHighDateTime;
+    audioSources.push_back({L"App: " + label + L" (PID " + std::to_wstring(pid) + L")",
+                            {{}, pid, time.QuadPart}});
+}
+
+void AddEndpointSessions(IMMDevice &device) {
+    winrt::com_ptr<IAudioSessionManager2> manager;
+    winrt::com_ptr<IAudioSessionEnumerator> sessions;
+    int count{};
+    if (FAILED(device.Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, nullptr, manager.put_void())) ||
+        FAILED(manager->GetSessionEnumerator(sessions.put())) || FAILED(sessions->GetCount(&count)))
+        return;
+    for (int i = 0; i < count && audioSources.size() < 256; ++i) {
+        winrt::com_ptr<IAudioSessionControl> control;
+        AudioSessionState state{};
+        if (FAILED(sessions->GetSession(i, control.put())) || FAILED(control->GetState(&state)) ||
+            state != AudioSessionStateActive)
+            continue;
+        const auto session = control.try_as<IAudioSessionControl2>();
+        DWORD pid{};
+        if (session && session->IsSystemSoundsSession() == S_FALSE && session->GetProcessId(&pid) == S_OK)
+            AddAudioApplication(pid);
+    }
+}
+
+void PopulateAudioChoices() {
+    audioSources = {{L"No audio", {}}};
+    EnumWindows([](HWND candidate, LPARAM) -> BOOL {
+        if (!IsWindowVisible(candidate) || GetWindow(candidate, GW_OWNER) || candidate == window)
+            return TRUE;
+        wchar_t title[180]{};
+        if (!GetWindowTextW(candidate, title, ARRAYSIZE(title)))
+            return TRUE;
+        DWORD pid{};
+        GetWindowThreadProcessId(candidate, &pid);
+        try {
+            AddAudioApplication(pid, title);
+        } catch (...) {
+            return FALSE;
+        }
+        return audioSources.size() < 256;
+    }, 0);
+    try {
+        auto devices = winrt::create_instance<IMMDeviceEnumerator>(__uuidof(MMDeviceEnumerator));
+        winrt::com_ptr<IMMDeviceCollection> endpoints;
+        winrt::check_hresult(devices->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, endpoints.put()));
+        UINT count{};
+        winrt::check_hresult(endpoints->GetCount(&count));
+        for (UINT i = 0; i < count; ++i) {
+            winrt::com_ptr<IMMDevice> device;
+            if (FAILED(endpoints->Item(i, device.put())))
+                continue;
+            wchar_t *id{};
+            if (FAILED(device->GetId(&id)))
+                continue;
+            const std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> owned(id, CoTaskMemFree);
+            winrt::com_ptr<IPropertyStore> properties;
+            std::wstring name = L"Device " + std::to_wstring(i + 1);
+            if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, properties.put()))) {
+                PROPVARIANT value{};
+                struct Clear {
+                    PROPVARIANT &value;
+                    ~Clear() { PropVariantClear(&value); }
+                } clear{value};
+                if (SUCCEEDED(properties->GetValue(PKEY_Device_FriendlyName, &value)) &&
+                    value.vt == VT_LPWSTR && value.pwszVal)
+                    name = value.pwszVal;
+            }
+            audioSources.push_back({L"Output: " + name, {id}});
+            AddEndpointSessions(*device);
+        }
+    } catch (const winrt::hresult_error &) {
+        // Window-based selection remains usable if endpoint enumeration fails.
+    }
+    std::stable_partition(audioSources.begin() + 1, audioSources.end(),
+                          [](const AudioChoice &choice) { return !choice.source.endpoint.empty(); });
+    SendMessageW(audioChoice, CB_RESETCONTENT, 0, 0);
+    for (size_t i = 0; i < audioSources.size(); ++i) {
+        const auto item = SendMessageW(audioChoice, CB_ADDSTRING, 0, LPARAM(audioSources[i].label.c_str()));
+        if (item >= 0)
+            SendMessageW(audioChoice, CB_SETITEMDATA, item, i);
+    }
+    SendMessageW(audioChoice, CB_SETCURSEL, 0, 0);
+}
 bool setup = false, gifMode = false, copied = false, delivered = false, completed = false, trimMode = false;
 bool requestingGif = false;
 bool preferencesOnly = false;
@@ -55,9 +168,9 @@ NskryPluginInfo info{sizeof(info),
                      NSKRY_PLUGIN_API_VERSION,
                      L"Screen recording",
                      L"nskry-record",
-                     L"0.4.1",
+                     L"0.5.0",
                      L"Nskry Team",
-                     L"On-demand MP4/GIF region recording with optional window follow. No audio.",
+                     L"On-demand MP4/GIF region recording with optional window follow and MP4 application or output audio.",
                      nullptr,
                      NSKRY_CAP_TOOLBAR_ACTION,
                      {}};
@@ -344,7 +457,7 @@ void LayoutControl() {
     const bool showTrim = trimMode && !exportTask;
     const int mode = setup ? (preferencesOnly ? 4 : 0) : completed ? (showTrim ? 3 : 2) : 1;
     const auto bounds =
-        RecordingBarBounds(setupRegion, mi.rcWork, mode == 0 || mode == 4 ? 900 : 800, mode == 3 ? 370 : 52);
+        RecordingBarBounds(setupRegion, mi.rcWork, mode == 0 || mode == 4 ? 900 : 800, mode == 3 ? 370 : mode == 0 && !gifMode ? 88 : 52);
     if (mode == layoutMode && EqualRect(&bounds, &layoutBounds))
         return;
     layoutMode = mode;
@@ -360,6 +473,9 @@ void LayoutControl() {
         ShowWindow(h, visible ? SW_SHOW : SW_HIDE);
     };
     const bool pre = mode == 0 || mode == 4;
+    const bool chooseAudio = mode == 0 && !gifMode;
+    place(audioLabel, chooseAudio, 12, 45, 65);
+    place(audioChoice, chooseAudio, 80, 42, (std::max)(100L, client.right - 92), 240);
     const auto setupWidths = SetupWidths(client.right);
     const bool compact = pre && setupWidths.compact;
     const int statusWidth = compact ? 0 : (std::max)(45L, client.right - (pre ? 570 : 420));
@@ -668,6 +784,15 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 options.fps = gifMode ? 10 : o.fps;
                 options.quality = o.quality;
                 options.gif = gifMode;
+                if (!gifMode) {
+                    const auto item = SendMessageW(audioChoice, CB_GETCURSEL, 0, 0);
+                    const auto index = SendMessageW(audioChoice, CB_GETITEMDATA, item, 0);
+                    if (index < 0 || size_t(index) >= audioSources.size()) {
+                        Error(L"Select an audio source or No audio.");
+                        return 0;
+                    }
+                    options.audio = audioSources[size_t(index)].source;
+                }
                 options.deliveryCache = true;
                 options.capture = serviceV2;
                 options.followWindow =
@@ -832,6 +957,8 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             DestroyWindow(hwnd);
         return 0;
     case WM_DESTROY:
+        audioSources.clear();
+        audioChoice = audioLabel = nullptr;
         if (previewTask && previewTask->Done())
             previewTask.reset();
         previewFrame = {};
@@ -917,6 +1044,8 @@ bool ShowControl(RECT region) {
         return CreateWindowExW(0, type, text, WS_CHILD | style, x, y, w, h, window, HMENU(INT_PTR(id)), module,
                                nullptr);
     };
+    audioLabel = child(L"STATIC", L"Audio", 0, 12, 45, 65, 28, 0);
+    audioChoice = child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP, 80, 42, 400, 240, 16);
     fpsChoice = child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP, 12, 122, 100, 160, 7);
     qualityChoice = child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP, 124, 122, 120, 160, 8);
     followChoice = child(L"BUTTON", L"Follow window", BS_AUTOCHECKBOX, 12, 168, 225, 28, 9);
@@ -939,7 +1068,7 @@ bool ShowControl(RECT region) {
     rangeWindow = child(rangeClass.lpszClassName, L"", 0, 12, 282, 760, 36, 14);
     if (!statusLabel || !pauseButton || !stopButton || !discardButton || !fpsChoice || !qualityChoice ||
         !followChoice || !defaultsButton || !cacheButton || !trimButton || !trimStart || !trimEnd || !trimApply ||
-        !trimCancel || !rangeWindow) {
+        !trimCancel || !rangeWindow || !audioLabel || !audioChoice) {
         DestroyWindow(window);
         return false;
     }
@@ -1019,6 +1148,8 @@ NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext *ctx) {
         preferencesOnly = false;
         setupRegion = r;
         setupSource = ctx->sourceHwnd ? GetAncestor(ctx->sourceHwnd, GA_ROOT) : nullptr;
+        if (!gifMode)
+            PopulateAudioChoices();
         const auto defaults = LoadDefaults();
         SendMessageW(fpsChoice, CB_SETCURSEL, defaults.fps == 60 ? 1 : 0, 0);
         SendMessageW(qualityChoice, CB_SETCURSEL, WPARAM(defaults.quality), 0);

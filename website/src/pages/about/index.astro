@@ -1,0 +1,4 @@
+---
+import Site from '../../layouts/Site.astro';import {repo} from '../../lib/data.mjs';
+---
+<Site title="关于与许可"><p class="eyebrow">About Nskry</p><h1>一款留在手边的小工具。</h1><article class="prose"><p>Nskry 为 Windows 提供截图、钉住、实时监控和可选插件功能，项目由维护者及贡献者共同开发。</p><h2>开源与来源</h2><p>Core 使用 GPL-3.0-or-later，并提供限定的独立开源插件许可例外；具体范围以仓库许可证为准。合规的 fork 销售、收费安装和支持服务是允许的，第三方应明确来源及服务身份。</p><p><a href={repo}>原项目仓库</a> · <a href={`${repo}/blob/master/LICENSE`}>许可声明</a> · <a href={`${repo}/blob/master/PLUGIN_EXCEPTION`}>插件许可例外</a></p><h2>网站与隐私</h2><p>本站为静态内容，不设置账号、评论或访客跟踪脚本。托管与下载服务仍可能记录通常的连接信息；外部网站适用其自身政策。插件联网行为见各自说明。</p><h2>官方与第三方</h2><p>项目维护的插件与独立第三方插件分开标注。目录收录、HTTPS 和文件 hash 都不等于安全保证或签名认证。目前正式认证更新目录尚未开放。</p><h2>反馈</h2><p><a href={`${repo}/issues`}>提交问题</a>时附上版本与脱敏复现信息。安全问题不要公开利用细节，请先请求维护者提供私密渠道。</p></article></Site>

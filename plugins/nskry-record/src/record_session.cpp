@@ -97,7 +97,7 @@ Snapshot RecordSession::Status() const {
 }
 RecordSession::Timing RecordSession::ReadTiming() const {
     std::lock_guard lock(m_mutex);
-    return {m_timeline.state, m_timeline.Elapsed(Now())};
+    return {m_timeline.Origin(), m_timeline.state, m_timeline.Elapsed(Now())};
 }
 void RecordSession::Run() noexcept {
     const UINT fps = m_options.fps;
@@ -215,7 +215,7 @@ void RecordSession::Run() noexcept {
                  : DefaultVideoBitrate(description.width, description.height, fps);
         encoder = std::make_unique<IsolatedEncoder>(m_cancelEvent);
         encoder->Open(temporary, description.width, description.height, fps, m_preferHardware,
-                      targetBitrate, m_options.gif);
+                      targetBitrate, m_options.gif, false, 0, 0, m_options.audio);
         {
             std::lock_guard lock(m_mutex);
             m_status.backend = encoder->Backend();
@@ -223,6 +223,7 @@ void RecordSession::Run() noexcept {
             m_status.height = description.height;
             m_status.fps = fps;
             m_status.bitrate = targetBitrate;
+            m_status.audio = m_options.audio.Enabled();
             m_status.encoderProcessId = encoder->ProcessId();
         }
         FrameSchedule schedule(fps);
@@ -238,6 +239,8 @@ void RecordSession::Run() noexcept {
             winrt::throw_hresult(E_FAIL);
         UINT initialDpiX{}, initialDpiY{};
         winrt::check_hresult(GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &initialDpiX, &initialDpiY));
+        const bool withAudio = m_options.audio.Enabled();
+        bool audioRunning = false;
         while (true) {
             auto snapshot = ReadTiming();
             if (m_options.gif && snapshot.duration >= 119LL * 10000000) {
@@ -247,6 +250,10 @@ void RecordSession::Run() noexcept {
             if (snapshot.state == State::Stopping || snapshot.state == State::Discarding)
                 break;
             if (snapshot.state == State::Paused) {
+                if (audioRunning) {
+                    encoder->PumpAudio(snapshot.origin, snapshot.duration, true);
+                    audioRunning = false;
+                }
                 capture.Close(); // no WGC/GPU capture allocations or polling while paused
                 CancelWaitableTimer(timer.value);
                 if (WaitForSingleObject(m_wakeEvent, INFINITE) != WAIT_OBJECT_0)
@@ -330,6 +337,11 @@ void RecordSession::Run() noexcept {
                     schedule.Submitted(at);
                 }
             }
+            const auto audioTiming = ReadTiming();
+            if (withAudio && ready && audioTiming.state == State::Recording) {
+                encoder->PumpAudio(audioTiming.origin, audioTiming.duration, false);
+                audioRunning = true;
+            }
             const auto elapsed = ReadTiming().duration;
             const auto delay =
                 ready && haveFrame ? (std::max)(int64_t(10000), schedule.next - elapsed) : int64_t(100000);
@@ -380,6 +392,8 @@ void RecordSession::Run() noexcept {
                 m_status.maxRead100ns = maxRead;
                 m_status.maxEncode100ns = (std::max)(m_status.maxEncode100ns, encodeSpan);
             }
+            if (audioRunning)
+                encoder->PumpAudio(final.origin, final.duration, true);
             encoder->Finalize();
             finalizedFile = true;
             if (!releaseEncoder())

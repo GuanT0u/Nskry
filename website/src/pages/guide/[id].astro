@@ -1,0 +1,4 @@
+---
+import Site from '../../layouts/Site.astro';import {getCollection,render} from 'astro:content';import {link} from '../../lib/links';export async function getStaticPaths(){return (await getCollection('guides')).map(entry=>({params:{id:entry.id},props:{entry}}));}const {entry}=Astro.props;const {Content}=await render(entry);const all=(await getCollection('guides')).sort((a,b)=>(a.data.order||0)-(b.data.order||0));
+---
+<Site title={entry.data.title} description={entry.data.description}><p class="eyebrow">使用教程</p><div class="split"><aside class="sidebar" aria-label="教程目录">{all.map(g=><a href={link(`guide/${g.id}/`)} aria-current={g.id===entry.id?'page':undefined}>{g.data.title}</a>)}</aside><article class="prose"><h1>{entry.data.title}</h1><Content/></article></div></Site>

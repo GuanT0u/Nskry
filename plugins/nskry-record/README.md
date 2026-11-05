@@ -1,6 +1,6 @@
-# Screen recording 0.4.0
+# Screen recording 0.5.0
 
-独立按需插件，Desktop Duplication / WGC + Media Foundation / WIC，离线、无声音。不依赖 OCR、Scroll、FFmpeg 或外置运行时。
+独立按需插件，Desktop Duplication / WGC + Media Foundation / WIC，离线。MP4 支持可选的应用或输出设备音频。不依赖 OCR、Scroll、FFmpeg 或外置运行时。
 随包提供 GPL-3.0-or-later、COPYING 和 PLUGIN_EXCEPTION。
 
 ## 使用
@@ -8,7 +8,7 @@
 安装 `installer/bundled/nskry-record.nskryplugin` 后按设置页提示重启。必须配合同轮构建的 Core（区域采集 v2）；
 不能仅把 DLL 拷入旧宿主。开发验证不自动安装插件。
 
-- 框选 → Screen recording → 30/60 fps、高清/高/中、可选 Follow selected window → Start。
+- 框选 → Screen recording → 30/60 fps、高清/高/中、可选 Follow selected window → 在 Audio 选择音源 → Start。
 - GIF 是工具栏上独立的 Record GIF，不在视频入口增加格式选择。
 - 开始前显示实际选区红框，选项水平排列在选区下方；空间不足时放到上方或屏幕内。
 - Stop 后可 Save、Copy file 或 Trim。Trim 可拖动时间轴首尾手柄，也保留起止秒数输入，Apply 后仍可保存/复制。
@@ -20,6 +20,15 @@
 
 关闭录制窗时，保存/丢弃/返回的确认在 capture-excluded 控制窗内部显示。
 应用退出取消活动录制/导出；已复制文件保留。
+
+## 音频来源
+
+- **No audio** 是每次录制的默认选项。
+- **Output** 录入所选扬声器、耳机等输出设备上的播放混音。设备变化后重新选择。
+- **App** 只录所选进程及其子进程的播放声音，独立于视频的跟随窗口选项。列表包括可见窗口及可识别的活动音频会话。应用重启后重新选择。
+- 应用回环需要 Windows build 20348 或更新版本。较旧系统可选择输出设备。采集失败会报错。
+- 音频与画面写入同一个 MP4，音频编码为 44.1 kHz 双声道 AAC。暂停同时停止采集声音，恢复后接续有效录制时间。裁剪保留所选区间的音轨。
+- GIF 保持无音频。本版本的选择范围是播放声音，麦克风不在音源列表中。
 
 ## 复制和文件生命周期
 

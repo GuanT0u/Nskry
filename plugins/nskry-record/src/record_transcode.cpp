@@ -1,5 +1,6 @@
 #include "record_transcode.h"
 #include "record_trim.h"
+#include "record_audio_source.h"
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
@@ -11,7 +12,7 @@
 #include <winrt/base.h>
 namespace nskry::record {
 void TrimRecording(const std::wstring &input, bool gif, UINT width, UINT height, int64_t start, int64_t end,
-                   const std::function<void(const uint8_t *, int64_t, int64_t)> &write) {
+                   const std::function<void(const uint8_t *, int64_t, int64_t)> &write, const AudioWriter &writeAudio) {
     if (!ValidTrim(start, end, INT64_MAX))
         winrt::throw_hresult(E_INVALIDARG);
     if (gif) {
@@ -81,19 +82,83 @@ void TrimRecording(const std::wstring &input, bool gif, UINT width, UINT height,
     winrt::check_hresult(MFGetAttributeSize(actual.get(), MF_MT_FRAME_SIZE, &w, &h));
     if (w != width || h != height)
         winrt::throw_hresult(E_BOUNDS);
+    constexpr DWORD audioStream = static_cast<DWORD>(MF_SOURCE_READER_FIRST_AUDIO_STREAM);
+    constexpr DWORD anyStream = static_cast<DWORD>(MF_SOURCE_READER_ANY_STREAM);
+    if (writeAudio) {
+        winrt::com_ptr<IMFMediaType> pcm;
+        winrt::check_hresult(MFCreateMediaType(pcm.put()));
+        winrt::check_hresult(pcm->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio));
+        winrt::check_hresult(pcm->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_PCM));
+        winrt::check_hresult(pcm->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, AudioRate));
+        winrt::check_hresult(pcm->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16));
+        winrt::check_hresult(pcm->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2));
+        winrt::check_hresult(pcm->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, AudioBlock));
+        winrt::check_hresult(pcm->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, AudioRate * AudioBlock));
+        winrt::check_hresult(reader->SetStreamSelection(audioStream, TRUE));
+        winrt::check_hresult(reader->SetCurrentMediaType(audioStream, nullptr, pcm.get()));
+    }
     PROPVARIANT position{};
     position.vt = VT_I8;
     position.hVal.QuadPart = start;
     winrt::check_hresult(reader->SetCurrentPosition(GUID_NULL, position));
     std::vector<uint8_t> pixels(uint64_t(w) * h * 4);
     UINT storageWidth = w, storageHeight = h;
-    while (true) {
-        DWORD flags{};
+    bool videoDone = false, audioDone = !writeAudio;
+    DWORD actualAudio = MAXDWORD;
+    while (!videoDone || !audioDone) {
+        DWORD flags{}, stream{};
         LONGLONG timestamp{};
         winrt::com_ptr<IMFSample> sample;
-        winrt::check_hresult(reader->ReadSample(videoStream, 0, nullptr, &flags, &timestamp, sample.put()));
+        winrt::check_hresult(reader->ReadSample(writeAudio ? anyStream : videoStream, 0, &stream, &flags, &timestamp, sample.put()));
         if (flags & MF_SOURCE_READERF_ERROR)
             throw winrt::hresult_error(E_FAIL, L"Trim decoder reported a source error.");
+        if (writeAudio && actualAudio == MAXDWORD) {
+            winrt::com_ptr<IMFMediaType> streamType;
+            GUID major{};
+            winrt::check_hresult(reader->GetCurrentMediaType(stream, streamType.put()));
+            winrt::check_hresult(streamType->GetGUID(MF_MT_MAJOR_TYPE, &major));
+            if (major == MFMediaType_Audio)
+                actualAudio = stream;
+        }
+        if (stream == actualAudio) {
+            if (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) {
+                winrt::com_ptr<IMFMediaType> pcm;
+                GUID subtype{};
+                winrt::check_hresult(reader->GetCurrentMediaType(stream, pcm.put()));
+                winrt::check_hresult(pcm->GetGUID(MF_MT_SUBTYPE, &subtype));
+                if (subtype != MFAudioFormat_PCM ||
+                    MFGetAttributeUINT32(pcm.get(), MF_MT_AUDIO_SAMPLES_PER_SECOND, 0) != AudioRate ||
+                    MFGetAttributeUINT32(pcm.get(), MF_MT_AUDIO_NUM_CHANNELS, 0) != 2 ||
+                    MFGetAttributeUINT32(pcm.get(), MF_MT_AUDIO_BITS_PER_SAMPLE, 0) != 16)
+                    winrt::throw_hresult(E_BOUNDS);
+            }
+            if (sample && timestamp < end) {
+                winrt::com_ptr<IMFMediaBuffer> buffer;
+                winrt::check_hresult(sample->ConvertToContiguousBuffer(buffer.put()));
+                BYTE *bytes{};
+                DWORD size{};
+                winrt::check_hresult(buffer->Lock(&bytes, nullptr, &size));
+                try {
+                    if (size % AudioBlock)
+                        winrt::throw_hresult(E_BOUNDS);
+                    const auto first = AudioFrames(timestamp - start);
+                    const auto skip = (std::max)(int64_t(0), -first);
+                    const auto count = (std::min)(int64_t(size / AudioBlock) - skip,
+                                                   AudioFrames(end - start) - first - skip);
+                    if (count > 0)
+                        writeAudio(bytes + skip * AudioBlock, UINT32(count), first + skip);
+                } catch (...) {
+                    buffer->Unlock();
+                    throw;
+                }
+                winrt::check_hresult(buffer->Unlock());
+            }
+            if (timestamp >= end || (flags & MF_SOURCE_READERF_ENDOFSTREAM)) {
+                audioDone = true;
+                winrt::check_hresult(reader->SetStreamSelection(audioStream, FALSE));
+            }
+            continue;
+        }
         if (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) {
             winrt::com_ptr<IMFMediaType> changed;
             winrt::check_hresult(reader->GetCurrentMediaType(videoStream, changed.put()));
@@ -121,8 +186,11 @@ void TrimRecording(const std::wstring &input, bool gif, UINT width, UINT height,
             storageWidth = cw;
             storageHeight = ch;
         }
-        if (timestamp >= end)
-            break;
+        if (timestamp >= end) {
+            videoDone = true;
+            winrt::check_hresult(reader->SetStreamSelection(videoStream, FALSE));
+            continue;
+        }
         if (sample) {
             LONGLONG duration{};
             winrt::check_hresult(sample->GetSampleDuration(&duration));
@@ -157,8 +225,10 @@ void TrimRecording(const std::wstring &input, bool gif, UINT width, UINT height,
                 write(pixels.data(), clip.time, clip.duration);
             }
         }
-        if (flags & MF_SOURCE_READERF_ENDOFSTREAM)
-            break;
+        if (flags & MF_SOURCE_READERF_ENDOFSTREAM) {
+            videoDone = true;
+            winrt::check_hresult(reader->SetStreamSelection(videoStream, FALSE));
+        }
     }
 }
 namespace {

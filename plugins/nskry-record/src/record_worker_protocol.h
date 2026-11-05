@@ -7,14 +7,15 @@
 namespace nskry::record::wire {
 // PRIVATE x64 child protocol, not a public SDK extension. One request/response
 // slot, synchronized by inherited events. No pointers, textures or D3D contexts.
-constexpr uint32_t Magic = 0x4E524543, Version = 3;
+constexpr uint32_t Magic = 0x4E524543, Version = 4;
 enum class Command : uint32_t {
     Open = 1,
     Frame,
     Finalize,
     Close,
     Trim,
-    Preview
+    Preview,
+    AudioPump
 };
 struct alignas(8) Header {
     uint32_t magic = Magic, version = Version;
@@ -22,6 +23,10 @@ struct alignas(8) Header {
     uint32_t width{}, height{}, fps{}, hardware{};
     uint32_t bitrate{};
     uint32_t gif{};
+    uint32_t audio{}, audioPid{}, audioStop{};
+    uint64_t audioProcessCreated{};
+    wchar_t audioEndpoint[1024]{};
+    int64_t audioOrigin{}, audioDuration{};
     uint32_t preview{}, sourceWidth{}, sourceHeight{};
     uint64_t request{}, response{};
     int64_t time{}, duration{};
@@ -37,6 +42,10 @@ static_assert(std::is_standard_layout_v<Header> && std::is_trivially_copyable_v<
 inline bool ValidHeader(const Header &h) {
     return h.magic == Magic && h.version == Version && h.headerBytes == sizeof(Header) &&
            ValidFrameFormat(h.width, h.height, h.fps) && h.gif <= 1 && h.preview <= 1 &&
+           h.audio <= 1 && !h.audioEndpoint[1023] && h.audioStop <= 1 &&
+           (!h.audio || (!h.gif && !h.preview)) &&
+           (!h.audioPid || (h.audio && h.audioProcessCreated && !h.audioEndpoint[0])) &&
+           (!h.audioEndpoint[0] || h.audio) &&
            (!h.preview || (h.width <= 640 && h.height <= 360 && ValidFrameFormat(h.sourceWidth, h.sourceHeight, h.fps))) &&
            (!h.gif || (h.fps == 10 && h.width <= 960 && h.height <= 960 && uint64_t(h.width) * h.height <= 960 * 540)) &&
            h.pixelBytes == uint64_t(h.width) * h.height * (h.gif || h.preview ? 4 : 3) / (h.gif || h.preview ? 1 : 2) &&

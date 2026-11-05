@@ -130,7 +130,9 @@ IsolatedEncoder::IsolatedEncoder(HANDLE canceled, std::filesystem::path executab
 }
 IsolatedEncoder::~IsolatedEncoder() = default;
 void IsolatedEncoder::Open(const std::wstring &path, UINT width, UINT height, UINT fps, bool hardware, uint32_t bitrate,
-                           bool gif, bool preview, UINT sourceWidth, UINT sourceHeight) {
+                           bool gif, bool preview, UINT sourceWidth, UINT sourceHeight, const AudioSource &source, bool trimAudio) {
+    if (source.endpoint.size() >= 1024 || ((source.Enabled() || trimAudio) && (gif || preview)))
+        winrt::throw_hresult(E_INVALIDARG);
     if (bitrate && (bitrate < 500000 || bitrate > 24000000))
         winrt::throw_hresult(E_INVALIDARG);
     if (m_channel || !ValidFrameFormat(width, height, fps) || path.empty() || path.size() >= 32768 ||
@@ -172,6 +174,10 @@ void IsolatedEncoder::Open(const std::wstring &path, UINT width, UINT height, UI
     h.fps = fps;
     h.bitrate = bitrate;
     h.gif = gif;
+    h.audio = source.Enabled() || trimAudio;
+    h.audioPid = source.pid;
+    h.audioProcessCreated = source.processCreated;
+    wcscpy_s(h.audioEndpoint, source.endpoint.c_str());
     h.preview = preview;
     h.sourceWidth = sourceWidth;
     h.sourceHeight = sourceHeight;
@@ -262,6 +268,14 @@ void IsolatedEncoder::Preview(int64_t time, uint8_t *pixels, uint32_t capacity) 
     h.time = time;
     m_channel->Call(wire::Command::Preview);
     memcpy(pixels, &h + 1, m_channel->pixelBytes);
+}
+void IsolatedEncoder::PumpAudio(int64_t origin, int64_t duration, bool stop) {
+    auto &channel = *m_channel;
+    auto &header = *static_cast<wire::Header *>(channel.view.value);
+    header.audioOrigin = origin;
+    header.audioDuration = duration;
+    header.audioStop = stop;
+    channel.Call(wire::Command::AudioPump);
 }
 void IsolatedEncoder::Finalize() {
     if (!m_channel || !m_samples || m_finalizationAttempted)

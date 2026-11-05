@@ -1,0 +1,26 @@
+{
+  "id": "nskry-ocr",
+  "name": "文字识别",
+  "summary": "从截图中提取中英文。",
+  "publisher": "Nskry 项目",
+  "origin": "official",
+  "license": "GPL-3.0-or-later",
+  "version": "0.6.6",
+  "date": "2026-10-28",
+  "status": "development",
+  "source": "https://github.com/GuanT0u/Nskry/tree/master/plugins/nskry-ocr",
+  "support": "https://github.com/GuanT0u/Nskry/issues",
+  "tags": [
+    "文字",
+    "离线"
+  ],
+  "api": 2,
+  "min_nskry": "0.5.0",
+  "max_nskry": null,
+  "privacy": "功能在本地运行；用户主动检查更新时会连接更新源。",
+  "limitations": "可能漏字或误识别，重要内容请对照原图。模型发行审核尚未完成。",
+  "notes": "本地精确识别和 Windows OCR 快速模式；图片与文字对照查看。",
+  "assets": [],
+  "catalog": false,
+  "update_url": null
+}

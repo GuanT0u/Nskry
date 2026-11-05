@@ -37,7 +37,8 @@ void MfEncoder::OpenStream(IMFByteStream *stream, UINT width, UINT height, UINT 
     Configure(false);
 }
 void MfEncoder::Open(const std::wstring &path, UINT width, UINT height, UINT fps, bool hardware,
-                     volatile LONG *created, uint32_t bitrate) {
+                     volatile LONG *created, uint32_t bitrate, bool audio) {
+    m_audio = audio;
     if (bitrate && (bitrate < 500000 || bitrate > 24000000))
         winrt::throw_hresult(E_INVALIDARG);
     m_bitrate = bitrate;
@@ -116,6 +117,24 @@ void MfEncoder::Configure(bool hardware) {
         if (codec->IsSupported(&CODECAPI_AVEncNumWorkerThreads) == S_OK)
             codec->SetValue(&CODECAPI_AVEncNumWorkerThreads, &count);
     }
+    if (m_audio) {
+        const auto audioType = [](GUID subtype, UINT32 bytesPerSecond) {
+            winrt::com_ptr<IMFMediaType> type;
+            winrt::check_hresult(MFCreateMediaType(type.put()));
+            winrt::check_hresult(type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio));
+            winrt::check_hresult(type->SetGUID(MF_MT_SUBTYPE, subtype));
+            winrt::check_hresult(type->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16));
+            winrt::check_hresult(type->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2));
+            winrt::check_hresult(type->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, AudioRate));
+            winrt::check_hresult(type->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, bytesPerSecond));
+            return type;
+        };
+        auto aac = audioType(MFAudioFormat_AAC, 16000);
+        auto pcm = audioType(MFAudioFormat_PCM, AudioRate * AudioBlock);
+        winrt::check_hresult(pcm->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, AudioBlock));
+        winrt::check_hresult(m_writer->AddStream(aac.get(), &m_audioStream));
+        winrt::check_hresult(m_writer->SetInputMediaType(m_audioStream, pcm.get(), nullptr));
+    }
     winrt::check_hresult(m_writer->BeginWriting());
     DescribeBackend();
     if (!hardware)
@@ -173,9 +192,39 @@ void MfEncoder::WritePixels(const uint8_t *pixels, int64_t time, int64_t duratio
     ++m_samples;
     m_lastEnd = time + duration;
 }
+void MfEncoder::WriteAudio(const uint8_t *pcm, uint32_t frames, int64_t first) {
+    if (!m_audio || !m_writer || m_finalizationAttempted || first < 0 || first > INT64_MAX / 1000)
+        winrt::throw_hresult(E_INVALIDARG);
+    const auto end = first + frames;
+    while (m_audioFrames < end) {
+        const bool gap = m_audioFrames < first;
+        const auto count = (std::min)(int64_t(4096), (gap ? first : end) - m_audioFrames);
+        const auto size = DWORD(count * AudioBlock);
+        winrt::com_ptr<IMFMediaBuffer> buffer;
+        winrt::com_ptr<IMFSample> sample;
+        winrt::check_hresult(MFCreateMemoryBuffer(size, buffer.put()));
+        BYTE *data{};
+        winrt::check_hresult(buffer->Lock(&data, nullptr, nullptr));
+        if (gap || !pcm)
+            memset(data, 0, size);
+        else
+            memcpy(data, pcm + (m_audioFrames - first) * AudioBlock, size);
+        winrt::check_hresult(buffer->Unlock());
+        winrt::check_hresult(buffer->SetCurrentLength(size));
+        winrt::check_hresult(MFCreateSample(sample.put()));
+        winrt::check_hresult(sample->AddBuffer(buffer.get()));
+        const auto time = AudioTime(m_audioFrames);
+        winrt::check_hresult(sample->SetSampleTime(time));
+        winrt::check_hresult(sample->SetSampleDuration(AudioTime(m_audioFrames + count) - time));
+        winrt::check_hresult(m_writer->WriteSample(m_audioStream, sample.get()));
+        m_audioFrames += count;
+    }
+}
 void MfEncoder::Finalize() {
     if (!m_writer || !m_samples || m_finalizationAttempted)
         winrt::throw_hresult(MF_E_INVALIDREQUEST);
+    if (m_audio)
+        WriteAudio(nullptr, 0, AudioFrames(m_lastEnd));
     m_finalizationAttempted = true;
     auto hr = m_writer->Finalize();
     if (FAILED(hr))

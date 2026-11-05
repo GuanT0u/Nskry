@@ -1,5 +1,8 @@
 # 插件开发与交付规范（API 2）
 
+向 Nskry 主仓库贡献代码时，另须遵循 [贡献与 PR 规范](../../CONTRIBUTING.md)。
+独立第三方插件可在自己的仓库发布，不要求合入主仓库，也不因提交 PR 自动获得官方身份。
+
 快捷键、默认键和 General 跳转入口须遵循 [输入扩展 v1/v2](shortcuts_and_input_extension.md)。
 不得只展示可配置快捷键而未实现配置导出，亦不得占用 API 2 reserved 字段。
 已加载任务的全局控制与连续区域采集另见 [可选命令/采集 v1](recording_extensions_v1.md)；

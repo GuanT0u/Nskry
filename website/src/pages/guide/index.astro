@@ -1,0 +1,4 @@
+---
+import Site from '../../layouts/Site.astro';import {getCollection} from 'astro:content';import {link} from '../../lib/links';const guides=(await getCollection('guides')).sort((a,b)=>(a.data.order||0)-(b.data.order||0));
+---
+<Site title="使用教程"><p class="eyebrow">Guides</p><h1>从这里开始。</h1><p class="lead">从第一次框选，到为工作流添加插件。</p><div class="grid">{guides.map(g=><article class="card"><h2><a href={link(`guide/${g.id}/`)}>{g.data.title}</a></h2><p>{g.data.description}</p><a href={link(`guide/${g.id}/`)}>阅读教程 →</a></article>)}</div></Site>

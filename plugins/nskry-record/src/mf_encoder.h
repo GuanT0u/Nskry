@@ -1,4 +1,5 @@
 #pragma once
+#include "record_audio_source.h"
 #include <mfidl.h>
 #include <mfreadwrite.h>
 #include <string>
@@ -15,12 +16,13 @@ class MfEncoder {
     MfEncoder(const MfEncoder &) = delete;
     MfEncoder &operator=(const MfEncoder &) = delete;
     void Open(const std::wstring &temporary, UINT width, UINT height, UINT fps, bool preferHardware = true,
-              volatile LONG *created = nullptr, uint32_t bitrate = 0);
+              volatile LONG *created = nullptr, uint32_t bitrate = 0, bool audio = false);
     // Internal stream sink (e.g. quota/error regression). AddRefs caller's stream,
     // does not own/delete a path, no destructive automatic retry on caller data.
     void OpenStream(IMFByteStream *stream, UINT width, UINT height, UINT fps);
     void Write(const uint8_t *topDownBgra, int64_t time, int64_t duration);
     void WriteNv12(const uint8_t *packedNv12, int64_t time, int64_t duration);
+    void WriteAudio(const uint8_t *pcm, uint32_t frames, int64_t first);
     void Finalize();
     const std::wstring &Backend() const {
         return m_backend;
@@ -51,7 +53,9 @@ class MfEncoder {
     winrt::com_ptr<IMFByteStream> m_file;
     std::wstring m_path, m_backend;
     UINT m_width{}, m_height{}, m_fps{}, m_bitrate{};
-    DWORD m_stream{};
+    DWORD m_stream{}, m_audioStream{};
+    bool m_audio{};
+    int64_t m_audioFrames{};
     uint64_t m_samples{};
     bool m_ownsFile = false;
     bool m_finalizationAttempted = false, m_finalized = false;

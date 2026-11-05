@@ -2,6 +2,7 @@
 #include "nskry_capture.h"
 #include "record_policy.h"
 #include "record_options.h"
+#include "record_audio_source.h"
 #include <mutex>
 #include <string>
 #include <thread>
@@ -22,6 +23,7 @@ struct Snapshot {
     RECT region{};
     uint32_t width{}, height{}, fps{};
     uint32_t bitrate{};
+    bool audio{};
 };
 struct SessionOptions {
     uint32_t fps = 20;
@@ -31,6 +33,7 @@ struct SessionOptions {
     bool gif = false;
     bool deliveryCache = false;
     Quality quality = Quality::High;
+    AudioSource audio;
 };
 // UI owns this object and its thread; worker owns capture/encoder/COM/files.
 // UI never joins until Snapshot says finished. Shutdown cancels and joins before DLL unload.
@@ -48,6 +51,7 @@ class RecordSession {
 
   private:
     struct Timing {
+        int64_t origin;
         State state;
         int64_t duration;
     };

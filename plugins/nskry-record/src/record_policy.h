@@ -78,6 +78,7 @@ class Timeline {
     void Complete(bool success) {
         state = success ? State::Done : State::Failed;
     }
+    int64_t Origin() const { return base; }
     State state = State::Idle;
 
   private:

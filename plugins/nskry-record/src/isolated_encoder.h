@@ -1,4 +1,5 @@
 #pragma once
+#include "record_audio_source.h"
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -16,7 +17,9 @@ class IsolatedEncoder {
     IsolatedEncoder(const IsolatedEncoder &) = delete;
     IsolatedEncoder &operator=(const IsolatedEncoder &) = delete;
     void Open(const std::wstring &path, UINT width, UINT height, UINT fps, bool hardware = true, uint32_t bitrate = 0,
-              bool gif = false, bool preview = false, UINT sourceWidth = 0, UINT sourceHeight = 0);
+              bool gif = false, bool preview = false, UINT sourceWidth = 0, UINT sourceHeight = 0,
+              const AudioSource &source = {}, bool trimAudio = false);
+    void PumpAudio(int64_t origin, int64_t duration, bool stop);
     void Preview(int64_t time, uint8_t *pixels, uint32_t capacity);
     void Write(const uint8_t *bgra, int64_t time, int64_t duration);
     // Repeat the last acknowledged input, not an MF-owned sample. The child

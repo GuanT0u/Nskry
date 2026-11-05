@@ -1,0 +1,4 @@
+---
+const { assets, withdrawn=false } = Astro.props;
+---
+{!assets.length ? <p class="notice">此版本尚未提供经发行审核的公开下载文件。</p> : assets.map(a=><section class="card"><h3>{a.name}</h3><p>{(a.bytes/1024/1024).toFixed(1)} MiB · {a.includes.join('、')}</p><p>{a.setup}</p><p>SHA-256：<code>{a.sha256}</code></p>{!withdrawn && <a class="button" href={a.url}>下载 {a.name}</a>}{withdrawn && <p class="notice">此版本已撤回，不再推荐下载。</p>}</section>)}

@@ -1,4 +1,5 @@
 #include "nskry_plugin.h"
+#include "scroll_stitch.h"
 
 #include <algorithm>
 #include <cmath>
@@ -18,27 +19,13 @@ constexpr UINT kCaptureIntervalMs = 90;
 constexpr UINT kAutoScrollIntervalMs = 450;
 constexpr int kAutoWheelDelta = WHEEL_DELTA / 2;
 constexpr int kAutoButton = 101, kCopyButton = 102, kEditButton = 103, kCancelButton = 104;
-constexpr size_t kMaxFrameBytes = 128ull * 1024 * 1024;
+using namespace nskry::scroll;
 constexpr size_t kMaxStitchedBytes = 192ull * 1024 * 1024;
 constexpr size_t kMaxWorkingBytes = 512ull * 1024 * 1024;
 
-struct Frame { int width{}, height{}; std::vector<unsigned int> pixels; };
 NskryPluginInfo kInfo{ sizeof(NskryPluginInfo), NSKRY_PLUGIN_API_VERSION,
-    L"Long Screenshot", L"nskry-scroll", L"0.5.1", L"Nskry Team",
+    L"Long Screenshot", L"nskry-scroll", L"0.5.2", L"Nskry Team",
     L"Interactive scrolling capture with live preview", nullptr, NSKRY_CAP_TOOLBAR_ACTION, {} };
-
-bool PixelCount(int width, int height, size_t& count, size_t maximumBytes = kMaxFrameBytes) noexcept {
-    if (width <= 0 || height <= 0) return false;
-    const size_t w = static_cast<size_t>(width), h = static_cast<size_t>(height);
-    if (w > (std::numeric_limits<size_t>::max)() / h) return false;
-    count = w * h;
-    return count <= maximumBytes / sizeof(unsigned int);
-}
-
-bool ValidFrame(const Frame& frame, size_t maximumBytes = kMaxFrameBytes) noexcept {
-    size_t count = 0;
-    return PixelCount(frame.width, frame.height, count, maximumBytes) && frame.pixels.size() == count;
-}
 
 HINSTANCE ModuleHandle() noexcept {
     HMODULE module = nullptr;
@@ -73,100 +60,6 @@ bool CaptureScreenRegion(const RECT& region, Frame& frame) {
     const bool copied = ::BitBlt(memory, 0, 0, width, height, screen, region.left, region.top, SRCCOPY | CAPTUREBLT) != FALSE;
     ::SelectObject(memory, old); ::DeleteDC(memory); ::ReleaseDC(nullptr, screen);
     const bool read = copied && ReadBitmap(bitmap, frame); ::DeleteObject(bitmap); return read;
-}
-
-int Channel(unsigned int pixel, int shift) { return static_cast<int>((pixel >> shift) & 255); }
-int Luma(unsigned int pixel) { return (Channel(pixel, 16) * 3 + Channel(pixel, 8) * 6 + Channel(pixel, 0)) / 10; }
-
-int FrameDifference(const Frame& left, const Frame& right) {
-    if (!ValidFrame(left) || !ValidFrame(right) || left.width != right.width || left.height != right.height) return 255;
-    unsigned long long total = 0; int samples = 0;
-    for (int y = 8; y < left.height - 8; y += 24) for (int x = 8; x < left.width - 8; x += 24) {
-        const unsigned int a = left.pixels[static_cast<size_t>(y) * left.width + x];
-        const unsigned int b = right.pixels[static_cast<size_t>(y) * right.width + x];
-        total += abs(Channel(a, 16) - Channel(b, 16)) + abs(Channel(a, 8) - Channel(b, 8)) + abs(Channel(a, 0) - Channel(b, 0)); ++samples;
-    }
-    return samples ? static_cast<int>(total / static_cast<unsigned long long>(samples * 3)) : 255;
-}
-
-struct AlignmentScore { int shift{}; double error{ (std::numeric_limits<double>::infinity)() }; int samples{}; };
-
-AlignmentScore ScoreShift(const Frame& previous, const Frame& current, int shift, int xStep, int yStep) noexcept {
-    AlignmentScore result; result.shift = shift;
-    const int topMargin = (std::max)(8, (std::min)(24, previous.height / 8));
-    const int bottomMargin = (std::max)(8, (std::min)(16, previous.height / 12));
-    const int yEnd = previous.height - shift - bottomMargin;
-    if (yEnd <= topMargin || previous.width <= 24) return result;
-    unsigned long long cost = 0; int samples = 0, possible = 0;
-    for (int y = topMargin; y < yEnd; y += yStep) for (int x = 12; x < previous.width - 12; x += xStep) {
-        ++possible;
-        const size_t oldIndex = static_cast<size_t>(y + shift) * previous.width + x;
-        const size_t newIndex = static_cast<size_t>(y) * current.width + x;
-        const unsigned int a = previous.pixels[oldIndex], b = current.pixels[newIndex];
-        const int edgeA = std::abs(Luma(a) - Luma(previous.pixels[oldIndex - 2])) +
-            std::abs(Luma(a) - Luma(previous.pixels[oldIndex - static_cast<size_t>(previous.width) * 2]));
-        const int edgeB = std::abs(Luma(b) - Luma(current.pixels[newIndex - 2])) +
-            std::abs(Luma(b) - Luma(current.pixels[newIndex - static_cast<size_t>(current.width) * 2]));
-        if ((std::max)(edgeA, edgeB) < 20) continue;
-        cost += static_cast<unsigned long long>(std::abs(Channel(a, 0) - Channel(b, 0)));
-        cost += static_cast<unsigned long long>(std::abs(Channel(a, 8) - Channel(b, 8)));
-        cost += static_cast<unsigned long long>(std::abs(Channel(a, 16) - Channel(b, 16)));
-        ++samples;
-    }
-    const int minimumSamples = (std::max)(12, possible / 40);
-    if (samples >= minimumSamples)
-        result.error = static_cast<double>(cost) / static_cast<double>(samples * 3);
-    result.samples = samples; return result;
-}
-
-int FindAdvance(const Frame& previous, const Frame& current, int maximumAdvance) {
-    if (!ValidFrame(previous) || !ValidFrame(current) || previous.width != current.width || previous.height != current.height) return 0;
-    constexpr int minShift = 4;
-    // Keep a meaningful overlap for confidence scoring, but allow a normal
-    // trackpad gesture to move most of the viewport between samples. Texture-
-    // poor or repetitive pages are still rejected by the score/ambiguity test.
-    const int minimumOverlap = (std::max)(48, previous.height * 30 / 100);
-    const int maxShift = (std::min)(maximumAdvance, previous.height - minimumOverlap);
-    if (maxShift < minShift) return 0;
-
-    const int coarseStep = maxShift > 240 ? 8 : (maxShift > 80 ? 4 : 2);
-    const int coarseX = previous.width > 1600 ? 32 : (previous.width > 700 ? 24 : 12);
-    const int coarseY = previous.height > 1200 ? 24 : (previous.height > 500 ? 16 : 8);
-    std::vector<AlignmentScore> coarse;
-    coarse.reserve(static_cast<size_t>((maxShift - minShift) / coarseStep + 2));
-    for (int shift = minShift; shift <= maxShift; shift += coarseStep)
-        coarse.push_back(ScoreShift(previous, current, shift, coarseX, coarseY));
-    if (coarse.empty() || coarse.back().shift != maxShift)
-        coarse.push_back(ScoreShift(previous, current, maxShift, coarseX, coarseY));
-    std::sort(coarse.begin(), coarse.end(), [](const AlignmentScore& a, const AlignmentScore& b) { return a.error < b.error; });
-
-    std::vector<int> candidates;
-    const size_t seedCount = (std::min<size_t>)(4, coarse.size());
-    for (size_t i = 0; i < seedCount && std::isfinite(coarse[i].error); ++i) {
-        const int first = (std::max)(minShift, coarse[i].shift - coarseStep);
-        const int last = (std::min)(maxShift, coarse[i].shift + coarseStep);
-        for (int shift = first; shift <= last; ++shift)
-            if (std::find(candidates.begin(), candidates.end(), shift) == candidates.end()) candidates.push_back(shift);
-    }
-    if (candidates.empty()) return 0;
-
-    std::vector<AlignmentScore> fine;
-    fine.reserve(candidates.size());
-    const int fineX = previous.width > 2400 ? 16 : 12;
-    const int fineY = previous.height > 1600 ? 10 : 7;
-    for (const int shift : candidates) fine.push_back(ScoreShift(previous, current, shift, fineX, fineY));
-    std::sort(fine.begin(), fine.end(), [](const AlignmentScore& a, const AlignmentScore& b) { return a.error < b.error; });
-    if (fine.empty() || !std::isfinite(fine.front().error) || fine.front().error >= 12.0) return 0;
-
-    const AlignmentScore& best = fine.front();
-    double secondError = (std::numeric_limits<double>::infinity)();
-    for (const AlignmentScore& score : fine) {
-        if (std::abs(score.shift - best.shift) >= 4 && std::isfinite(score.error)) { secondError = score.error; break; }
-    }
-    // Repetitive pages can produce several equally plausible offsets. Reject
-    // those rather than appending at an arbitrary position.
-    if (std::isfinite(secondError) && secondError - best.error < 0.8 && best.error > secondError * 0.92) return 0;
-    return best.shift;
 }
 
 HBITMAP MakeBitmap(const Frame& frame) {
@@ -262,7 +155,7 @@ private:
         HWND copyButton = ::CreateWindowExW(0, L"BUTTON", L"Copy", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 121, controlsY, 64, 30, m_panel, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopyButton)), nullptr, nullptr);
         HWND editButton = ::CreateWindowExW(0, L"BUTTON", L"Edit", WS_CHILD | WS_VISIBLE, 191, controlsY, 64, 30, m_panel, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kEditButton)), nullptr, nullptr);
         HWND cancelButton = ::CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE, 261, controlsY, 76, 30, m_panel, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelButton)), nullptr, nullptr);
-        m_status = ::CreateWindowExW(0, L"STATIC", L"Scroll manually, or start auto scroll", WS_CHILD | WS_VISIBLE | SS_CENTER, 8, controlsY - 30, client.right - 16, 22, m_panel, nullptr, nullptr, nullptr);
+        m_status = ::CreateWindowExW(0, L"STATIC", L"Scroll up/down manually, or auto scroll down", WS_CHILD | WS_VISIBLE | SS_CENTER, 8, controlsY - 30, client.right - 16, 22, m_panel, nullptr, nullptr, nullptr);
         if (!m_autoButton || !copyButton || !editButton || !cancelButton || !m_status) return false;
         ::ShowWindow(m_panel, SW_SHOW); ::UpdateWindow(m_panel); return true;
     }
@@ -319,10 +212,11 @@ private:
 
     // Commits only a bounded, confidently aligned increment.  This is called
     // while the page is still moving as well as at its final resting point.
-    bool AppendFrame(Frame&& next, int maximumAdvance) {
-        const int advance = FindAdvance(m_last, next, maximumAdvance);
+    bool CommitFrame(Frame&& next, int maximumAdvance) {
+        const int advance = FindMotion(m_last, next, maximumAdvance);
         if (!advance) return false;
-        const size_t addedPixels = static_cast<size_t>(advance) * static_cast<size_t>(next.width);
+        const Placement placement = PlaceFrame(m_position, advance, next.height, m_stitched.height);
+        const size_t addedPixels = static_cast<size_t>(placement.prepend + placement.append) * static_cast<size_t>(next.width);
         if (addedPixels > next.pixels.size() || m_stitched.pixels.size() > (std::numeric_limits<size_t>::max)() - addedPixels) return false;
         const size_t newPixels = m_stitched.pixels.size() + addedPixels;
         const size_t maxPixels = kMaxStitchedBytes / sizeof(unsigned int);
@@ -341,8 +235,9 @@ private:
             }
             m_stitched.pixels.reserve(targetCapacity);
         }
-        m_stitched.pixels.insert(m_stitched.pixels.end(), next.pixels.end() - addedPixels, next.pixels.end());
-        m_stitched.height += advance; m_last = std::move(next); m_probe = m_last; ++m_frames;
+        Extend(m_stitched, next, placement);
+        m_position = placement.top + placement.prepend;
+        m_last = std::move(next); m_probe = m_last; ++m_frames;
         m_noProgressCount = 0; m_autoStepAdvanced = true; UpdateCaptureStatus();
         return true;
     }
@@ -364,7 +259,7 @@ private:
             // viewport, which handles ordinary wheel and trackpad gestures;
             // movements beyond the searchable overlap remain safely rejected.
             const int incrementalLimit = (std::max)(24, m_last.height * 70 / 100);
-            if (!AppendFrame(std::move(next), incrementalLimit)) {
+            if (!CommitFrame(std::move(next), incrementalLimit)) {
                 m_probe = std::move(next);
                 ::SetWindowTextW(m_status, m_auto ? L"Scrolling… collecting small increments" : L"Scrolling manually… collecting increments");
             }
@@ -384,7 +279,7 @@ private:
         // The resting frame is always checked too, so the last short movement
         // is not lost even if it happened just before the user released input.
         const int restingLimit = (std::max)(24, m_last.height * 70 / 100);
-        if (!AppendFrame(std::move(next), restingLimit)) {
+        if (!CommitFrame(std::move(next), restingLimit)) {
             m_probe = std::move(next); m_waitingForSettle = false; m_auto = false;
             ::SetWindowTextW(m_autoButton, L"Auto scroll"); ::SetWindowTextW(m_status, L"Could not align this step · scroll a shorter distance");
             return;
@@ -440,6 +335,7 @@ private:
     NskryHostContext m_context{}; Frame m_last, m_probe, m_stitched; RECT m_virtual{}; HWND m_panel{}, m_overlay{}, m_autoButton{}, m_status{};
     bool m_auto = false, m_finished = false, m_waitingForSettle = false, m_autoStepAdvanced = false, m_timerRunning = false;
     bool m_panelExcludedFromCapture = false;
+    int m_position = 0; // Viewport top relative to the stitched image, rebased after prepending.
     int m_frames = 1, m_stableSamples = 0, m_noProgressCount = 0; ULONGLONG m_lastAutoScroll{};
 };
 } // namespace

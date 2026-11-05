@@ -1,0 +1,12 @@
+---
+import Site from '../../layouts/Site.astro';
+import Assets from '../../components/Assets.astro';
+import {loadData,statusLabel} from '../../lib/data.mjs';
+import {link} from '../../lib/links';
+import {getCollection,render} from 'astro:content';
+export async function getStaticPaths(){const entries=await getCollection('plugins');return loadData().plugins.map(p=>({params:{id:p.id},props:{p,entry:entries.find(e=>e.id===p.id)}}));}
+const {p,entry}=Astro.props;
+if(!entry)throw new Error(`Missing plugin article: ${p.id}`);
+const {Content}=await render(entry);
+---
+<Site title={p.name} description={p.summary}><p class="eyebrow"><a href={link('plugins/')}>插件目录</a> / {p.id}</p><h1>{p.name}</h1><p class="lead">{p.summary}</p><span class="badge">{statusLabel(p.status)}</span><dl><dt>源码版本</dt><dd>{p.version} · 资料核对 {p.date}</dd><dt>维护者</dt><dd>{p.publisher} · {p.origin==='official'?'项目官方维护（不代表已完成包签名验证）':'独立第三方'}</dd><dt>兼容范围</dt><dd>Windows 10 2004+ x64 · Core {p.min_nskry} 至 {p.max_nskry||'未声明上限'} · API {p.api}；具体功能可能需要配套新版 Core</dd><dt>许可证</dt><dd>{p.license}</dd><dt>源码与支持</dt><dd><a href={p.source}>源码</a> · <a href={p.support}>问题反馈</a></dd><dt>更新源</dt><dd>{p.update_url?<a href={p.update_url}>发布者更新目录</a>:'尚未配置正式更新源'}</dd></dl><article class="prose"><Content/><h2>隐私与限制</h2><p>{p.privacy}</p><p>{p.limitations}</p><h2>下载与安装</h2><Assets assets={p.assets} withdrawn={p.status==='withdrawn'}/><p>下载完整 .nskryplugin 包后，在设置 → Plugins 中安装。更新或卸载已加载插件后，需要正常退出并重启 Nskry。</p><a href={link('guide/plugins/')}>插件安装教程 →</a></article></Site>

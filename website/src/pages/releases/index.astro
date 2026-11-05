@@ -1,0 +1,4 @@
+---
+import Site from '../../layouts/Site.astro';import {loadData,statusLabel} from '../../lib/data.mjs';import {link} from '../../lib/links';import semver from 'semver';const releases=loadData().releases.sort((a,b)=>semver.rcompare(a.version,b.version));
+---
+<Site title="版本历史"><p class="eyebrow">Release notes</p><h1>每一步变化，都有记录。</h1>{releases.length?releases.map(r=><article class="card"><span class="badge">{statusLabel(r.status)}</span><h2><a href={link(`releases/${r.id}/`)}>Nskry {r.version}</a></h2><p>{r.date} · {r.notes}</p></article>):<p class="notice">尚未收录经核实的公开发行记录。仓库中的开发报告不作为正式发布公告。</p>}<a href={link('notices/')}>查看已知问题 →</a></Site>

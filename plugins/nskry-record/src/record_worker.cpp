@@ -1,6 +1,7 @@
 #include "gif_encoder.h"
 #include "mf_encoder.h"
 #include "record_transcode.h"
+#include "record_audio.h"
 #include "record_worker_protocol.h"
 #include <memory>
 
@@ -34,11 +35,14 @@ int wmain(int argc, wchar_t **argv) {
     struct Configuration {
         uint32_t width, height, fps, pixelBytes, hardware, bitrate, gif, preview, sourceWidth, sourceHeight;
         std::wstring path;
+        bool audio;
+        AudioSource source;
     };
     const auto *input = static_cast<const wire::Header *>(header.value);
     const Configuration initial{input->width,       input->height,       input->fps, input->pixelBytes,
                                 input->hardware,    input->bitrate,      input->gif, input->preview,
-                                input->sourceWidth, input->sourceHeight, input->path};
+                                input->sourceWidth, input->sourceHeight, input->path, input->audio != 0,
+                                {input->audioEndpoint, input->audioPid, input->audioProcessCreated}};
     View memory{MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(wire::Header) + initial.pixelBytes)};
     if (!memory.value)
         return 4;
@@ -48,6 +52,7 @@ int wmain(int argc, wchar_t **argv) {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
         apartment = true;
         std::unique_ptr<MfEncoder> encoder;
+        std::unique_ptr<LoopbackAudio> audio;
         std::unique_ptr<GifEncoder> gif;
         std::unique_ptr<PreviewDecoder> preview;
         uint64_t sequence = 0;
@@ -71,12 +76,15 @@ int wmain(int argc, wchar_t **argv) {
                         gif->Open(initial.path, initial.width, initial.height, &h.created);
                         wcscpy_s(h.backend, L"GIF / adaptive 256 colors / 10 fps");
                     } else {
+                        if (initial.source.Enabled())
+                            audio = std::make_unique<LoopbackAudio>(initial.source);
                         encoder = std::make_unique<MfEncoder>();
                         encoder->Open(initial.path, initial.width, initial.height, initial.fps, initial.hardware != 0,
-                                      &h.created, initial.bitrate);
+                                      &h.created, initial.bitrate, initial.audio);
                         wcsncpy_s(h.backend, encoder->Backend().c_str(), _TRUNCATE);
                     }
                 } else if (command == wire::Command::Close) {
+                    audio.reset();
                     preview.reset();
                     encoder.reset();
                     gif.reset();
@@ -94,7 +102,11 @@ int wmain(int argc, wchar_t **argv) {
                                       reinterpret_cast<uint8_t *>(&h + 1));
                     } else if (!encoder && !gif)
                         winrt::throw_hresult(E_UNEXPECTED);
-                    else if (command == wire::Command::Trim) {
+                    else if (command == wire::Command::AudioPump) {
+                        if (!audio || !encoder || h.audioOrigin <= 0 || h.audioDuration < 0)
+                            winrt::throw_hresult(E_INVALIDARG);
+                        audio->Pump(*encoder, h.audioOrigin, h.audioDuration, h.audioStop != 0);
+                    } else if (command == wire::Command::Trim) {
                         if (!h.inputPath[0] || h.inputPath[32767] || h.trimStart < 0 || h.trimEnd <= h.trimStart)
                             winrt::throw_hresult(E_INVALIDARG);
                         const std::wstring inputPath = h.inputPath;
@@ -105,7 +117,9 @@ int wmain(int argc, wchar_t **argv) {
                                           else
                                               encoder->Write(pixels, time, duration);
                                           ++h.samples;
-                                      });
+                                      }, initial.audio ? AudioWriter([&](const uint8_t *pcm, uint32_t frames, int64_t first) {
+                                          encoder->WriteAudio(pcm, frames, first);
+                                      }) : AudioWriter{});
                     } else if (command == wire::Command::Frame) {
 #if defined(NSKRY_RECORD_TEST_CRASH_WORKER)
                         ExitProcess(99);

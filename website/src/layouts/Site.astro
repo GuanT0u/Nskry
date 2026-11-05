@@ -1,0 +1,12 @@
+---
+import '../styles/global.css';
+import { link } from '../lib/links';
+const { title, description='轻量的 Windows 截图、监控与按需插件工具。' } = Astro.props;
+const nav=[['download/','下载'],['plugins/','插件'],['guide/','教程'],['releases/','更新记录'],['developers/','开发者']];
+---
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><meta name="description" content={description}/><title>{title} · Nskry</title><link rel="icon" type="image/svg+xml" href={link('favicon.svg')}/></head><body>
+<a class="skip" href="#main">跳到内容</a>
+<header class="header"><a class="brand" href={link()}><span class="mark" aria-hidden="true">N</span>Nskry</a><nav aria-label="主导航">{nav.map(([href,label])=><a href={link(href)} aria-current={Astro.url.pathname.startsWith(link(href))?'page':undefined}>{label}</a>)}</nav><a class="source" href="https://github.com/GuanT0u/Nskry">GitHub ↗</a></header>
+<main id="main" tabindex="-1"><slot/></main>
+<footer><div><strong>Nskry</strong><p>截图，留住需要的那一部分。</p></div><div><a href={link('about/')}>关于与许可</a><a href={link('notices/')}>公告与已知问题</a><a href="https://github.com/GuanT0u/Nskry/issues">反馈</a></div><p class="muted">开源项目 · Windows x64 · GPL-3.0-or-later</p></footer>
+</body></html>

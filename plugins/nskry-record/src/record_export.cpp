@@ -52,7 +52,8 @@ void ExportTask::Start(std::wstring input, std::wstring output, Snapshot source,
                             .wstring();
             if (trim) {
                 encoder = std::make_unique<IsolatedEncoder>(m_cancel);
-                encoder->Open(temporary, source.width, source.height, source.fps, true, source.bitrate, gif);
+                encoder->Open(temporary, source.width, source.height, source.fps, true, source.bitrate, gif,
+                              false, 0, 0, {}, source.audio);
                 encoder->Trim(input, start, end);
                 encoder->Finalize();
                 if (!encoder->Close())

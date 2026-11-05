@@ -1,0 +1,4 @@
+---
+import Site from '../../layouts/Site.astro';import {repo} from '../../lib/data.mjs';
+---
+<Site title="开发者"><p class="eyebrow">Build with Nskry</p><h1>功能独立，协作开放。</h1><article class="prose"><p class="lead">通用交互由 Core 提供，独立功能通过公开 SDK 按需扩展。</p><h2>参与主项目</h2><p>小范围修复可直接提交 PR；SDK、新依赖或大功能请先说明边界、兼容性和资源代价。提交可复现步骤、实际测试结果和未验证项。</p><p><a href={`${repo}/blob/master/CONTRIBUTING.md`}>贡献指南与 PR 写法 ↗</a></p><h2>开发独立插件</h2><p>通过版本化公开接口调用宿主，不能依赖其他插件私有目录。API 2 布局和 reserved 字段保持不变。任务结束释放资源，普通插件不预热模型。</p><p><a href={`${repo}/blob/master/docs/plugins/development_standard.md`}>插件开发规范 ↗</a> · <a href={`${repo}/blob/master/sdk/nskry_plugin.h`}>SDK ↗</a></p><h2>申请目录收录</h2><ol><li>提交插件 ID、简介、发布者、源码与许可证。</li><li>提供固定版本包、SHA-256、大小、兼容范围和包内容说明。</li><li>说明联网、数据上传、更新来源及支持渠道。</li><li>通过网站数据 PR 申请收录，维护者审核后发布；不要附带要求审核环境执行的任意脚本。</li></ol><p>独立第三方插件可以在自己的仓库开发。申请收录不自动获得官方身份，官方收编需要另行确认维护责任。</p><p><a href={`${repo}/blob/master/docs/plugins/third_party_policy.md`}>第三方插件政策 ↗</a></p></article></Site>
