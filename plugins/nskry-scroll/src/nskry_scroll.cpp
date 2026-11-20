@@ -24,7 +24,7 @@ constexpr size_t kMaxStitchedBytes = 192ull * 1024 * 1024;
 constexpr size_t kMaxWorkingBytes = 512ull * 1024 * 1024;
 
 NskryPluginInfo kInfo{ sizeof(NskryPluginInfo), NSKRY_PLUGIN_API_VERSION,
-    L"Long Screenshot", L"nskry-scroll", L"0.5.2", L"Nskry Team",
+    L"Long Screenshot", L"nskry-scroll", L"0.5.3", L"Nskry Team",
     L"Interactive scrolling capture with live preview", nullptr, NSKRY_CAP_TOOLBAR_ACTION, {} };
 
 HINSTANCE ModuleHandle() noexcept {
@@ -213,7 +213,8 @@ private:
     // Commits only a bounded, confidently aligned increment.  This is called
     // while the page is still moving as well as at its final resting point.
     bool CommitFrame(Frame&& next, int maximumAdvance) {
-        const int advance = FindMotion(m_last, next, maximumAdvance);
+        const Alignment alignment = FindAlignment(m_last, next, maximumAdvance, m_haveAlignment ? &m_fixed : nullptr);
+        const int advance = alignment.shift;
         if (!advance) return false;
         const Placement placement = PlaceFrame(m_position, advance, next.height, m_stitched.height);
         const size_t addedPixels = static_cast<size_t>(placement.prepend + placement.append) * static_cast<size_t>(next.width);
@@ -235,7 +236,9 @@ private:
             }
             m_stitched.pixels.reserve(targetCapacity);
         }
-        Extend(m_stitched, next, placement);
+        Extend(m_stitched, next, placement, alignment.fixed);
+        m_fixed = alignment.fixed;
+        m_haveAlignment = true;
         m_position = placement.top + placement.prepend;
         m_last = std::move(next); m_probe = m_last; ++m_frames;
         m_noProgressCount = 0; m_autoStepAdvanced = true; UpdateCaptureStatus();
@@ -253,7 +256,7 @@ private:
         }
         const bool hide = PanelOverlapsCapture(); if (hide) { ::ShowWindow(m_panel, SW_HIDE); ::Sleep(15); }
         Frame next; const bool captured = CaptureScreenRegion(m_context.capturedRegion, next); if (hide) ::ShowWindow(m_panel, SW_SHOWNOACTIVATE); if (!captured) return;
-        if (FrameDifference(m_probe, next) > 2) {
+        if (!SameFrame(m_probe, next)) {
             // Do not defer all work until scrolling stops.  Small deltas are
             // appended as they arrive. A live step may cover up to 70% of the
             // viewport, which handles ordinary wheel and trackpad gestures;
@@ -268,7 +271,7 @@ private:
         }
         if (++m_stableSamples < 2) return;
         m_stableSamples = 0;
-        if (FrameDifference(m_last, next) <= 2) {
+        if (SameFrame(m_last, next)) {
             m_probe = std::move(next);
             if (m_waitingForSettle) {
                 m_waitingForSettle = false; m_lastAutoScroll = ::GetTickCount64();
@@ -335,6 +338,8 @@ private:
     NskryHostContext m_context{}; Frame m_last, m_probe, m_stitched; RECT m_virtual{}; HWND m_panel{}, m_overlay{}, m_autoButton{}, m_status{};
     bool m_auto = false, m_finished = false, m_waitingForSettle = false, m_autoStepAdvanced = false, m_timerRunning = false;
     bool m_panelExcludedFromCapture = false;
+    FixedBands m_fixed{};
+    bool m_haveAlignment = false;
     int m_position = 0; // Viewport top relative to the stitched image, rebased after prepending.
     int m_frames = 1, m_stableSamples = 0, m_noProgressCount = 0; ULONGLONG m_lastAutoScroll{};
 };

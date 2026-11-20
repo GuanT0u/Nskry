@@ -31,141 +31,178 @@ inline int Luma(unsigned int pixel) {
     return (Channel(pixel, 16) * 3 + Channel(pixel, 8) * 6 + Channel(pixel, 0)) / 10;
 }
 
-inline int FrameDifference(const Frame &left, const Frame &right) {
-    if (!ValidFrame(left) || !ValidFrame(right) || left.width != right.width || left.height != right.height)
-        return 255;
-    unsigned long long total = 0;
-    int samples = 0;
-    for (int y = 8; y < left.height - 8; y += 24)
-        for (int x = 8; x < left.width - 8; x += 24) {
-            const unsigned int a = left.pixels[static_cast<size_t>(y) * left.width + x];
-            const unsigned int b = right.pixels[static_cast<size_t>(y) * right.width + x];
-            total += abs(Channel(a, 16) - Channel(b, 16)) + abs(Channel(a, 8) - Channel(b, 8)) +
-                     abs(Channel(a, 0) - Channel(b, 0));
+inline bool SameFrame(const Frame &left, const Frame &right) {
+    return left.width == right.width && left.height == right.height &&
+           left.pixels.size() == right.pixels.size() &&
+           (left.pixels == right.pixels ||
+            std::equal(left.pixels.begin(), left.pixels.end(), right.pixels.begin(),
+                       [](unsigned a, unsigned b) { return ((a ^ b) & 0xffffffu) == 0; }));
+}
+
+inline int PixelError(unsigned a, unsigned b) {
+    return std::abs(Channel(a, 0) - Channel(b, 0)) + std::abs(Channel(a, 8) - Channel(b, 8)) +
+           std::abs(Channel(a, 16) - Channel(b, 16));
+}
+
+struct FixedBands {
+    int top{}, bottom{};
+};
+
+inline int DetectFixedEdge(const Frame &previous, const Frame &current, bool bottom) {
+    const int width = previous.width;
+    const int step = (std::max)(2, width / 128);
+    const auto row = [&](const Frame &frame, int distance) {
+        return frame.pixels.data() + size_t(bottom ? frame.height - 1 - distance : distance) * width;
+    };
+    int boundary = 0;
+    int lastDivider = 0;
+    bool hasDetail = false;
+    const int limit = previous.height / 4;
+    for (; boundary <= limit; ++boundary) {
+        const auto *a = row(previous, boundary), *b = row(current, boundary);
+        const auto *prior = boundary ? row(previous, boundary - 1) : a;
+        const auto *priorCurrent = boundary ? row(current, boundary - 1) : b;
+        int changed = 0, details = 0, divider = 0, samples = 0;
+        for (int x = 4; x < width - 4; x += step) {
+            changed += PixelError(a[x], b[x]) > 18;
+            details += PixelError(a[x], a[x - 2]) > 48 || PixelError(a[x], prior[x]) > 48;
+            divider += PixelError(a[x], prior[x]) > 72 && PixelError(b[x], priorCurrent[x]) > 72;
             ++samples;
         }
-    return samples ? static_cast<int>(total / static_cast<unsigned long long>(samples * 3)) : 255;
+        // A separator across most of the viewport can mark the real edge
+        // even if the scrolling area starts with identical blank rows.
+        if (boundary >= 8 && divider * 4 >= samples * 3)
+            lastDivider = boundary;
+        if (changed > 0)
+            break;
+        hasDetail = hasDetail || details >= 2;
+    }
+    if (boundary < 8 || boundary > limit)
+        return 0;
+    if (lastDivider && boundary - lastDivider <= 16)
+        return lastDivider;
+    return hasDetail ? boundary : 0;
 }
 
 struct AlignmentScore {
     int shift{};
     double error{(std::numeric_limits<double>::infinity)()};
-    int samples{};
+    int samples{}, overlap{};
 };
 
-inline AlignmentScore ScoreShift(const Frame &previous, const Frame &current, int shift, int xStep,
-                                 int yStep) noexcept {
+inline AlignmentScore ScoreShift(const Frame &previous, const Frame &current, int shift, FixedBands fixed,
+                                 int xStep, int yStep, bool coarse) noexcept {
     AlignmentScore result;
     result.shift = shift;
-    const int topMargin = (std::max)(8, (std::min)(24, previous.height / 8));
-    const int bottomMargin = (std::max)(8, (std::min)(16, previous.height / 12));
-    const int yEnd = previous.height - shift - bottomMargin;
-    if (yEnd <= topMargin || previous.width <= 24)
-        return result;
+    const int width = previous.width;
+    const int content = previous.height - fixed.top - fixed.bottom;
+    result.overlap = content - std::abs(shift);
+    const int oldTop = fixed.top + (std::max)(shift, 0);
+    const int newTop = fixed.top + (std::max)(-shift, 0);
     unsigned long long cost = 0;
-    int samples = 0, possible = 0;
-    for (int y = topMargin; y < yEnd; y += yStep)
-        for (int x = 12; x < previous.width - 12; x += xStep) {
+    int possible = 0;
+    for (int y = 2; y < result.overlap - 2; y += yStep) {
+        const auto *oldRow = previous.pixels.data() + size_t(y + oldTop) * width;
+        const auto *newRow = current.pixels.data() + size_t(y + newTop) * width;
+        const int phase = (y / yStep) % (std::max)(1, xStep / 2);
+        for (int x = 4 + phase; x < width - 4; x += xStep) {
             ++possible;
-            const size_t oldIndex = static_cast<size_t>(y + shift) * previous.width + x;
-            const size_t newIndex = static_cast<size_t>(y) * current.width + x;
-            const unsigned int a = previous.pixels[oldIndex], b = current.pixels[newIndex];
+            const unsigned a = oldRow[x], b = newRow[x];
+            const int lumaA = Luma(a), lumaB = Luma(b);
             const int edgeA =
-                std::abs(Luma(a) - Luma(previous.pixels[oldIndex - 2])) +
-                std::abs(Luma(a) - Luma(previous.pixels[oldIndex - static_cast<size_t>(previous.width) * 2]));
+                std::abs(lumaA - Luma(oldRow[x - 2])) + std::abs(lumaA - Luma(oldRow[x - width * 2]));
             const int edgeB =
-                std::abs(Luma(b) - Luma(current.pixels[newIndex - 2])) +
-                std::abs(Luma(b) - Luma(current.pixels[newIndex - static_cast<size_t>(current.width) * 2]));
+                std::abs(lumaB - Luma(newRow[x - 2])) + std::abs(lumaB - Luma(newRow[x - width * 2]));
             if ((std::max)(edgeA, edgeB) < 20)
                 continue;
-            cost += static_cast<unsigned long long>(std::abs(Channel(a, 0) - Channel(b, 0)));
-            cost += static_cast<unsigned long long>(std::abs(Channel(a, 8) - Channel(b, 8)));
-            cost += static_cast<unsigned long long>(std::abs(Channel(a, 16) - Channel(b, 16)));
-            ++samples;
+            cost += PixelError(a, b);
+            ++result.samples;
         }
-    const int minimumSamples = (std::max)(12, possible / 40);
-    if (samples >= minimumSamples)
-        result.error = static_cast<double>(cost) / static_cast<double>(samples * 3);
-    result.samples = samples;
+    }
+    if (result.samples >= (std::max)(coarse ? 4 : 12, possible / 80))
+        result.error = double(cost) / (result.samples * 3);
     return result;
 }
 
-inline int FindAdvance(const Frame &previous, const Frame &current, int maximumAdvance) {
+struct Alignment {
+    int shift{};
+    FixedBands fixed;
+};
+
+inline Alignment FindAlignment(const Frame &previous, const Frame &current, int maximumAdvance,
+                               const FixedBands *knownFixed = nullptr) {
     if (!ValidFrame(previous) || !ValidFrame(current) || previous.width != current.width ||
-        previous.height != current.height)
-        return 0;
-    constexpr int minShift = 4;
-    // Keep a meaningful overlap for confidence scoring, but allow a normal
-    // trackpad gesture to move most of the viewport between samples. Texture-
-    // poor or repetitive pages are still rejected by the score/ambiguity test.
-    const int minimumOverlap = (std::max)(48, previous.height * 30 / 100);
-    const int maxShift = (std::min)(maximumAdvance, previous.height - minimumOverlap);
-    if (maxShift < minShift)
-        return 0;
+        previous.height != current.height || previous.width < 24 || SameFrame(previous, current))
+        return {};
+    const FixedBands fixed = knownFixed ? *knownFixed
+                                        : FixedBands{DetectFixedEdge(previous, current, false),
+                                                     DetectFixedEdge(previous, current, true)};
+    const int content = previous.height - fixed.top - fixed.bottom;
+    const int minOverlap = (std::max)(48, content * 30 / 100);
+    const int maxShift = (std::min)(maximumAdvance, content - minOverlap);
+    if (maxShift < 1)
+        return {};
 
-    const int coarseStep = maxShift > 240 ? 8 : (maxShift > 80 ? 4 : 2);
-    const int coarseX = previous.width > 1600 ? 32 : (previous.width > 700 ? 24 : 12);
-    const int coarseY = previous.height > 1200 ? 24 : (previous.height > 500 ? 16 : 8);
+    // Test every pixel displacement at low spatial density. Subsampling
+    // offsets themselves loses the true match on sharp text and thin lines.
+    const int coarseX = (std::max)(8, previous.width / 32);
+    const int coarseY = (std::max)(8, content / 28);
+    constexpr size_t seedCount = 16;
     std::vector<AlignmentScore> coarse;
-    coarse.reserve(static_cast<size_t>((maxShift - minShift) / coarseStep + 2));
-    for (int shift = minShift; shift <= maxShift; shift += coarseStep)
-        coarse.push_back(ScoreShift(previous, current, shift, coarseX, coarseY));
-    if (coarse.empty() || coarse.back().shift != maxShift)
-        coarse.push_back(ScoreShift(previous, current, maxShift, coarseX, coarseY));
-    std::sort(coarse.begin(), coarse.end(),
-              [](const AlignmentScore &a, const AlignmentScore &b) { return a.error < b.error; });
-
-    std::vector<int> candidates;
-    const size_t seedCount = (std::min<size_t>)(4, coarse.size());
-    for (size_t i = 0; i < seedCount && std::isfinite(coarse[i].error); ++i) {
-        const int first = (std::max)(minShift, coarse[i].shift - coarseStep);
-        const int last = (std::min)(maxShift, coarse[i].shift + coarseStep);
-        for (int shift = first; shift <= last; ++shift)
-            if (std::find(candidates.begin(), candidates.end(), shift) == candidates.end())
-                candidates.push_back(shift);
+    coarse.reserve(2 * size_t(maxShift));
+    for (int shift = -maxShift; shift <= maxShift; ++shift) {
+        if (shift)
+            coarse.push_back(ScoreShift(previous, current, shift, fixed, coarseX, coarseY, true));
     }
-    if (candidates.empty())
-        return 0;
-
+    const auto byError = [](const AlignmentScore &a, const AlignmentScore &b) {
+        return a.error < b.error || (a.error == b.error && a.overlap > b.overlap);
+    };
+    const size_t seeds = (std::min)(seedCount, coarse.size());
+    std::partial_sort(coarse.begin(), coarse.begin() + seeds, coarse.end(), byError);
+    const int fineX = (std::max)(4, previous.width / 96);
+    const int fineY = (std::max)(3, content / 128);
     std::vector<AlignmentScore> fine;
-    fine.reserve(candidates.size());
-    const int fineX = previous.width > 2400 ? 16 : 12;
-    const int fineY = previous.height > 1600 ? 10 : 7;
-    for (const int shift : candidates)
-        fine.push_back(ScoreShift(previous, current, shift, fineX, fineY));
-    std::sort(fine.begin(), fine.end(),
-              [](const AlignmentScore &a, const AlignmentScore &b) { return a.error < b.error; });
-    if (fine.empty() || !std::isfinite(fine.front().error) || fine.front().error >= 12.0)
-        return 0;
-
-    const AlignmentScore &best = fine.front();
-    double secondError = (std::numeric_limits<double>::infinity)();
-    for (const AlignmentScore &score : fine) {
-        if (std::abs(score.shift - best.shift) >= 4 && std::isfinite(score.error)) {
-            secondError = score.error;
+    fine.reserve(seeds);
+    for (size_t i = 0; i < seeds && std::isfinite(coarse[i].error); ++i)
+        fine.push_back(ScoreShift(previous, current, coarse[i].shift, fixed, fineX, fineY, false));
+    if (fine.empty())
+        return {};
+    std::sort(fine.begin(), fine.end(), byError);
+    const auto &lowestError = fine.front();
+    if (!(lowestError.error < 12.0))
+        return {};
+    const auto strongerOverlap = [](const AlignmentScore &a, const AlignmentScore &b) {
+        return a.overlap * 2 >= b.overlap * 3 && a.samples * 2 >= b.samples * 3;
+    };
+    const auto opposite = [](const AlignmentScore &a, const AlignmentScore &b) {
+        return (a.shift < 0) != (b.shift < 0);
+    };
+    const AlignmentScore *best = &lowestError;
+    for (const auto &candidate : fine) {
+        if (candidate.error > lowestError.error + 0.8 || candidate.error >= 12.0)
             break;
-        }
+        if (opposite(candidate, *best) && strongerOverlap(candidate, *best))
+            best = &candidate;
     }
-    // Repetitive pages can produce several equally plausible offsets. Reject
-    // those rather than appending at an arbitrary position.
-    if (std::isfinite(secondError) && secondError - best.error < 0.8 && best.error > secondError * 0.92)
-        return 0;
-    return best.shift;
+    const auto stationary = ScoreShift(previous, current, 0, fixed, fineX, fineY, false);
+    if (stationary.error <= best->error + 0.5)
+        return {};
+    for (const auto &other : fine) {
+        if (other.error > best->error + 0.8)
+            break;
+        const bool reverse = opposite(*best, other);
+        if (!reverse && std::abs(other.shift - best->shift) < 4)
+            continue;
+        // An opposite-direction alias supported by a much smaller slice is
+        // weaker evidence. Distinct repeats in the same direction still veto.
+        if (!reverse || !strongerOverlap(*best, other))
+            return {};
+    }
+    return {best->shift, fixed};
 }
 
-// Signed displacement in document coordinates. Reverse matching uses the same
-// confidence/overlap checks without reversing or copying the frame buffers.
 inline int FindMotion(const Frame &previous, const Frame &current, int maximumAdvance) {
-    const int down = FindAdvance(previous, current, maximumAdvance);
-    const int up = FindAdvance(current, previous, maximumAdvance);
-    if (down && up) {
-        const double a = ScoreShift(previous, current, down, 12, 7).error;
-        const double b = ScoreShift(current, previous, up, 12, 7).error;
-        if (std::abs(a - b) < 0.8)
-            return 0;
-        return a < b ? down : -up;
-    }
-    return down ? down : -up;
+    return FindAlignment(previous, current, maximumAdvance).shift;
 }
 struct Placement {
     int top{}, prepend{}, append{};
@@ -174,13 +211,20 @@ inline Placement PlaceFrame(int currentTop, int displacement, int viewportHeight
     const int top = currentTop + displacement;
     return {top, (std::max)(0, -top), (std::max)(0, top + viewportHeight - stitchedHeight)};
 }
-inline void Extend(Frame &stitched, const Frame &next, const Placement &placement) {
-    const size_t before = static_cast<size_t>(placement.prepend) * next.width;
-    const size_t after = static_cast<size_t>(placement.append) * next.width;
-    if (before)
-        stitched.pixels.insert(stitched.pixels.begin(), next.pixels.begin(), next.pixels.begin() + before);
-    if (after)
-        stitched.pixels.insert(stitched.pixels.end(), next.pixels.end() - after, next.pixels.end());
+inline void Extend(Frame &stitched, const Frame &next, const Placement &placement, FixedBands fixed = {}) {
+    const auto width = size_t(next.width);
+    const auto before = size_t(placement.prepend) * width;
+    const auto after = size_t(placement.append) * width;
+    if (before) {
+        const auto head = size_t(fixed.top) * width;
+        stitched.pixels.insert(stitched.pixels.begin() + head, next.pixels.begin() + head,
+                               next.pixels.begin() + head + before);
+    }
+    if (after) {
+        const auto foot = size_t(fixed.bottom) * width;
+        const auto end = next.pixels.end() - foot;
+        stitched.pixels.insert(stitched.pixels.end() - foot, end - after, end);
+    }
     stitched.height += placement.prepend + placement.append;
 }
 } // namespace nskry::scroll
