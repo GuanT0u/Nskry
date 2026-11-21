@@ -45,25 +45,83 @@ inline int PixelError(unsigned a, unsigned b) {
 }
 
 struct FixedBands {
-    int top{}, bottom{};
+    int top{}, bottom{}, left{}, right{};
+    bool operator==(const FixedBands &) const = default;
 };
 
-inline int DetectFixedEdge(const Frame &previous, const Frame &current, bool bottom) {
+// A blank margin alone says nothing about the width of later messages.
+// Require a persistent divider or an abrupt transition from textured static
+// chrome to a column that changes throughout its height.
+inline int DetectFixedSide(const Frame &previous, const Frame &current, bool right, bool dividerOnly = false) {
+    const int width = previous.width, height = previous.height;
+    const int step = (std::max)(1, height / 96);
+    int divider = 0;
+    int staticStart = 0;
+    bool sparseRepaint = false;
+    bool textured = false;
+    for (int d = 0; d < width - 24; ++d) {
+        const int x = right ? width - 1 - d : d;
+        int changed = 0, brighter = 0, darker = 0, detail = 0, samples = 0;
+        // Include the outer quarters without relying on the viewport's edge.
+        for (int y = height / 8; y < height - height / 8; y += step) {
+            const size_t i = size_t(y) * width + x;
+            const size_t prior = d == 0 ? i : (right ? i + 1 : i - 1);
+            const auto a = previous.pixels[i], b = current.pixels[i];
+            changed += PixelError(a, b) > 12;
+            if (PixelError(a, b) <= 12 && PixelError(previous.pixels[prior], current.pixels[prior]) <= 12) {
+                const int edgeA = Luma(a) - Luma(previous.pixels[prior]);
+                const int edgeB = Luma(b) - Luma(current.pixels[prior]);
+                brighter += edgeA >= 5 && edgeB >= 5;
+                darker += edgeA <= -5 && edgeB <= -5;
+            }
+            detail += y > 0 && PixelError(a, previous.pixels[i - width]) > 24;
+            ++samples;
+        }
+        // A blinking indicator or hover repaint can change a few rows
+        // without moving the neighboring pane.
+        if (changed > (std::max)(1, samples / 24)) {
+            // A changing scrollbar at the extreme edge can sit outside an
+            // otherwise stationary sidebar. Look past at most one narrow strip.
+            if (d < (std::min)(20, width / 16) && d - staticStart < 4) {
+                staticStart = d + 1;
+                textured = false;
+                divider = 0;
+                continue;
+            }
+            if (d - staticStart < 4)
+                return 0;
+            if (divider && d - divider <= 32)
+                return divider;
+            if (dividerOnly || sparseRepaint)
+                return 0;
+            if (changed * 2 >= samples && textured)
+                return d;
+            return divider;
+        }
+        sparseRepaint |= changed > 0;
+        if (d >= 4 && (std::max)(brighter, darker) * 4 >= samples * 3)
+            divider = d;
+        textured |= detail >= 3;
+    }
+    return 0;
+}
+
+inline int DetectFixedEdge(const Frame &previous, const Frame &current, bool bottom, FixedBands sides) {
     const int width = previous.width;
-    const int step = (std::max)(2, width / 128);
+    const int step = (std::max)(2, (width - sides.left - sides.right) / 128);
     const auto row = [&](const Frame &frame, int distance) {
         return frame.pixels.data() + size_t(bottom ? frame.height - 1 - distance : distance) * width;
     };
     int boundary = 0;
     int lastDivider = 0;
     bool hasDetail = false;
-    const int limit = previous.height / 4;
+    const int limit = previous.height / 2;
     for (; boundary <= limit; ++boundary) {
         const auto *a = row(previous, boundary), *b = row(current, boundary);
         const auto *prior = boundary ? row(previous, boundary - 1) : a;
         const auto *priorCurrent = boundary ? row(current, boundary - 1) : b;
         int changed = 0, details = 0, divider = 0, samples = 0;
-        for (int x = 4; x < width - 4; x += step) {
+        for (int x = sides.left + 4; x < width - sides.right - 4; x += step) {
             changed += PixelError(a[x], b[x]) > 18;
             details += PixelError(a[x], a[x - 2]) > 48 || PixelError(a[x], prior[x]) > 48;
             divider += PixelError(a[x], prior[x]) > 72 && PixelError(b[x], priorCurrent[x]) > 72;
@@ -105,7 +163,7 @@ inline AlignmentScore ScoreShift(const Frame &previous, const Frame &current, in
         const auto *oldRow = previous.pixels.data() + size_t(y + oldTop) * width;
         const auto *newRow = current.pixels.data() + size_t(y + newTop) * width;
         const int phase = (y / yStep) % (std::max)(1, xStep / 2);
-        for (int x = 4 + phase; x < width - 4; x += xStep) {
+        for (int x = fixed.left + 4 + phase; x < width - fixed.right - 4; x += xStep) {
             ++possible;
             const unsigned a = oldRow[x], b = newRow[x];
             const int lumaA = Luma(a), lumaB = Luma(b);
@@ -127,25 +185,120 @@ inline AlignmentScore ScoreShift(const Frame &previous, const Frame &current, in
 struct Alignment {
     int shift{};
     FixedBands fixed;
+    enum class Issue { NoMatch, LayoutChanged, MixedMotion } issue{};
+    bool fixedTexture{};
 };
 
-inline Alignment FindAlignment(const Frame &previous, const Frame &current, int maximumAdvance,
-                               const FixedBands *knownFixed = nullptr) {
+inline bool RegionChanged(const Frame &a, const Frame &b, int left, int right, int top, int bottom) {
+    if (left >= right || top >= bottom)
+        return false;
+    int changed = 0, samples = 0;
+    for (int y = top; y < bottom; y += (std::max)(1, (bottom - top) / 64))
+        for (int x = left; x < right; x += (std::max)(1, (right - left) / 48)) {
+            const size_t i = size_t(y) * a.width + x;
+            changed += PixelError(a.pixels[i], b.pixels[i]) > 24;
+            ++samples;
+        }
+    return changed * 20 > samples;
+}
+
+// Track a visible rule just inside a known toolbar/composer. If it vanishes
+// the bar may have expanded into the feed; matching the feed alone would
+// still produce a plausible shift with the obsolete crop.
+inline bool DividerDisappeared(const Frame &a, const Frame &b, FixedBands f, bool bottom) {
+    const int depth = bottom ? f.bottom : f.top;
+    if (!depth)
+        return false;
+    const int xStep = (std::max)(1, (a.width - f.left - f.right) / 80);
+    for (int d = (std::max)(1, depth - 3); d <= depth; ++d) {
+        const int y = bottom ? a.height - d : d;
+        int oldEdges = 0, newEdges = 0, uniform = 0, unchanged = 0, samples = 0;
+        const size_t anchor = size_t(bottom ? y : y - 1) * a.width + f.left;
+        for (int x = f.left; x < a.width - f.right; x += xStep) {
+            const size_t i = size_t(y) * a.width + x;
+            const size_t chrome = bottom ? i : i - a.width;
+            oldEdges += PixelError(a.pixels[i], a.pixels[i - a.width]) > 48;
+            newEdges += PixelError(b.pixels[i], b.pixels[i - a.width]) > 48;
+            uniform += PixelError(a.pixels[anchor], a.pixels[chrome]) <= 9;
+            unchanged += PixelError(a.pixels[chrome], b.pixels[chrome]) <= 18;
+            ++samples;
+        }
+        if (oldEdges * 5 >= samples * 4 &&
+            (newEdges * 5 < samples || (uniform * 5 >= samples * 4 && unchanged * 5 < samples)))
+            return true;
+    }
+    return false;
+}
+
+inline bool SideDividerDisappeared(const Frame &a, const Frame &b, FixedBands f, int x) {
+    if (x <= 0 || x >= a.width)
+        return false;
+    const int step = (std::max)(1, a.height / 80);
+    int oldEdges = 0, newEdges = 0, samples = 0;
+    for (int y = f.top; y < a.height - f.bottom; y += step) {
+        const size_t i = size_t(y) * a.width + x;
+        oldEdges += PixelError(a.pixels[i], a.pixels[i - 1]) > 24;
+        newEdges += PixelError(b.pixels[i], b.pixels[i - 1]) > 24;
+        ++samples;
+    }
+    return samples > 0 && oldEdges * 5 >= samples * 4 && newEdges * 5 < samples;
+}
+
+// A displacement can fit the foreground while an unrelated wallpaper stays
+// at screen coordinates. A central seam alone cannot validate an entire layer.
+inline bool HasFixedTexture(const Frame &a, const Frame &b, FixedBands f, int shift) {
+    const int first = f.top + (std::max)(0, -shift);
+    const int end = a.height - f.bottom - (std::max)(0, shift);
+    int conflicting = 0, samples = 0;
+    for (int y = first; y < end; y += (std::max)(1, (end - first) / 48)) {
+        for (int x = f.left; x < a.width - f.right; x += (std::max)(1, (a.width - f.left - f.right) / 80)) {
+            const size_t i = size_t(y) * a.width + x, j = size_t(y + shift) * a.width + x;
+            ++samples;
+            if (PixelError(a.pixels[i], b.pixels[i]) <= 3 && PixelError(a.pixels[j], b.pixels[j]) <= 3 &&
+                PixelError(a.pixels[j], b.pixels[i]) > 18)
+                ++conflicting;
+        }
+    }
+    return conflicting * 8 > samples;
+}
+
+inline Alignment FindIntegerAlignment(const Frame &previous, const Frame &current, int maximumAdvance,
+                                      const FixedBands *knownFixed = nullptr) {
     if (!ValidFrame(previous) || !ValidFrame(current) || previous.width != current.width ||
         previous.height != current.height || previous.width < 24 || SameFrame(previous, current))
         return {};
-    const FixedBands fixed = knownFixed ? *knownFixed
-                                        : FixedBands{DetectFixedEdge(previous, current, false),
-                                                     DetectFixedEdge(previous, current, true)};
+    FixedBands fixed{};
+    if (knownFixed) {
+        fixed = *knownFixed;
+        if (DividerDisappeared(previous, current, fixed, false) ||
+            DividerDisappeared(previous, current, fixed, true) ||
+            SideDividerDisappeared(previous, current, fixed, fixed.left) ||
+            SideDividerDisappeared(previous, current, fixed, previous.width - fixed.right))
+            return {0, fixed, Alignment::Issue::LayoutChanged};
+    } else {
+        fixed.left = DetectFixedSide(previous, current, false);
+        fixed.right = DetectFixedSide(previous, current, true);
+        // The fast side probe looks through the middle of the viewport. A
+        // conversation may have new bubbles only near the top or bottom.
+        if (RegionChanged(previous, current, 0, fixed.left, 0, previous.height))
+            fixed.left = 0;
+        if (RegionChanged(previous, current, previous.width - fixed.right, previous.width, 0, previous.height))
+            fixed.right = 0;
+        if (previous.width - fixed.left - fixed.right < 24)
+            return {};
+        fixed.top = DetectFixedEdge(previous, current, false, fixed);
+        fixed.bottom = DetectFixedEdge(previous, current, true, fixed);
+    }
+    const int width = previous.width - fixed.left - fixed.right;
     const int content = previous.height - fixed.top - fixed.bottom;
     const int minOverlap = (std::max)(48, content * 30 / 100);
     const int maxShift = (std::min)(maximumAdvance, content - minOverlap);
     if (maxShift < 1)
-        return {};
+        return {0, fixed};
 
     // Test every pixel displacement at low spatial density. Subsampling
     // offsets themselves loses the true match on sharp text and thin lines.
-    const int coarseX = (std::max)(8, previous.width / 32);
+    const int coarseX = (std::max)(8, width / 32);
     const int coarseY = (std::max)(8, content / 28);
     constexpr size_t seedCount = 16;
     std::vector<AlignmentScore> coarse;
@@ -159,18 +312,18 @@ inline Alignment FindAlignment(const Frame &previous, const Frame &current, int 
     };
     const size_t seeds = (std::min)(seedCount, coarse.size());
     std::partial_sort(coarse.begin(), coarse.begin() + seeds, coarse.end(), byError);
-    const int fineX = (std::max)(4, previous.width / 96);
+    const int fineX = (std::max)(4, width / 96);
     const int fineY = (std::max)(3, content / 128);
     std::vector<AlignmentScore> fine;
     fine.reserve(seeds);
     for (size_t i = 0; i < seeds && std::isfinite(coarse[i].error); ++i)
         fine.push_back(ScoreShift(previous, current, coarse[i].shift, fixed, fineX, fineY, false));
     if (fine.empty())
-        return {};
+        return {0, fixed};
     std::sort(fine.begin(), fine.end(), byError);
     const auto &lowestError = fine.front();
     if (!(lowestError.error < 12.0))
-        return {};
+        return {0, fixed};
     const auto strongerOverlap = [](const AlignmentScore &a, const AlignmentScore &b) {
         return a.overlap * 2 >= b.overlap * 3 && a.samples * 2 >= b.samples * 3;
     };
@@ -186,7 +339,7 @@ inline Alignment FindAlignment(const Frame &previous, const Frame &current, int 
     }
     const auto stationary = ScoreShift(previous, current, 0, fixed, fineX, fineY, false);
     if (stationary.error <= best->error + 0.5)
-        return {};
+        return {0, fixed};
     for (const auto &other : fine) {
         if (other.error > best->error + 0.8)
             break;
@@ -196,35 +349,11 @@ inline Alignment FindAlignment(const Frame &previous, const Frame &current, int 
         // An opposite-direction alias supported by a much smaller slice is
         // weaker evidence. Distinct repeats in the same direction still veto.
         if (!reverse || !strongerOverlap(*best, other))
-            return {};
+            return {0, fixed};
     }
+    if (HasFixedTexture(previous, current, fixed, best->shift))
+        return {0, fixed, Alignment::Issue::MixedMotion, true};
     return {best->shift, fixed};
 }
 
-inline int FindMotion(const Frame &previous, const Frame &current, int maximumAdvance) {
-    return FindAlignment(previous, current, maximumAdvance).shift;
-}
-struct Placement {
-    int top{}, prepend{}, append{};
-};
-inline Placement PlaceFrame(int currentTop, int displacement, int viewportHeight, int stitchedHeight) {
-    const int top = currentTop + displacement;
-    return {top, (std::max)(0, -top), (std::max)(0, top + viewportHeight - stitchedHeight)};
-}
-inline void Extend(Frame &stitched, const Frame &next, const Placement &placement, FixedBands fixed = {}) {
-    const auto width = size_t(next.width);
-    const auto before = size_t(placement.prepend) * width;
-    const auto after = size_t(placement.append) * width;
-    if (before) {
-        const auto head = size_t(fixed.top) * width;
-        stitched.pixels.insert(stitched.pixels.begin() + head, next.pixels.begin() + head,
-                               next.pixels.begin() + head + before);
-    }
-    if (after) {
-        const auto foot = size_t(fixed.bottom) * width;
-        const auto end = next.pixels.end() - foot;
-        stitched.pixels.insert(stitched.pixels.end() - foot, end - after, end);
-    }
-    stitched.height += placement.prepend + placement.append;
-}
 } // namespace nskry::scroll

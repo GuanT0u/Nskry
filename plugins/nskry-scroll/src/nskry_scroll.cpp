@@ -1,5 +1,6 @@
 #include "nskry_plugin.h"
-#include "scroll_stitch.h"
+#include "scroll_composite.h"
+#include "scroll_local_match.h"
 
 #include <algorithm>
 #include <cmath>
@@ -24,7 +25,7 @@ constexpr size_t kMaxStitchedBytes = 192ull * 1024 * 1024;
 constexpr size_t kMaxWorkingBytes = 512ull * 1024 * 1024;
 
 NskryPluginInfo kInfo{ sizeof(NskryPluginInfo), NSKRY_PLUGIN_API_VERSION,
-    L"Long Screenshot", L"nskry-scroll", L"0.5.3", L"Nskry Team",
+    L"Long Screenshot", L"nskry-scroll", L"0.5.7", L"Nskry Team",
     L"Interactive scrolling capture with live preview", nullptr, NSKRY_CAP_TOOLBAR_ACTION, {} };
 
 HINSTANCE ModuleHandle() noexcept {
@@ -76,6 +77,15 @@ public:
     ScrollCaptureUi(const NskryHostContext& context, Frame first) : m_context(context), m_last(std::move(first)), m_probe(m_last), m_stitched(m_last) {}
 
     bool Run() {
+        // Sample after the selection overlay has closed, before creating our
+        // own windows. The selection bitmap is an older desktop snapshot.
+        {
+            Frame live;
+            if (CaptureScreenRegion(m_context.capturedRegion, live) && !SameFrame(m_last, live)) {
+                m_last = std::move(live);
+                m_probe = m_last;
+            }
+        }
         if (!RegisterClasses() || !CreateOverlay() || !CreatePanel()) { Cleanup(); return false; }
         m_lastAutoScroll = ::GetTickCount64();
         if (!::SetTimer(m_panel, kCaptureTimer, kCaptureIntervalMs, nullptr)) { Cleanup(); return false; }
@@ -206,24 +216,56 @@ private:
     bool PanelOverlapsCapture() const { RECT panel{}, intersection{}; return !m_panelExcludedFromCapture && m_panel && ::GetWindowRect(m_panel, &panel) && ::IntersectRect(&intersection, &panel, &m_context.capturedRegion) != FALSE; }
 
     void UpdateCaptureStatus() {
-        const std::wstring status = std::to_wstring(m_stitched.width) + L" × " + std::to_wstring(m_stitched.height) + L" · " + std::to_wstring(m_frames) + L" frames";
+        const std::wstring status = std::to_wstring(m_stitched.width) + L" × " + std::to_wstring(m_stitched.height)
+            + L" · " + std::to_wstring(m_frames) + L" frames" + (m_fixed.left || m_fixed.right ? L" · sidebars trimmed" : L"");
         ::SetWindowTextW(m_status, status.c_str()); ::InvalidateRect(m_panel, nullptr, FALSE);
     }
 
     // Commits only a bounded, confidently aligned increment.  This is called
     // while the page is still moving as well as at its final resting point.
     bool CommitFrame(Frame&& next, int maximumAdvance) {
-        const Alignment alignment = FindAlignment(m_last, next, maximumAdvance, m_haveAlignment ? &m_fixed : nullptr);
+        Alignment alignment = FindAlignment(m_last, next, maximumAdvance, m_haveAlignment ? &m_fixed : nullptr);
+        if (!alignment.shift && alignment.issue != Alignment::Issue::LayoutChanged &&
+            !SameFrame(m_last, m_probe) && !SameFrame(m_probe, next)) {
+            const auto bridge = BridgeAlignment(m_last, m_probe, next, maximumAdvance,
+                                                m_haveAlignment ? &m_fixed : nullptr);
+            const auto trial = PlaceFrame(m_position, bridge.shift, next.height, m_stitched.height);
+            if (bridge.shift && (trial.prepend || trial.append))
+                alignment = bridge;
+        }
         const int advance = alignment.shift;
-        if (!advance) return false;
+        m_alignmentHint = m_haveAlignment ? L"Could not align · scroll back to the last captured position"
+                                         : L"First step did not match · scroll back and try a smaller step";
+        if (!advance) {
+            if (alignment.issue == Alignment::Issue::LayoutChanged)
+                m_alignmentHint = L"Layout changed · reselect the scrolling pane";
+            if (alignment.issue == Alignment::Issue::MixedMotion)
+                m_alignmentHint = L"Fixed background · select a smaller scrolling region";
+            return false;
+        }
+        if (m_haveAlignment && alignment.fixed != m_fixed) {
+            m_alignmentHint = L"Scrolling pane changed · start a new capture";
+            return false;
+        }
         const Placement placement = PlaceFrame(m_position, advance, next.height, m_stitched.height);
-        const size_t addedPixels = static_cast<size_t>(placement.prepend + placement.append) * static_cast<size_t>(next.width);
-        if (addedPixels > next.pixels.size() || m_stitched.pixels.size() > (std::numeric_limits<size_t>::max)() - addedPixels) return false;
-        const size_t newPixels = m_stitched.pixels.size() + addedPixels;
+        // Keep the user's selection bitmap available for Copy/Edit until
+        // the live baseline has actually produced a verified extension.
+        const auto &mosaic = m_haveAlignment ? m_stitched : m_last;
+        const int join = FindJoinRow(mosaic, next, placement, alignment.fixed,
+                                     alignment.fixedTexture ? &m_last : nullptr, advance);
+        std::vector<int> path;
+        if (join < 0 && alignment.fixedTexture)
+            path = FindWallpaperJoinPath(mosaic, m_last, next, placement, alignment.fixed, advance);
+        if (join < 0 && path.empty()) {
+            m_alignmentHint = L"No clean join · avoid fixed overlays or scroll back";
+            return false;
+        }
+        const size_t width = next.width - alignment.fixed.left - alignment.fixed.right;
+        const size_t newPixels = (size_t(m_stitched.height) + placement.prepend + placement.append) * width;
         const size_t maxPixels = kMaxStitchedBytes / sizeof(unsigned int);
         if (newPixels > maxPixels) {
             m_auto = false; ::SetWindowTextW(m_autoButton, L"Auto scroll");
-            ::SetWindowTextW(m_status, L"Maximum capture size reached"); return false;
+            m_alignmentHint = L"Maximum capture size reached"; return false;
         }
         if (newPixels > m_stitched.pixels.capacity()) {
             constexpr size_t growthPixels = (16ull * 1024 * 1024) / sizeof(unsigned int);
@@ -232,11 +274,13 @@ private:
                 m_probe.pixels.capacity() + next.pixels.capacity()) * sizeof(unsigned int);
             if (residentBytes > kMaxWorkingBytes) {
                 m_auto = false; ::SetWindowTextW(m_autoButton, L"Auto scroll");
-                ::SetWindowTextW(m_status, L"Capture stopped at the memory safety limit"); return false;
+                m_alignmentHint = L"Capture stopped at the memory safety limit"; return false;
             }
             m_stitched.pixels.reserve(targetCapacity);
         }
-        Extend(m_stitched, next, placement, alignment.fixed);
+        if (!m_haveAlignment)
+            std::copy(m_last.pixels.begin(), m_last.pixels.end(), m_stitched.pixels.begin());
+        Extend(m_stitched, next, placement, alignment.fixed, join, path);
         m_fixed = alignment.fixed;
         m_haveAlignment = true;
         m_position = placement.top + placement.prepend;
@@ -247,7 +291,8 @@ private:
 
     void Tick() {
         if (m_auto && !m_waitingForSettle && ::GetTickCount64() - m_lastAutoScroll >= kAutoScrollIntervalMs) {
-            POINT center{ (m_context.capturedRegion.left + m_context.capturedRegion.right) / 2, (m_context.capturedRegion.top + m_context.capturedRegion.bottom) / 2 };
+            POINT center{ (m_context.capturedRegion.left + m_fixed.left + m_context.capturedRegion.right - m_fixed.right) / 2,
+                (m_context.capturedRegion.top + m_fixed.top + m_context.capturedRegion.bottom - m_fixed.bottom) / 2 };
             HWND target = ::WindowFromPoint(center); if (!target || target == m_panel || target == m_overlay) target = m_context.sourceHwnd;
             // A half-notch is deliberately small enough to avoid overshoot;
             // the shorter interval keeps automatic capture responsive.
@@ -257,6 +302,7 @@ private:
         const bool hide = PanelOverlapsCapture(); if (hide) { ::ShowWindow(m_panel, SW_HIDE); ::Sleep(15); }
         Frame next; const bool captured = CaptureScreenRegion(m_context.capturedRegion, next); if (hide) ::ShowWindow(m_panel, SW_SHOWNOACTIVATE); if (!captured) return;
         if (!SameFrame(m_probe, next)) {
+            m_rejectedAtRest = false;
             // Do not defer all work until scrolling stops.  Small deltas are
             // appended as they arrive. A live step may cover up to 70% of the
             // viewport, which handles ordinary wheel and trackpad gestures;
@@ -264,11 +310,12 @@ private:
             const int incrementalLimit = (std::max)(24, m_last.height * 70 / 100);
             if (!CommitFrame(std::move(next), incrementalLimit)) {
                 m_probe = std::move(next);
-                ::SetWindowTextW(m_status, m_auto ? L"Scrolling… collecting small increments" : L"Scrolling manually… collecting increments");
+                ::SetWindowTextW(m_status, m_alignmentHint);
             }
             m_stableSamples = 0;
             return;
         }
+        if (m_rejectedAtRest && !m_waitingForSettle) return;
         if (++m_stableSamples < 2) return;
         m_stableSamples = 0;
         if (SameFrame(m_last, next)) {
@@ -283,8 +330,8 @@ private:
         // is not lost even if it happened just before the user released input.
         const int restingLimit = (std::max)(24, m_last.height * 70 / 100);
         if (!CommitFrame(std::move(next), restingLimit)) {
-            m_probe = std::move(next); m_waitingForSettle = false; m_auto = false;
-            ::SetWindowTextW(m_autoButton, L"Auto scroll"); ::SetWindowTextW(m_status, L"Could not align this step · scroll a shorter distance");
+            m_probe = std::move(next); m_waitingForSettle = false; m_auto = false; m_rejectedAtRest = true;
+            ::SetWindowTextW(m_autoButton, L"Auto scroll"); ::SetWindowTextW(m_status, m_alignmentHint);
             return;
         }
         m_waitingForSettle = false; m_lastAutoScroll = ::GetTickCount64(); m_noProgressCount = 0;
@@ -339,7 +386,9 @@ private:
     bool m_auto = false, m_finished = false, m_waitingForSettle = false, m_autoStepAdvanced = false, m_timerRunning = false;
     bool m_panelExcludedFromCapture = false;
     FixedBands m_fixed{};
+    const wchar_t* m_alignmentHint = L"";
     bool m_haveAlignment = false;
+    bool m_rejectedAtRest = false;
     int m_position = 0; // Viewport top relative to the stitched image, rebased after prepending.
     int m_frames = 1, m_stableSamples = 0, m_noProgressCount = 0; ULONGLONG m_lastAutoScroll{};
 };
