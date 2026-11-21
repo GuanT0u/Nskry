@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "nskry-scroll",
   "name": "Long Screenshot",
-  "version": "0.5.7",
+  "version": "0.5.9",
   "author": "Nskry Team",
   "description": "Interactive scrolling capture with manual/automatic modes and live preview.",
   "runtime": {

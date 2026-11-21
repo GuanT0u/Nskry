@@ -63,6 +63,22 @@ void CheckStickyBands(const Frame &doc) {
         Check(stitched.height == expected.height && stitched.pixels == expected.pixels,
               "keep fixed header/footer once while extending or revisiting");
     }
+
+    const auto before = BrowserView(doc, 400, viewport, bands);
+    auto after = BrowserView(doc, 433, viewport, bands);
+    after.pixels[8] = 0xffffffu;
+    std::fill_n(after.pixels.end() - after.width, after.width, 0x010101u);
+    const auto alignment = FindAlignment(before, after, 176);
+    Check(alignment.shift == 33 && alignment.fixed == bands,
+          "repainted outer rows do not hide the fixed header and footer");
+    auto mosaic = before;
+    const auto placement = PlaceFrame(0, alignment.shift, viewport, viewport);
+    const auto join = FindJoin(mosaic, before, after, placement, alignment);
+    Check(join.row >= 0, "find the content seam inside the two fixed bands");
+    Extend(mosaic, after, placement, bands, join.row, join.path);
+    auto expected = BrowserView(doc, 400, viewport + 33, bands);
+    std::copy_n(after.pixels.end() - after.width, after.width, expected.pixels.end() - expected.width);
+    Check(mosaic.pixels == expected.pixels, "keep a single header and footer after outline repaint");
 }
 
 void CheckRepeatedContent() {
@@ -186,6 +202,50 @@ void CheckWeakDivider() {
     }
 }
 
+void CheckSidebarRepaint() {
+    constexpr int width = 300, height = 200, seam = 109;
+    const Frame document = Noise(width, height + 80);
+    for (bool activeLeft : {false, true}) {
+        const auto view = [&](int offset) {
+            Frame frame = View(document, 0, height);
+            for (int y = 0; y < height; ++y) {
+                for (int x = 0; x < width; ++x) {
+                    auto &pixel = frame.pixels[y * width + x];
+                    const bool active = activeLeft ? x < seam : x > seam;
+                    const int row = active ? y + offset : y;
+                    const bool outer = std::abs(x - seam) < 24;
+                    pixel = outer || row % 51 > 27 ? 0x191919u : document.pixels[row * width + x];
+                    // The thin divider starts below a shared title bar.
+                    if (x == seam && y >= 42)
+                        pixel = 0x232323u;
+                    if (!active && x != seam && offset && y >= 75 && y < 124 &&
+                        std::abs(x - seam) >= 8 && std::abs(x - seam) <= 13)
+                        pixel = 0x646464u;
+                }
+            }
+            return frame;
+        };
+        auto before = view(0), mosaic = before;
+        FixedBands learned{};
+        int position = 0;
+        for (int offset : {28, 56}) {
+            auto after = view(offset);
+            auto match = FindAlignment(before, after, 130, position ? &learned : nullptr);
+            const FixedBands expected{0, 0, activeLeft ? 0 : seam + 1, activeLeft ? width - seam : 0};
+            Check(match.shift == 28 && match.fixed == expected, "track the divider past a repainted thumb on either side");
+            const auto p = PlaceFrame(position, match.shift, height, mosaic.height);
+            const auto join = FindJoin(mosaic, before, after, p, match);
+            Check(join.row >= 0, "join inside the isolated pane");
+            Extend(mosaic, after, p, match.fixed, join.row, join.path);
+            Check(mosaic.width == width - expected.left - expected.right && mosaic.height == height + offset,
+                  "only the moving pane reaches the output");
+            learned = match.fixed;
+            position = p.top;
+            before = std::move(after);
+        }
+    }
+}
+
 void CheckFloatingControl() {
     const auto doc = Noise(232, 1000);
     const auto paint = [](Frame &frame) {
@@ -216,7 +276,7 @@ void CheckFloatingControl() {
     }
 }
 
-void CheckWallpaper() {
+void CheckWallpaper(bool faint) {
     constexpr int width = 300, height = 260;
     const auto pixel = [](unsigned index) {
         index ^= index >> 16;
@@ -231,24 +291,33 @@ void CheckWallpaper() {
     };
     auto view = [&](int top) {
         Frame out{width, height, std::vector<unsigned>(width * height)};
-        for (int y = 0; y < out.height; ++y)
-            for (int x = 0; x < out.width; ++x)
+        for (int y = 0; y < out.height; ++y) {
+            for (int x = 0; x < out.width; ++x) {
+                const unsigned wallpaper = pixel(y * width + x);
+                const unsigned background = faint ? (25 + wallpaper % 10) * 0x010101u : wallpaper;
                 out.pixels[y * width + x] = foreground(y + top, x) ? pixel(100000 + (y + top) * width + x)
-                                                                  : pixel(y * width + x);
+                                                                  : background;
+            }
+        }
         return out;
     };
     const auto first = view(50), second = view(83);
+    Check(FindMovingEdges(first, second, {}, 160) == 33 &&
+              FindMovingEdges(second, first, {}, 160) == -33,
+          "independent moving edges recover the signed foreground displacement on wallpaper");
+    Check(!FindMovingEdges(first, first, {}, 160), "stationary wallpaper supplies no moving edges");
     const auto motion = FindAlignment(first, second, 160);
-    Check(motion.shift == 33 && motion.fixed == FixedBands{} && motion.fixedTexture,
+    Check(motion.shift == 33 && motion.fixed == FixedBands{} && motion.fixedTexture == !faint,
           "moving foreground can establish a shift despite stationary wallpaper");
-    Check(HasFixedTexture(first, second, {}, 33), "co-located wallpaper contradicts a true message shift");
+    Check(HasFixedTexture(first, second, {}, 33) == !faint,
+          "faint wallpaper is below the global texture threshold");
     Check(FindJoinRow(first, second, PlaceFrame(0, 33, 260, 260), {}) < 0,
           "a known true displacement alone cannot justify a seam through fixed wallpaper");
     const auto p = PlaceFrame(0, motion.shift, 260, 260);
-    const int join = FindJoinRow(first, second, p, motion.fixed, &first, motion.shift);
-    Check(join >= 0, "allow a seam when only stationary wallpaper differs");
+    const auto join = FindJoin(first, first, second, p, motion);
+    Check(join.row >= 0, "allow a seam when only stationary wallpaper differs");
     auto mosaic = first;
-    Extend(mosaic, second, p, {}, join);
+    Extend(mosaic, second, p, {}, join.row, join.path);
     for (int y = 0; y < mosaic.height; ++y)
         for (int x = 0; x < mosaic.width; ++x)
             if (foreground(y + 50, x))
@@ -257,8 +326,11 @@ void CheckWallpaper() {
     auto obscured = second;
     for (int y = 0; y < second.height; ++y)
         obscured.pixels[y * second.width + second.width / 2] ^= 0xffffffu;
-    Check(FindJoinRow(first, obscured, p, {}, &first, 33) < 0,
+    const auto blocked = FindJoin(first, first, obscured, p, motion);
+    Check(blocked.row < 0 && blocked.path.empty(),
           "refuse an overlap with unresolved foreground changes");
+    Check(!HasFixedTexture(first, first, {}, 33, TextureCheck::MixedMotion),
+          "stationary texture alone does not validate travel at the proposed shift");
     Frame margin = Noise(width, 700);
     for (int y = 0; y < margin.height; ++y)
         std::fill_n(margin.pixels.begin() + y * margin.width, 47, 0x202020u);
@@ -371,6 +443,43 @@ void CheckComposerResize() {
               "reject changed composer geometry before writing a strip");
 }
 
+void CheckFaintToolbarRules() {
+    constexpr int width = 240, height = 240;
+    constexpr FixedBands bands{30, 72};
+    const auto message = Noise(90, 320);
+    const auto view = [&](int offset, bool caret) {
+        Frame frame{width, height, std::vector<unsigned>(width * height)};
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                unsigned gray = 31 + x / 60;
+                const bool body = y >= bands.top && y < height - bands.bottom;
+                if (body)
+                    gray += (x / 11 + y / 7) % 6;
+                if (y == bands.top - 1 || y == height - bands.bottom)
+                    gray += 12;
+                unsigned color = gray * 0x010101u;
+                if (body && x >= 20 && x < 110 && (y + offset) % 80 < 20)
+                    color = message.pixels[(y + offset) * message.width + x - 20];
+                if (caret && x == 12 && y >= 186 && y < 205)
+                    color = 0xffffffu;
+                frame.pixels[y * width + x] = color;
+            }
+        }
+        return frame;
+    };
+    auto first = view(0, false);
+    auto next = view(12, true);
+    for (int direction : {1, -1}) {
+        auto match = FindAlignment(first, next, 100);
+        Check(match.fixed == bands && match.shift == direction * 12,
+              "use faint rules around a sparse feed despite a blinking input caret");
+        auto p = PlaceFrame(0, match.shift, height, height);
+        auto join = FindJoin(first, first, next, p, match);
+        Check(join.row >= 0 || !join.path.empty(), "allow the verified small scroll in both directions");
+        std::swap(first, next);
+    }
+}
+
 void CheckEndpointChrome() {
     const auto doc = Noise(200, 800);
     constexpr FixedBands bands{24, 30};
@@ -445,12 +554,15 @@ int main() {
         CheckRepeatedContent();
         CheckSplitPane();
         CheckWeakDivider();
+        CheckSidebarRepaint();
         CheckFloatingControl();
-        CheckWallpaper();
+        CheckWallpaper(false);
+        CheckWallpaper(true);
         CheckWallpaperPath();
         CheckSparseTranslucentForeground();
         CheckBridge();
         CheckComposerResize();
+        CheckFaintToolbarRules();
         CheckEndpointChrome();
         CheckResampledText();
         Frame last = View(doc, 500, 256), stitched = last;

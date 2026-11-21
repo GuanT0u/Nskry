@@ -25,7 +25,7 @@ constexpr size_t kMaxStitchedBytes = 192ull * 1024 * 1024;
 constexpr size_t kMaxWorkingBytes = 512ull * 1024 * 1024;
 
 NskryPluginInfo kInfo{ sizeof(NskryPluginInfo), NSKRY_PLUGIN_API_VERSION,
-    L"Long Screenshot", L"nskry-scroll", L"0.5.7", L"Nskry Team",
+    L"Long Screenshot", L"nskry-scroll", L"0.5.9", L"Nskry Team",
     L"Interactive scrolling capture with live preview", nullptr, NSKRY_CAP_TOOLBAR_ACTION, {} };
 
 HINSTANCE ModuleHandle() noexcept {
@@ -152,7 +152,8 @@ private:
         if (x + width > m_virtual.right - 12) x = m_context.capturedRegion.left - width - 12;
         if (x < m_virtual.left + 12) x = (std::max)(m_virtual.left + 12, m_context.capturedRegion.right - width - 12);
         if (y + height > m_virtual.bottom - 12) y = m_virtual.bottom - height - 12;
-        m_panel = ::CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"NskryScrollPanel", L"Long Screenshot",
+        const std::wstring title = std::wstring(kInfo.name) + L" " + kInfo.version;
+        m_panel = ::CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"NskryScrollPanel", title.c_str(),
             WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, width, height, m_context.mainHwnd, nullptr, ModuleHandle(), this);
         if (!m_panel) return false;
         // Keep an in-range preview visible without baking it into BitBlt/WGC
@@ -251,12 +252,8 @@ private:
         // Keep the user's selection bitmap available for Copy/Edit until
         // the live baseline has actually produced a verified extension.
         const auto &mosaic = m_haveAlignment ? m_stitched : m_last;
-        const int join = FindJoinRow(mosaic, next, placement, alignment.fixed,
-                                     alignment.fixedTexture ? &m_last : nullptr, advance);
-        std::vector<int> path;
-        if (join < 0 && alignment.fixedTexture)
-            path = FindWallpaperJoinPath(mosaic, m_last, next, placement, alignment.fixed, advance);
-        if (join < 0 && path.empty()) {
+        const auto join = FindJoin(mosaic, m_last, next, placement, alignment);
+        if (join.row < 0 && join.path.empty()) {
             m_alignmentHint = L"No clean join · avoid fixed overlays or scroll back";
             return false;
         }
@@ -280,7 +277,7 @@ private:
         }
         if (!m_haveAlignment)
             std::copy(m_last.pixels.begin(), m_last.pixels.end(), m_stitched.pixels.begin());
-        Extend(m_stitched, next, placement, alignment.fixed, join, path);
+        Extend(m_stitched, next, placement, alignment.fixed, join.row, join.path);
         m_fixed = alignment.fixed;
         m_haveAlignment = true;
         m_position = placement.top + placement.prepend;

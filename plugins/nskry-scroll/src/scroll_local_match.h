@@ -3,6 +3,70 @@
 #include <array>
 
 namespace nskry::scroll {
+// Small scrolls on a fixed background often preserve the glyphs exactly.
+// Use only changing edges whose cross of five pixels has a unique old position.
+inline int FindMovingEdges(const Frame &a, const Frame &b, FixedBands f, int limit) {
+    if (limit < 1)
+        return 0;
+    const int width = a.width - f.left - f.right, height = a.height - f.top - f.bottom;
+    struct Vote { int count{}; unsigned rows{}; };
+    std::vector<Vote> votes(2 * limit + 1);
+    int voters = 0;
+    constexpr int grid = 9;
+    for (int band = 0; band < grid; ++band) {
+        for (int col = 0; col < grid; ++col) {
+            int best = 0, anchorY = 0, anchorX = 0;
+            for (int y = f.top + height * band / grid + 1; y < f.top + height * (band + 1) / grid - 1;
+                 y += (std::max)(1, height / 180)) {
+                for (int x = f.left + width * col / grid + 1; x < f.left + width * (col + 1) / grid - 1;
+                     x += (std::max)(1, width / 240)) {
+                    const auto i = size_t(y) * b.width + x;
+                    const int edge = PixelError(b.pixels[i - b.width], b.pixels[i + b.width]);
+                    const int quality = (std::min)(edge, PixelError(a.pixels[i], b.pixels[i]));
+                    if (quality > best) {
+                        best = quality;
+                        anchorY = y;
+                        anchorX = x;
+                    }
+                }
+            }
+            if (best < 48)
+                continue;
+            const auto i = size_t(anchorY) * b.width + anchorX;
+            int displacement = 0;
+            for (int dy = (std::max)(-limit, f.top + 1 - anchorY);
+                 dy <= (std::min)(limit, b.height - f.bottom - 2 - anchorY); ++dy) {
+                const auto j = size_t(anchorY + dy) * a.width + anchorX;
+                if (PixelError(a.pixels[j], b.pixels[i]) > 3)
+                    continue;
+                if (PixelError(a.pixels[j - 1], b.pixels[i - 1]) > 3 ||
+                    PixelError(a.pixels[j + 1], b.pixels[i + 1]) > 3 ||
+                    PixelError(a.pixels[j - a.width], b.pixels[i - b.width]) > 3 ||
+                    PixelError(a.pixels[j + a.width], b.pixels[i + b.width]) > 3)
+                    continue;
+                if (displacement) {
+                    displacement = 0;
+                    break;
+                }
+                displacement = dy;
+            }
+            if (displacement) {
+                auto &vote = votes[displacement + limit];
+                ++vote.count;
+                vote.rows |= 1u << band;
+                ++voters;
+            }
+        }
+    }
+    for (int shift = -limit; shift <= limit; ++shift) {
+        const auto &vote = votes[shift + limit];
+        if (vote.count >= 3 && vote.count * 3 >= voters * 2 && std::popcount(vote.rows) >= 2 &&
+            HasFixedTexture(a, b, f, shift, TextureCheck::VerifiedMovingEdges))
+            return shift;
+    }
+    return 0;
+}
+
 // Sample a lightly filtered luminance image at a bounded number of columns.
 // Keep every row so narrow text strokes cannot fall between shift candidates.
 inline int FindLocalShift(const Frame &a, const Frame &b, FixedBands f, int limit,
@@ -208,8 +272,13 @@ inline Alignment FindAlignment(const Frame &a, const Frame &b, int maximumAdvanc
         return (std::min)(maximumAdvance, height - (std::max)(48, height * 30 / 100));
     };
     const auto verifyDividers = [&](FixedBands area) {
-        area.top = area.top ? (std::min)(area.top, FindStableDivider(a, b, area, false)) : 0;
-        area.bottom = area.bottom ? (std::min)(area.bottom, FindStableDivider(a, b, area, true)) : 0;
+        const auto confirmedEdge = [&](int depth, bool bottom) {
+            if (!depth || DetectFixedEdge(a, b, bottom, area, true) == depth)
+                return depth;
+            return (std::min)(depth, FindStableDivider(a, b, area, bottom));
+        };
+        area.top = confirmedEdge(area.top, false);
+        area.bottom = confirmedEdge(area.bottom, true);
         if (area.left && DetectFixedSide(a, b, false, true) != area.left)
             area.left = 0;
         if (area.right && DetectFixedSide(a, b, true, true) != area.right)
@@ -219,7 +288,10 @@ inline Alignment FindAlignment(const Frame &a, const Frame &b, int maximumAdvanc
     const int limit = searchLimit(f);
     if (limit < 1)
         return integer;
-    int shift = FindLocalShift(a, b, f, limit);
+    int shift = FindMovingEdges(a, b, f, limit);
+    const bool verifiedEdges = shift != 0;
+    if (!shift)
+        shift = FindLocalShift(a, b, f, limit);
     if (!shift)
         shift = FindLocalShift(a, b, f, limit, true);
     if (!shift && !knownFixed) {
@@ -234,7 +306,7 @@ inline Alignment FindAlignment(const Frame &a, const Frame &b, int maximumAdvanc
     }
     if (!shift)
         return integer;
-    const bool wallpaper = HasFixedTexture(a, b, f, shift);
+    const bool wallpaper = verifiedEdges || HasFixedTexture(a, b, f, shift);
     if (wallpaper && !knownFixed)
         f = verifyDividers(f);
     return {shift, f, Alignment::Issue::NoMatch, wallpaper};

@@ -137,6 +137,24 @@ inline std::vector<int> FindWallpaperJoinPath(const Frame &stitched, const Frame
     return path;
 }
 
+struct Join {
+    int row;
+    std::vector<int> path;
+};
+
+inline Join FindJoin(const Frame &stitched, const Frame &previous, const Frame &next,
+                     Placement placement, Alignment match) {
+    if (!match.fixedTexture) {
+        const int row = FindJoinRow(stitched, next, placement, match.fixed);
+        if (row >= 0 || !HasFixedTexture(previous, next, match.fixed, match.shift, TextureCheck::MixedMotion))
+            return {row, {}};
+    }
+    const int row = FindJoinRow(stitched, next, placement, match.fixed, &previous, match.shift);
+    if (row >= 0)
+        return {row, {}};
+    return {row, FindWallpaperJoinPath(stitched, previous, next, placement, match.fixed, match.shift)};
+}
+
 // Reserve/budget checks and seam validation precede this operation. Compact
 // the first frame in place so matching can keep full frames without another
 // viewport-sized buffer. Every output path (preview, edit, copy) uses this image.
