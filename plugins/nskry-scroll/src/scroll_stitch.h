@@ -434,11 +434,9 @@ inline bool HasFixedTexture(const Frame &a, const Frame &b, FixedBands f, int sh
            (check == TextureCheck::VerifiedMovingEdges || std::popcount(movingRows) >= 2);
 }
 
+// Called after FindAlignment has validated the frame pair.
 inline Alignment FindIntegerAlignment(const Frame &previous, const Frame &current, int maximumAdvance,
                                       const FixedBands *knownFixed = nullptr) {
-    if (!ValidFrame(previous) || !ValidFrame(current) || previous.width != current.width ||
-        previous.height != current.height || previous.width < 24 || SameFrame(previous, current))
-        return {};
     FixedBands fixed{};
     if (knownFixed) {
         fixed = *knownFixed;

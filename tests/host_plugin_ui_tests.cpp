@@ -20,8 +20,8 @@ struct InputPageTestAccess {
         HWND parent=CreateWindowExW(0,L"STATIC",L"input UI test",WS_POPUP,0,0,660,400,nullptr,nullptr,nullptr,nullptr);
         bool suspended=false;int transitions=0;bool ok=true;
         {
-            auto definitions=CoreShortcuts();auto official=BuiltinCapturePlaceholders(L"nskry-ocr",L"Text recognition");
-            for(auto& row:official){row.official=true;definitions.push_back(row);}
+            auto definitions=CoreShortcuts();
+            AddBuiltinCapturePlaceholders(definitions);
             definitions.push_back({L"plugin.org.test.launch",L"Third party test",L"",L"org.test",L"A third-party plugin",input::Kind::Global,false,true});
             InputPage page(parent,definitions,false,[&](bool state){suspended=state;++transitions;},nullptr);
             SetWindowPos(page.Hwnd(),nullptr,0,0,630,280,SWP_NOZORDER);page.Load({});

@@ -27,29 +27,19 @@ inline std::vector<ShortcutDefinition> CoreShortcuts() {
             {L"core.editor.pan_y", L"Editor vertical pan", L"Alt+Wheel", {}, {}, K::Wheel}};
 }
 // Product launch placeholders only. Installed DLL-local bindings must come from its manifest.
-inline std::vector<ShortcutDefinition> BuiltinCapturePlaceholders(const std::wstring &id, const std::wstring &name) {
-    using K = input::Kind;
-    std::vector<ShortcutDefinition> rows;
-    if (id == L"nskry-ocr")
-        rows = {{L"launch", L"Recognize a selected region", L"", {}, {}, K::Global, false, true}};
-    if (id == L"nskry-scroll")
-        rows = {{L"launch", L"Scroll capture a selected region", L"", {}, {}, K::Global, false, true}};
-    for (auto &r : rows) {
-        r.id = L"plugin." + id + L"." + r.id;
-        r.pluginId = id;
-        r.pluginName = name;
-    }
-    return rows;
-}
 inline void AddBuiltinCapturePlaceholders(std::vector<ShortcutDefinition> &rows) {
-    for (const auto &[id, name] :
-         {std::pair{L"nskry-ocr", L"Text recognition"}, std::pair{L"nskry-scroll", L"Long Screenshot"}}) {
+    struct CapturePlugin {
+        const wchar_t *id, *name, *launchLabel;
+    };
+    static constexpr CapturePlugin plugins[] = {
+        {L"nskry-ocr", L"Text recognition", L"Recognize a selected region"},
+        {L"nskry-scroll", L"Long Screenshot", L"Scroll capture a selected region"},
+    };
+    for (const auto &[id, name, label] : plugins) {
         const bool present = std::any_of(rows.begin(), rows.end(), [&](const auto &row) { return row.pluginId == id; });
-        if (!present) {
-            auto placeholder = BuiltinCapturePlaceholders(id, name).front();
-            placeholder.official = true;
-            rows.push_back(std::move(placeholder));
-        }
+        if (!present)
+            rows.push_back({std::wstring(L"plugin.") + id + L".launch", label, L"", id, name,
+                            input::Kind::Global, true, true});
     }
 }
 inline bool ValidateShortcuts(const std::vector<ShortcutDefinition> &definitions,

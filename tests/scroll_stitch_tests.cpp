@@ -246,6 +246,48 @@ void CheckSidebarRepaint() {
     }
 }
 
+void CheckSparseTableColumn() {
+    constexpr int width = 320, height = 240;
+    const auto view = [&](int top, int rows, bool mirror) {
+        Frame frame{width, rows, std::vector<unsigned>(width * rows)};
+        for (int y = 0; y < rows; ++y) {
+            const int docY = y + top;
+            for (int x = 0; x < width; ++x) {
+                unsigned gray = 32;
+                if (y < 30)
+                    gray = ((x / 10 + y / 4) % 2) * 60 + 40;
+                else if (x > 112)
+                    gray = (docY * 79 + x * 37 + docY * x) % 200 + 40;
+                else if (x >= 44 && x < 62 && docY >= 94 && docY < 108)
+                    gray = 198;
+                if (x == 110)
+                    gray = 120;
+                frame.pixels[y * width + (mirror ? width - 1 - x : x)] = gray * 0x010101u;
+            }
+        }
+        return frame;
+    };
+    for (bool mirror : {false, true}) {
+        for (int shift : {12, -12}) {
+            const auto before = view(shift > 0 ? 0 : 12, height, mirror);
+            const auto after = view(shift > 0 ? 12 : 0, height, mirror);
+            const FixedBands stale{30, 0, mirror ? 0 : 111, mirror ? 111 : 0};
+            const auto locked = FindAlignment(before, after, 160, &stale);
+            Check(!locked.shift && locked.issue == Alignment::Issue::LayoutChanged,
+                  "stop before discarding moving content outside a previously locked pane");
+            const auto match = FindAlignment(before, after, 160);
+            Check(match.shift == shift && !match.fixed.left && !match.fixed.right,
+                  "a sparse column travelling with its table must survive sidebar detection");
+            auto mosaic = before;
+            const auto placement = PlaceFrame(0, shift, height, height);
+            const auto join = FindJoin(mosaic, before, after, placement, match);
+            Check(join.row >= 0, "find a table seam");
+            Extend(mosaic, after, placement, match.fixed, join.row, join.path);
+            Check(mosaic.pixels == view(0, height + 12, mirror).pixels, "preserve both columns and the header");
+        }
+    }
+}
+
 void CheckFloatingControl() {
     const auto doc = Noise(232, 1000);
     const auto paint = [](Frame &frame) {
@@ -555,6 +597,7 @@ int main() {
         CheckSplitPane();
         CheckWeakDivider();
         CheckSidebarRepaint();
+        CheckSparseTableColumn();
         CheckFloatingControl();
         CheckWallpaper(false);
         CheckWallpaper(true);

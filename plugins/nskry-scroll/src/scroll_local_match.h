@@ -254,11 +254,10 @@ inline int FindStableDivider(const Frame &a, const Frame &b, FixedBands f, bool 
     return 0;
 }
 
-inline Alignment FindAlignment(const Frame &a, const Frame &b, int maximumAdvance,
-                               const FixedBands *knownFixed = nullptr) {
+inline Alignment EstimateAlignment(const Frame &a, const Frame &b, int maximumAdvance,
+                                   const FixedBands *knownFixed) {
     const auto integer = FindIntegerAlignment(a, b, maximumAdvance, knownFixed);
-    if (integer.shift || integer.issue == Alignment::Issue::LayoutChanged || !ValidFrame(a) ||
-        !ValidFrame(b) || a.width != b.width || a.height != b.height || a.width < 24 || SameFrame(a, b))
+    if (integer.shift || integer.issue == Alignment::Issue::LayoutChanged)
         return integer;
     FixedBands f = integer.fixed;
     if (!knownFixed) {
@@ -310,6 +309,67 @@ inline Alignment FindAlignment(const Frame &a, const Frame &b, int maximumAdvanc
     if (wallpaper && !knownFixed)
         f = verifyDividers(f);
     return {shift, f, Alignment::Issue::NoMatch, wallpaper};
+}
+
+// A mostly empty sidebar candidate can be a sparse column of the document.
+// Look for changing edges at both ends of the proposed motion. A single
+// blinking caret or a stationary rule does not provide this evidence.
+inline bool SideMovesWithContent(const Frame &a, const Frame &b, Alignment match, int left, int right) {
+    if (right <= left)
+        return false;
+    const int begin = match.fixed.top + (std::max)(0, -match.shift);
+    const int end = b.height - match.fixed.bottom - (std::max)(0, match.shift);
+    const int xStep = (std::max)(1, (right - left) / 256);
+    const int yStep = (std::max)(1, (end - begin) / 720);
+    const size_t above = size_t(yStep) * b.width;
+    const auto changedEdge = [&](size_t k) {
+        return PixelError(a.pixels[k], b.pixels[k]) > 24 ||
+               PixelError(a.pixels[k - above], b.pixels[k - above]) > 24;
+    };
+    int firstRow = -1;
+    for (int y = begin + yStep; y < end; y += yStep) {
+        int columns = 0;
+        for (int x = left; x < right; x += xStep) {
+            const size_t i = size_t(y) * b.width + x;
+            const size_t j = size_t(y + match.shift) * a.width + x;
+            if (PixelError(b.pixels[i], b.pixels[i - above]) < 32 ||
+                PixelError(a.pixels[j], b.pixels[i]) > 3 ||
+                PixelError(a.pixels[j - above], b.pixels[i - above]) > 3 ||
+                !changedEdge(i) || !changedEdge(j))
+                continue;
+            if (++columns < 2)
+                continue;
+            if (firstRow >= 0 && y - firstRow >= 2)
+                return true;
+            if (firstRow < 0)
+                firstRow = y;
+            break;
+        }
+    }
+    return false;
+}
+
+inline Alignment FindAlignment(const Frame &a, const Frame &b, int maximumAdvance,
+                               const FixedBands *knownFixed = nullptr) {
+    if (!ValidFrame(a) || !ValidFrame(b) || a.width != b.width || a.height != b.height ||
+        a.width < 24 || SameFrame(a, b))
+        return {};
+    auto match = EstimateAlignment(a, b, maximumAdvance, knownFixed);
+    if (!match.shift)
+        return match;
+    const bool keepLeft = SideMovesWithContent(a, b, match, 0, match.fixed.left);
+    const bool keepRight = SideMovesWithContent(a, b, match, a.width - match.fixed.right, a.width);
+    if (keepLeft || keepRight) {
+        if (knownFixed)
+            return {0, *knownFixed, Alignment::Issue::LayoutChanged};
+        if (keepLeft)
+            match.fixed.left = 0;
+        if (keepRight)
+            match.fixed.right = 0;
+        // A wider first frame must validate its seam against all retained pixels.
+        match.fixedTexture = match.fixedTexture || HasFixedTexture(a, b, match.fixed, match.shift);
+    }
+    return match;
 }
 
 inline int FindMotion(const Frame &a, const Frame &b, int maximumAdvance) {
