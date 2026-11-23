@@ -151,7 +151,8 @@ if (BUILD_TESTING)
     set_tests_properties(NskryInputSettingsTests PROPERTIES TIMEOUT 15)
     add_executable(NskryMonitorFrameTests tests/monitor_frame_tests.cpp
         src/capture/d3d_device.cpp src/ui/pip_window.cpp src/ui/window_visual_style.cpp
-        src/ui/image_action.cpp src/ui/annotation/annotation_engine.cpp src/core/settings_manager.cpp)
+        src/ui/image_action.cpp src/ui/annotation/annotation_engine.cpp src/ui/toolbar_accessibility.cpp
+        src/core/settings_manager.cpp)
     target_link_libraries(NskryMonitorFrameTests PRIVATE nskry_json)
     target_include_directories(NskryMonitorFrameTests PRIVATE src sdk)
     target_compile_definitions(NskryMonitorFrameTests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX WINRT_LEAN_AND_MEAN)
@@ -159,7 +160,7 @@ if (BUILD_TESTING)
         target_compile_options(NskryMonitorFrameTests PRIVATE /utf-8)
     endif()
     target_link_libraries(NskryMonitorFrameTests PRIVATE d3d11 dxgi windowsapp dwmapi d3dcompiler user32 gdi32
-        msimg32 gdiplus comctl32 comdlg32 shell32)
+        msimg32 gdiplus comctl32 comdlg32 shell32 oleacc oleaut32)
     add_test(NAME NskryMonitorFrameTests COMMAND NskryMonitorFrameTests)
     set_tests_properties(NskryMonitorFrameTests PROPERTIES TIMEOUT 15)
     add_executable(NskryResourceFeatureTests tests/resource_feature_tests.cpp src/core/image_edit_model.cpp)

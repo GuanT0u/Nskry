@@ -17,6 +17,19 @@ struct MonitorFrameTestAccess {
         window.UpdateOverlayFromEngine(); // Redraw with the original canvas dimensions.
         return true;
     }
+    static bool VerifyAnnotationToolbar(PipWindow& window) {
+        window.EnterEditMode();
+        RECT client{};
+        bool valid = ::GetClientRect(window.m_hwndToolbar, &client) != FALSE &&
+                     ::IsWindowVisible(window.m_hwndToolbar) && !window.m_toolbarItems.empty();
+        for (const auto& item : window.m_toolbarItems) {
+            RECT intersection{};
+            valid &= ::IntersectRect(&intersection, &client, &item.rect) &&
+                     ::EqualRect(&intersection, &item.rect);
+        }
+        window.FinishEdit(false);
+        return valid && !::IsWindowVisible(window.m_hwndToolbar);
+    }
     static bool Empty(PipWindow& window) { return !window.m_lastFrameTex; }
 };
 }
@@ -46,6 +59,10 @@ int wmain() {
         window.RenderFrame(replacement.get(), 80, 60);
         if (!nskry::MonitorFrameTestAccess::Verify(window)) result = 1;
         window.SetAutoHidden(false);
+        if (!nskry::MonitorFrameTestAccess::VerifyAnnotationToolbar(window)) {
+            std::cerr << "PiP annotation controls must fit inside the visible toolbar\n";
+            result = 1;
+        }
     } catch (const winrt::hresult_error& error) {
         std::cerr << "D3D/window integration failure: " << std::hex << error.code().value << '\n';
         result = 1;
