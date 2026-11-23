@@ -1,11 +1,179 @@
 ---
-import Site from '../layouts/Site.astro';
+import '../styles/global.css';
+import '../styles/dark-fantasy.css';
 import { link } from '../lib/links';
-import { loadData } from '../lib/data.mjs';
-const {plugins}=loadData();
+import ArcaneHUD from '../components/ArcaneHUD.astro';
+import Act1Sanctuary from '../components/Act1Sanctuary.astro';
+import Act2Study from '../components/Act2Study.astro';
+import Act3SpellSlots from '../components/Act3SpellSlots.astro';
+import DiegeticFooter from '../components/DiegeticFooter.astro';
+
+const title = 'Nscry · 窥见幕后 · 轻量如风 (Live Sub-Window Scrying & Modular Spell Slots)';
+const description = '专为 Windows 打造的超轻量桌面工具：实时子窗口映射 (Live Sub-Window Scrying) 与 按需法术位插件架构。';
 ---
-<Site title="轻巧地捕捉，按需地扩展">
-<section class="hero"><div><p class="eyebrow">A little tool for what matters</p><h1>留住画面。<br/>专注眼前。</h1><p class="lead">截图、钉住、监控。一款轻量的 Windows 桌面工具，用按需插件完成长截图、识别、翻译与录屏。</p><div class="actions"><a class="button" href={link('download/')}>获取 Nskry ↗</a><a class="button secondary" href={link('guide/')}>从这里开始</a></div><p class="muted">Windows x64 · 开源免费 · 功能按需启用</p></div><div class="preview" role="img" aria-label="框选截图操作的示意图，并非软件实机截图"><div class="window"><div class="window-top">Nskry / Capture a moment</div><div class="selection"><p>把需要的信息，留在手边。</p><p><strong>截取 · 编辑 · 钉住</strong></p><p>从一个范围开始，完成你的下一步。</p></div><div class="toolbar">复制　 保存　 钉住　 ···</div></div><p class="preview-label">交互示意 · Ctrl + Alt + A 开始截图</p></div></section>
-<section><p class="eyebrow">Made for your desktop</p><div class="grid">{[['一个范围，多种用途','框选后复制、保存或钉住，也可以为窗口创建实时监控。'],['编辑是基础能力','裁剪、缩放、标注和区段切除，都由共享图片编辑器提供。'],['需要时，再多做一点','插件在使用时加载，任务完成后释放引擎资源。']].map(([title,text])=><article class="card"><h3>{title}</h3><p>{text}</p></article>)}</div></section>
-<section><div class="section-head"><div><p class="eyebrow">Extend your workflow</p><h2>按需要选择插件</h2></div><a href={link('plugins/')}>浏览全部插件 →</a></div><div class="grid">{plugins.map(p=><article class="card"><span class="badge">开发中</span><h3><a href={link(`plugins/${p.id}/`)}>{p.name}</a></h3><p>{p.summary}</p><a href={link(`plugins/${p.id}/`)}>了解功能 →</a></article>)}</div></section>
-</Site>
+
+<!doctype html>
+<html lang="zh-CN" class="dark-fantasy-html">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#06080b" />
+    <title>{title}</title>
+    <link rel="icon" type="image/svg+xml" href={link('favicon.svg')} />
+
+    <!-- Google Web Fonts: Cinzel & EB Garamond with graceful fallbacks -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800;900&family=EB+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body class="dark-fantasy-body">
+    <!-- Diegetic Ambient HUD -->
+    <ArcaneHUD />
+
+    <!-- Main 3-Act Cinematic Scrollytelling Experience -->
+    <main id="main-scry-world" class="main-scry-container">
+      <!-- Act 1: The Misty Sanctuary & Cinematic Dolly Zoom -->
+      <Act1Sanctuary />
+
+      <!-- Act 2: The Wizard's Study & Interactive Open Grimoire -->
+      <Act2Study />
+
+      <!-- Act 3: D&D / BG3 Spell Slots — Modular Plugin Ecosystem -->
+      <Act3SpellSlots />
+    </main>
+
+    <!-- Diegetic Mahogany & Brass Footer -->
+    <DiegeticFooter />
+
+    <style is:global>
+      /* Ensure base HTML & Body match dark-fantasy immersion */
+      html.dark-fantasy-html {
+        background-color: #06080b;
+        color: #e4d7bd;
+        scroll-behavior: auto; /* Handled smoothly by Lenis */
+        overflow-x: clip;
+      }
+
+      body.dark-fantasy-body {
+        background-color: #06080b;
+        color: #e4d7bd;
+        margin: 0;
+        padding: 0;
+        overflow-x: clip;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        text-rendering: optimizeLegibility;
+      }
+
+      .main-scry-container {
+        position: relative;
+        width: 100%;
+        min-height: 100vh;
+        background: #06080b;
+      }
+
+      /* Custom Gothic Scrollbar */
+      ::-webkit-scrollbar {
+        width: 8px;
+        background: #090c10;
+      }
+      ::-webkit-scrollbar-track {
+        background: #090c10;
+        border-left: 1px solid rgba(146, 116, 45, 0.2);
+      }
+      ::-webkit-scrollbar-thumb {
+        background: linear-gradient(180deg, #5b4520 0%, #2b1f0d 100%);
+        border: 1px solid rgba(212, 175, 55, 0.4);
+        border-radius: 4px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: linear-gradient(180deg, #785a2b 0%, #3d2c12 100%);
+        border-color: #fde047;
+        box-shadow: 0 0 10px rgba(253, 224, 71, 0.4);
+      }
+    </style>
+
+    <!-- Lenis Smooth Scrolling Engine synchronized with GSAP ScrollTrigger -->
+    <script>
+      import Lenis from 'lenis';
+      import { gsap } from 'gsap';
+      import { ScrollTrigger } from 'gsap/ScrollTrigger';
+      import { arcaneAudio } from '../lib/arcane-audio';
+
+      gsap.registerPlugin(ScrollTrigger);
+
+      // Initialize Lenis smooth scroll
+      let lenis: Lenis | null = null;
+      try {
+        lenis = new Lenis({
+          duration: 1.15,
+          easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
+          orientation: 'vertical',
+          gestureOrientation: 'vertical',
+          smoothWheel: true,
+          wheelMultiplier: 1.0,
+          touchMultiplier: 1.8,
+        });
+
+        lenis.on('scroll', ScrollTrigger.update);
+
+        gsap.ticker.add((time) => {
+          if (lenis) {
+            lenis.raf(time * 1000);
+          }
+        });
+
+        gsap.ticker.lagSmoothing(0);
+      } catch (err) {
+        console.warn('[Nscry] Lenis initialization fallback:', err);
+      }
+
+      // Fast-Travel Smooth Scrolling helper
+      window.addEventListener('arcane:navigate', ((e: CustomEvent) => {
+        const targetId = e.detail?.target;
+        if (!targetId) return;
+        const targetEl = document.querySelector(targetId);
+        if (targetEl) {
+          if (lenis) {
+            lenis.scrollTo(targetEl, { offset: 0, duration: 1.5 });
+          } else {
+            targetEl.scrollIntoView({ behavior: 'smooth' });
+          }
+        }
+      }) as EventListener);
+
+      // Keyboard Fast Travel Shortcuts (1: Sanctuary, 2: Study, 3: Spell Slots, M: Mute)
+      window.addEventListener('keydown', (e) => {
+        // Ignore if user is inside an input/textarea
+        if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
+
+        if (e.key === '1') {
+          const el = document.getElementById('act1-sanctuary');
+          if (el) {
+            arcaneAudio.playWaterDrop();
+            if (lenis) lenis.scrollTo(el, { duration: 1.2 });
+            else el.scrollIntoView({ behavior: 'smooth' });
+          }
+        } else if (e.key === '2') {
+          const el = document.getElementById('act2-study');
+          if (el) {
+            arcaneAudio.playParchmentWhisper();
+            if (lenis) lenis.scrollTo(el, { duration: 1.2 });
+            else el.scrollIntoView({ behavior: 'smooth' });
+          }
+        } else if (e.key === '3') {
+          const el = document.getElementById('act3-spellslots');
+          if (el) {
+            arcaneAudio.playCrystalChime(784);
+            if (lenis) lenis.scrollTo(el, { duration: 1.2 });
+            else el.scrollIntoView({ behavior: 'smooth' });
+          }
+        }
+      });
+    </script>
+  </body>
+</html>

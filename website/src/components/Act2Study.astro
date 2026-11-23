@@ -1,0 +1,942 @@
+---
+import { link } from '../lib/links';
+---
+
+<section class="act2-container" id="act2-study">
+  <!-- Desk Background with Ambient Candlelight Glow -->
+  <div class="desk-bg-wrap">
+    <img
+      src={link('assets/study-desk-bg.jpg')}
+      alt="深色风化红木书斋桌面与炼金烛台"
+      class="desk-bg-img"
+      loading="lazy"
+    />
+    <div class="desk-shadow-overlay"></div>
+    <div class="candle-flicker"></div>
+  </div>
+
+  <div class="act2-content-wrapper">
+    <!-- Chapter Eyebrow -->
+    <div class="act2-header text-center">
+      <p class="chapter-tag font-gothic">
+        <span class="rune-sparkle">✦</span> ACT II · 秘术书斋与万象法典 <span class="rune-sparkle">✦</span>
+      </p>
+      <h2 class="act2-title font-gothic text-gold-emboss">
+        实时子窗口窥视模拟仪
+      </h2>
+      <p class="act2-subtitle font-tome text-gold-antique">
+        无需将臃肿后台窗口切至前端。拖拽远古黄铜窥镜，截取任意子区域化作悬浮灵镜。
+      </p>
+    </div>
+
+    <!-- The Open Grimoire Canvas -->
+    <div class="grimoire-viewport brass-panel corner-filigree" id="grimoire-frame">
+      <img
+        src={link('assets/open-grimoire.jpg')}
+        alt="翻开的远古羊皮纸法典"
+        class="grimoire-base-img"
+        loading="lazy"
+      />
+
+      <!-- Inlaid Grimoire Workspace -->
+      <div class="grimoire-pages-grid">
+        <!-- Left Page: Interactive Mock Windows Desktop & Draggable Brass Lens -->
+        <div class="grimoire-page-left">
+          <div class="page-header-bar font-gothic">
+            <span>《水镜秘仪 · 实时映射演武》</span>
+            <span class="lens-status-badge font-mono-scry" id="lens-coords">LENS: [X: 180, Y: 120] · 144 FPS</span>
+          </div>
+
+          <!-- Mock Windows Desktop Stage -->
+          <div class="mock-desktop-stage" id="desktop-stage">
+            <!-- Simulated App 1: Terminal Build Stream -->
+            <div class="desktop-window-app window-term" id="window-term" data-app-name="Terminal">
+              <div class="win-title-bar font-mono-scry">
+                <span class="win-dot red"></span>
+                <span class="win-dot yellow"></span>
+                <span class="win-dot green"></span>
+                <span>Clang17 / CMake Build Console</span>
+              </div>
+              <div class="win-body font-mono-scry">
+                <p class="code-line"><span class="prompt">$</span> git commit -m "feat: live mirror"</p>
+                <p class="code-line cyan">[15:20:11] Target: nscry_core.dll (x64 Release)</p>
+                <p class="code-line green">[15:20:12] Linked: d3d11.lib, dxgi.lib, dwmapi.lib</p>
+                <p class="code-line white">[15:20:13] Build Succeeded (0 warnings, 0 errors)</p>
+                <p class="code-line dim">[15:20:14] Streaming stdout buffer ... OK</p>
+              </div>
+            </div>
+
+            <!-- Simulated App 2: Hardware Telemetry Radar -->
+            <div class="desktop-window-app window-radar" id="window-radar" data-app-name="Hardware Telemetry">
+              <div class="win-title-bar font-mono-scry">
+                <span>Direct3D 11 / WGC Telemetry</span>
+                <span class="win-badge green">LIVE</span>
+              </div>
+              <div class="win-body radar-body font-mono-scry">
+                <div class="radar-scope">
+                  <div class="radar-sweep"></div>
+                  <div class="radar-ring r1"></div>
+                  <div class="radar-ring r2"></div>
+                  <div class="radar-blip b1"></div>
+                  <div class="radar-blip b2"></div>
+                </div>
+                <div class="radar-metrics">
+                  <div>VRAM: <span class="cyan">32.4 MB</span></div>
+                  <div>FPS: <span class="green">144.0</span></div>
+                  <div>Latency: <span class="gold">0.18 ms</span></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Simulated App 3: Audio Spectrum Stream -->
+            <div class="desktop-window-app window-media" id="window-media" data-app-name="Media Audio Stream">
+              <div class="win-title-bar font-mono-scry">
+                <span>Audio Stream Visualizer</span>
+              </div>
+              <div class="win-body media-body">
+                <div class="spectrum-bars">
+                  <span style="height: 50%;"></span>
+                  <span style="height: 80%;"></span>
+                  <span style="height: 35%;"></span>
+                  <span style="height: 95%;"></span>
+                  <span style="height: 65%;"></span>
+                  <span style="height: 75%;"></span>
+                  <span style="height: 40%;"></span>
+                  <span style="height: 88%;"></span>
+                </div>
+                <div class="font-mono-scry spectrum-label">Zero Hook Background Audio</div>
+              </div>
+            </div>
+
+            <!-- The Draggable Antique Brass Scrying Lens -->
+            <div class="brass-lens-interactive" id="brass-lens" title="按住拖拽黄铜窥镜，探索实时映射">
+              <img
+                src={link('assets/brass-scrying-lens.png')}
+                alt="雕刻繁复花纹的古董黄铜窥镜"
+                class="lens-frame-img"
+                draggable="false"
+              />
+              <!-- Magnified / Live Mirroring Hollow Lens Center -->
+              <div class="lens-hollow-mirror" id="lens-mirror">
+                <div class="lens-mirror-view" id="lens-mirror-content">
+                  <div class="mirror-reticle"></div>
+                  <div class="mirror-scanline"></div>
+                </div>
+              </div>
+              <div class="lens-tooltip font-gothic">✦ 拖拽移动窥镜 ✦</div>
+            </div>
+          </div>
+
+          <!-- Quick Lens Target Presets & Pin Action Button -->
+          <div class="lens-controls-bar">
+            <div class="preset-targets font-gothic">
+              <span class="label">窥视预设:</span>
+              <button type="button" class="btn-preset active" data-target="term">终端编译</button>
+              <button type="button" class="btn-preset" data-target="radar">硬件雷达</button>
+              <button type="button" class="btn-preset" data-target="media">音频频段</button>
+            </div>
+
+            <button type="button" class="btn-pin-scry font-gothic" id="btn-pin-viewport">
+              <span class="pin-icon">📌</span>
+              <span>钉住为桌面浮窗</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Right Page: Lore & Diegetic Desk Props -->
+        <div class="grimoire-page-right grimoire-parchment-text">
+          <div class="parchment-content-box">
+            <h3 class="font-gothic text-gold-antique">
+              《法典秘记 · 卷二：子窗灵镜》
+            </h3>
+
+            <p class="lore-paragraph">
+              世间寻常截图之器，凡欲监视后台，必强令窗口浮于前端，既夺键盘之焦点，又乱案头之秩序。
+            </p>
+
+            <p class="lore-paragraph">
+              <strong>Nscry</strong> 另辟蹊径，以现代图形底层（Direct3D 11 与 Windows Graphics Capture）重构水镜之术：
+            </p>
+
+            <ul class="lore-features-list font-tome">
+              <li>
+                <strong class="text-gold-antique">幕后映射 · 绝不抢占：</strong>
+                被监视的应用安处后台，子区域画面经低延迟管线实时推流至悬浮窥镜。
+              </li>
+              <li>
+                <strong class="text-gold-antique">自由剪裁 · 尺寸随心：</strong>
+                无论是编译日志的最新 5 行，或是视频直播的特定小窗，随手一圈即刻成镜。
+              </li>
+              <li>
+                <strong class="text-gold-antique">鼠标穿透 · 贴边吸附：</strong>
+                浮镜可设为点击穿透或贴边收纳，丝毫不影响主控窗口的连贯操作。
+              </li>
+            </ul>
+
+            <!-- Diegetic Desk Props (Artifact Buttons) -->
+            <div class="desk-props-shelf">
+              <!-- Prop 1: Rune-etched Download Scroll -->
+              <a href={link('download/')} class="desk-prop-scroll font-gothic">
+                <div class="scroll-seal">
+                  <span>令</span>
+                </div>
+                <div class="scroll-info">
+                  <span class="prop-title text-gold-bright">获取 Nscry 核芯</span>
+                  <span class="prop-desc">Windows x64 独立绿色版 · 8.2MB</span>
+                </div>
+                <span class="scroll-arrow">↗</span>
+              </a>
+
+              <!-- Secondary Artifact Row -->
+              <div class="props-mini-row">
+                <!-- Prop 2: Enchanted Quill / Changelog -->
+                <a href={link('releases/')} class="btn-brass-rune" style="flex: 1; justify-content: center;">
+                  <span>✒️ 纪年更新秘录</span>
+                </a>
+
+                <!-- Prop 3: Wisdom Tome / User Guide -->
+                <a href={link('guide/')} class="btn-brass-rune" style="flex: 1; justify-content: center;">
+                  <span>📖 修行使用法典</span>
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pinned Floating Mirror Demo Viewport (Toggled by "Pin" Button) -->
+  <div class="floating-pinned-mirror" id="pinned-mirror" style="display: none;">
+    <div class="pinned-header font-mono-scry">
+      <span class="pinned-dot"></span>
+      <span>[PINNED SCRY] Sub-region 0x4B12</span>
+      <button type="button" class="pinned-close" id="pinned-close-btn">✕</button>
+    </div>
+    <div class="pinned-body font-mono-scry">
+      <p style="color: #38bdf8; margin: 0 0 4px;">● 实时钉在屏幕顶层 (Always-on-top)</p>
+      <p style="color: #cbd5e1; margin: 0 0 4px;">Clang17 Compiling ... [98% OK]</p>
+      <div style="display: flex; justify-content: space-between; color: #4ade80; font-size: 0.7rem;">
+        <span>FPS: 144.0</span>
+        <span>LATENCY: 0.16ms</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .act2-container {
+    position: relative;
+    min-height: 120vh;
+    padding: 96px 24px 120px;
+    background: #090c10;
+    overflow: hidden;
+    z-index: 20;
+  }
+
+  .desk-bg-wrap {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  .desk-bg-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center 35%;
+    filter: brightness(0.7) contrast(1.15);
+  }
+
+  .desk-shadow-overlay {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at 50% 45%, rgba(9, 12, 16, 0.4) 0%, rgba(9, 12, 16, 0.88) 75%, #06080b 100%);
+  }
+
+  .candle-flicker {
+    position: absolute;
+    top: 20%;
+    right: 15%;
+    width: 320px;
+    height: 320px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(234, 179, 8, 0.15) 0%, transparent 65%);
+    animation: candlePulse 3.5s ease-in-out infinite alternate;
+    pointer-events: none;
+  }
+
+  @keyframes candlePulse {
+    0% { transform: scale(0.95); opacity: 0.6; }
+    50% { transform: scale(1.08); opacity: 0.9; }
+    100% { transform: scale(0.98); opacity: 0.7; }
+  }
+
+  .act2-content-wrapper {
+    position: relative;
+    max-width: 1320px;
+    margin: 0 auto;
+    z-index: 3;
+  }
+
+  .act2-header {
+    text-align: center;
+    margin-bottom: 42px;
+  }
+
+  .chapter-tag {
+    font-size: 0.85rem;
+    color: var(--color-gold-antique);
+    letter-spacing: 0.2em;
+    margin-bottom: 12px;
+  }
+
+  .act2-title {
+    font-size: clamp(2.2rem, 4.5vw, 3.8rem);
+    margin: 0 0 14px;
+    letter-spacing: 0.08em;
+  }
+
+  .act2-subtitle {
+    font-size: 1.15rem;
+    max-width: 720px;
+    margin: 0 auto;
+    line-height: 1.7;
+  }
+
+  /* The Grimoire Frame */
+  .grimoire-viewport {
+    position: relative;
+    width: 100%;
+    min-height: 640px;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  .grimoire-base-img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    opacity: 0.28; /* Blended with high-tech tactile canvas */
+    pointer-events: none;
+  }
+
+  .grimoire-pages-grid {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1.25fr 1fr;
+    gap: 32px;
+    padding: 36px 36px 42px;
+    z-index: 2;
+  }
+
+  /* Left Page: Mock Desktop & Lens */
+  .grimoire-page-left {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .page-header-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.82rem;
+    color: var(--color-gold-antique);
+    border-bottom: 1px dashed rgba(212, 175, 55, 0.3);
+    padding-bottom: 8px;
+  }
+
+  .lens-status-badge {
+    color: #38bdf8;
+    background: rgba(14, 165, 233, 0.15);
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid rgba(56, 189, 248, 0.3);
+  }
+
+  /* Mock Desktop Stage */
+  .mock-desktop-stage {
+    position: relative;
+    height: 380px;
+    background: radial-gradient(circle at 50% 50%, #151d27 0%, #0d1218 80%, #080c10 100%);
+    border: 1.5px solid rgba(212, 175, 55, 0.35);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: inset 0 0 30px rgba(0, 0, 0, 0.9);
+  }
+
+  .desktop-window-app {
+    position: absolute;
+    border-radius: 6px;
+    background: #0f172a;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.7);
+    overflow: hidden;
+    transition: all 0.3s ease;
+  }
+
+  .win-title-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    background: #1e293b;
+    font-size: 0.68rem;
+    color: #94a3b8;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .win-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+  }
+  .win-dot.red { background: #ef4444; }
+  .win-dot.yellow { background: #eab308; }
+  .win-dot.green { background: #22c55e; }
+
+  .win-badge {
+    margin-left: auto;
+    font-size: 0.6rem;
+    padding: 1px 4px;
+    border-radius: 2px;
+  }
+  .win-badge.green { background: rgba(34, 197, 94, 0.2); color: #4ade80; }
+
+  /* App Window Coordinates on Desktop */
+  .window-term {
+    top: 20px;
+    left: 20px;
+    width: 290px;
+    height: 190px;
+    z-index: 2;
+  }
+  .window-term .win-body {
+    padding: 8px 10px;
+    font-size: 0.68rem;
+    line-height: 1.45;
+  }
+  .code-line { margin: 0 0 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .code-line .prompt { color: #64748b; }
+  .code-line.cyan { color: #38bdf8; }
+  .code-line.green { color: #4ade80; }
+  .code-line.white { color: #f8fafc; }
+  .code-line.dim { color: #64748b; }
+  .code-line.gold { color: #fde047; }
+
+  .window-radar {
+    top: 50px;
+    right: 20px;
+    width: 240px;
+    height: 180px;
+    z-index: 1;
+  }
+  .radar-body {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px;
+    height: calc(100% - 26px);
+  }
+  .radar-scope {
+    position: relative;
+    width: 90px;
+    height: 90px;
+    border-radius: 50%;
+    border: 1px solid #16a34a;
+    background: radial-gradient(circle, #052e16 0%, #02140a 100%);
+    overflow: hidden;
+  }
+  .radar-sweep {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: conic-gradient(from 0deg, transparent 0deg, rgba(74, 222, 128, 0.4) 45deg, transparent 46deg);
+    animation: radarSpin 3.5s linear infinite;
+  }
+  @keyframes radarSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  .radar-ring {
+    position: absolute;
+    border-radius: 50%;
+    border: 1px dashed rgba(74, 222, 128, 0.35);
+  }
+  .radar-ring.r1 { inset: 15px; }
+  .radar-ring.r2 { inset: 30px; }
+  .radar-blip {
+    position: absolute;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #4ade80;
+    box-shadow: 0 0 6px #4ade80;
+  }
+  .radar-blip.b1 { top: 25px; left: 35px; }
+  .radar-blip.b2 { bottom: 20px; right: 28px; }
+  .radar-metrics {
+    font-size: 0.68rem;
+    line-height: 1.6;
+    color: #94a3b8;
+  }
+  .radar-metrics .cyan { color: #38bdf8; font-weight: 700; }
+  .radar-metrics .green { color: #4ade80; font-weight: 700; }
+  .radar-metrics .gold { color: #fde047; font-weight: 700; }
+
+  .window-media {
+    bottom: 18px;
+    left: 140px;
+    width: 250px;
+    height: 110px;
+    z-index: 1;
+  }
+  .media-body {
+    padding: 10px 14px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    height: calc(100% - 26px);
+  }
+  .spectrum-bars {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    height: 38px;
+  }
+  .spectrum-bars span {
+    flex: 1;
+    background: linear-gradient(180deg, #ec4899, #8b5cf6);
+    border-radius: 2px;
+    animation: specJump 0.9s ease-in-out infinite alternate;
+  }
+  .spectrum-bars span:nth-child(2n) { animation-duration: 0.65s; }
+  .spectrum-bars span:nth-child(3n) { animation-duration: 1.1s; }
+  @keyframes specJump { from { transform: scaleY(0.25); } to { transform: scaleY(1); } }
+  .spectrum-label { font-size: 0.65rem; color: #a855f7; }
+
+  /* The Draggable Brass Scrying Lens */
+  .brass-lens-interactive {
+    position: absolute;
+    top: 50px;
+    left: 80px;
+    width: 220px;
+    height: 220px;
+    cursor: grab;
+    user-select: none;
+    z-index: 10;
+    touch-action: none;
+    transition: box-shadow 0.2s ease;
+  }
+  .brass-lens-interactive:active {
+    cursor: grabbing;
+  }
+
+  .lens-frame-img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    pointer-events: none;
+    filter: drop-shadow(0 12px 28px rgba(0, 0, 0, 0.95)) drop-shadow(0 0 16px rgba(212, 175, 55, 0.45));
+    z-index: 2;
+  }
+
+  .lens-hollow-mirror {
+    position: absolute;
+    top: 18%;
+    left: 18%;
+    width: 64%;
+    height: 64%;
+    border-radius: 50%;
+    overflow: hidden;
+    z-index: 1;
+    box-shadow: inset 0 0 20px rgba(56, 189, 248, 0.5), 0 0 14px rgba(56, 189, 248, 0.4);
+    background: rgba(14, 165, 233, 0.08);
+  }
+
+  .lens-mirror-view {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    pointer-events: none;
+  }
+
+  .mirror-reticle {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 40px;
+    height: 40px;
+    border: 1px dashed rgba(56, 189, 248, 0.65);
+    border-radius: 50%;
+  }
+
+  .mirror-scanline {
+    position: absolute;
+    width: 100%;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, rgba(56, 189, 248, 0.8), transparent);
+    animation: scanPass 2.4s linear infinite;
+  }
+  @keyframes scanPass { from { top: 0%; } to { top: 100%; } }
+
+  .lens-tooltip {
+    position: absolute;
+    bottom: -28px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0, 0, 0, 0.85);
+    border: 1px solid var(--color-gold-antique);
+    color: var(--color-gold-bright);
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0.85;
+  }
+
+  /* Controls Bar Below Desktop */
+  .lens-controls-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid rgba(212, 175, 55, 0.25);
+    border-radius: 6px;
+    padding: 8px 14px;
+  }
+
+  .preset-targets {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.8rem;
+    color: var(--color-gold-antique);
+  }
+
+  .btn-preset {
+    all: unset;
+    cursor: pointer;
+    padding: 4px 10px;
+    border-radius: 4px;
+    background: rgba(22, 27, 34, 0.8);
+    border: 1px solid rgba(212, 175, 55, 0.3);
+    color: #cbd5e1;
+    font-size: 0.75rem;
+    transition: all 0.15s ease;
+  }
+  .btn-preset:hover,
+  .btn-preset.active {
+    background: rgba(212, 175, 55, 0.2);
+    border-color: #fde047;
+    color: #fef08a;
+  }
+
+  .btn-pin-scry {
+    all: unset;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: linear-gradient(180deg, #1e3a8a 0%, #0f172a 100%);
+    border: 1.5px solid #38bdf8;
+    color: #bae6fd;
+    padding: 5px 14px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-weight: 700;
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.3);
+    transition: all 0.2s ease;
+  }
+  .btn-pin-scry:hover {
+    background: linear-gradient(180deg, #2563eb 0%, #1e3a8a 100%);
+    box-shadow: 0 0 18px rgba(56, 189, 248, 0.6);
+    color: #ffffff;
+  }
+
+  /* Right Page: Grimoire Parchment Text */
+  .grimoire-page-right {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 8px 12px;
+  }
+
+  .parchment-content-box {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    justify-content: space-between;
+  }
+
+  .lore-paragraph {
+    color: #e2d5ba;
+    font-size: 0.95rem;
+    line-height: 1.7;
+    margin-bottom: 12px;
+  }
+
+  .lore-features-list {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 20px;
+  }
+  .lore-features-list li {
+    position: relative;
+    padding-left: 20px;
+    margin-bottom: 10px;
+    font-size: 0.9rem;
+    color: #cbd5e1;
+    line-height: 1.6;
+  }
+  .lore-features-list li::before {
+    content: '✦';
+    position: absolute;
+    left: 0;
+    color: var(--color-gold-antique);
+    font-size: 0.8rem;
+  }
+
+  /* Diegetic Desk Props Shelf */
+  .desk-props-shelf {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: auto;
+    padding-top: 14px;
+    border-top: 1px solid rgba(212, 175, 55, 0.25);
+  }
+
+  .desk-prop-scroll {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    background: radial-gradient(circle at 10% 50%, #451a03 0%, #1c1917 100%);
+    border: 1.5px solid #f59e0b;
+    border-radius: 8px;
+    padding: 12px 18px;
+    text-decoration: none;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.8), inset 0 1px 2px rgba(254, 240, 138, 0.3);
+    transition: all 0.25s ease;
+  }
+  .desk-prop-scroll:hover {
+    transform: translateY(-2px);
+    border-color: #fde047;
+    box-shadow: 0 8px 28px rgba(245, 158, 11, 0.4), inset 0 1px 4px rgba(255, 255, 255, 0.5);
+  }
+
+  .scroll-seal {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: radial-gradient(circle, #dc2626 0%, #7f1d1d 100%);
+    border: 1px solid #fca5a5;
+    display: grid;
+    place-items: center;
+    color: #ffffff;
+    font-size: 1.05rem;
+    font-weight: 900;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+  }
+
+  .scroll-info {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+  }
+  .prop-title { font-size: 1.05rem; font-weight: 700; letter-spacing: 0.05em; }
+  .prop-desc { font-size: 0.75rem; color: #d6d3d1; }
+  .scroll-arrow { color: #f59e0b; font-size: 1.2rem; }
+
+  .props-mini-row {
+    display: flex;
+    gap: 12px;
+  }
+
+  /* Pinned Floating Window Widget */
+  .floating-pinned-mirror {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 290px;
+    max-width: calc(100vw - 40px);
+    background: rgba(10, 14, 20, 0.96);
+    border: 1.5px solid #38bdf8;
+    border-radius: 8px;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.9), 0 0 24px rgba(56, 189, 248, 0.5);
+    z-index: 999;
+    overflow: hidden;
+    animation: slideUpPin 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  @keyframes slideUpPin {
+    from { transform: translateY(40px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+  }
+
+  .pinned-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    background: #0f172a;
+    border-bottom: 1px solid rgba(56, 189, 248, 0.3);
+    font-size: 0.7rem;
+    color: #38bdf8;
+  }
+  .pinned-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #38bdf8;
+    box-shadow: 0 0 6px #38bdf8;
+    animation: pulseDot 1.2s infinite;
+  }
+  .pinned-close {
+    all: unset;
+    cursor: pointer;
+    color: #94a3b8;
+    font-size: 0.8rem;
+    padding: 0 4px;
+  }
+  .pinned-close:hover { color: #ef4444; }
+
+  .pinned-body {
+    padding: 10px 14px;
+    font-size: 0.74rem;
+  }
+
+  @media (max-width: 990px) {
+    .grimoire-pages-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .act2-container {
+      padding: 70px 16px 90px;
+    }
+    .page-header-bar {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 6px;
+    }
+    .lens-controls-bar {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 10px;
+    }
+    .preset-targets {
+      flex-wrap: wrap;
+    }
+    .btn-pin-scry {
+      justify-content: center;
+    }
+    .props-mini-row {
+      flex-direction: column;
+    }
+  }
+</style>
+
+<script>
+  import { arcaneAudio } from '../lib/arcane-audio';
+
+  // Interactive Lens Dragging Engine
+  const lens = document.getElementById('brass-lens');
+  const stage = document.getElementById('desktop-stage');
+  const lensCoords = document.getElementById('lens-coords');
+  const presetButtons = document.querySelectorAll<HTMLButtonElement>('.btn-preset');
+  const btnPin = document.getElementById('btn-pin-viewport');
+  const pinnedMirror = document.getElementById('pinned-mirror');
+  const pinnedCloseBtn = document.getElementById('pinned-close-btn');
+
+  let isDragging = false;
+  let startX = 0;
+  let startY = 0;
+  let lensX = 80;
+  let lensY = 50;
+
+  function updateLensPosition(x: number, y: number) {
+    if (!stage || !lens) return;
+    const maxX = stage.clientWidth - lens.clientWidth;
+    const maxY = stage.clientHeight - lens.clientHeight;
+
+    lensX = Math.max(0, Math.min(maxX, x));
+    lensY = Math.max(0, Math.min(maxY, y));
+
+    lens.style.left = `${lensX}px`;
+    lens.style.top = `${lensY}px`;
+
+    if (lensCoords) {
+      lensCoords.textContent = `LENS: [X: ${Math.round(lensX)}, Y: ${Math.round(lensY)}] · 144 FPS`;
+    }
+  }
+
+  if (lens && stage) {
+    lens.addEventListener('pointerdown', (e) => {
+      isDragging = true;
+      startX = e.clientX - lensX;
+      startY = e.clientY - lensY;
+      lens.setPointerCapture(e.pointerId);
+      arcaneAudio.playBrassClick();
+    });
+
+    lens.addEventListener('pointermove', (e) => {
+      if (!isDragging) return;
+      const newX = e.clientX - startX;
+      const newY = e.clientY - startY;
+      updateLensPosition(newX, newY);
+    });
+
+    lens.addEventListener('pointerup', (e) => {
+      if (isDragging) {
+        isDragging = false;
+        lens.releasePointerCapture(e.pointerId);
+        arcaneAudio.playBrassClick();
+      }
+    });
+
+    // Preset Target Buttons
+    presetButtons.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        presetButtons.forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        const target = btn.dataset.target;
+        arcaneAudio.playBrassClick();
+
+        if (target === 'term') {
+          updateLensPosition(50, 40);
+        } else if (target === 'radar') {
+          updateLensPosition(stage.clientWidth - 240, 50);
+        } else if (target === 'media') {
+          updateLensPosition(140, stage.clientHeight - 200);
+        }
+      });
+    });
+
+    // Pin Viewport Action
+    if (btnPin && pinnedMirror) {
+      btnPin.addEventListener('click', () => {
+        arcaneAudio.playArcaneChime(659.25);
+        pinnedMirror.style.display = 'block';
+      });
+    }
+
+    if (pinnedCloseBtn && pinnedMirror) {
+      pinnedCloseBtn.addEventListener('click', () => {
+        arcaneAudio.playBrassClick();
+        pinnedMirror.style.display = 'none';
+      });
+    }
+  }
+</script>

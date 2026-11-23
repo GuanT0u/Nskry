@@ -1,0 +1,594 @@
+---
+import { link } from '../lib/links';
+---
+
+<section class="act1-container" id="act1-sanctuary">
+  <!-- Pinned Full-bleed Viewport -->
+  <div class="act1-sticky-stage" id="act1-stage">
+    <!-- Layer 1: Background Twilight Sanctuary Garden -->
+    <div class="garden-bg-wrap" id="garden-bg-wrap">
+      <img
+        src={link('assets/hero-garden-bg.jpg')}
+        alt="暮光迷雾中的古老哥特花园圣所"
+        class="garden-bg-img"
+        id="garden-bg-img"
+        loading="eager"
+      />
+      <div class="garden-vignette"></div>
+    </div>
+
+    <!-- Layer 2: Atmospheric Mist & Arcane Sparkles Canvas -->
+    <canvas id="mist-canvas" class="mist-canvas"></canvas>
+
+    <!-- Layer 3: Hero Gothic Typography & Lore Introduction -->
+    <div class="hero-lore-overlay" id="hero-lore">
+      <div class="lore-eyebrow font-gothic">
+        <span class="rune-sparkle">✦</span>
+        <span>PEERING THROUGH THE VEIL · 窥见幕后</span>
+        <span class="rune-sparkle">✦</span>
+      </div>
+
+      <h1 class="hero-title font-gothic text-gold-emboss">
+        Nscry
+      </h1>
+
+      <p class="hero-tagline font-gothic text-arcane-glow">
+        窥见幕后 · 轻量如风
+      </p>
+
+      <p class="hero-description font-tome">
+        以水镜洞悉诸界异动。一款专为 Windows 打造的超轻量桌面工具：<br/>
+        <strong>实时子窗口映射 (Live Sub-Window Scrying)</strong> 与 <strong>按需法术位插件架构</strong>。
+      </p>
+
+      <div class="hero-scroll-cue font-gothic" id="scroll-cue">
+        <div class="scroll-arrow-anim">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 5v14M19 12l-7 7-7-7"/>
+          </svg>
+        </div>
+        <span>向下滑动 · 步入水镜</span>
+      </div>
+    </div>
+
+    <!-- Layer 4: Shimmering Arcane Light Sweep -->
+    <div class="arcane-light-sweep" id="light-sweep"></div>
+
+    <!-- Layer 5: Top-Down Circular Scrying Well (Direct Zoom Target) -->
+    <div class="scrying-well-wrapper" id="scrying-well-wrap">
+      <!-- Outer Rune-carved Stone Basin -->
+      <img
+        src={link('assets/scrying-well-topdown.png')}
+        alt="刻满符文的圆形古老水镜石台"
+        class="scrying-well-img"
+        id="scrying-well-img"
+        loading="eager"
+      />
+
+      <!-- Center Water Basin with Live Scrying Windows Viewport -->
+      <div class="scry-water-portal" id="scry-portal">
+        <div class="water-surface-bg">
+          <div class="water-caustics"></div>
+        </div>
+
+        <!-- The Live Windows Sub-Window Monitor -->
+        <div class="live-scry-monitor" id="live-monitor">
+          <div class="monitor-hud-bar font-mono-scry">
+            <span class="hud-pulse-dot"></span>
+            <span class="hud-monitor-title">LIVE SCRY // 0x04F2: Clang17 Build & Audio Telemetry</span>
+            <span class="hud-fps-badge">144 FPS · 0.18ms</span>
+          </div>
+
+          <div class="monitor-screen-content">
+            <!-- Simulated Live Code Compile Log -->
+            <div class="mock-terminal font-mono-scry">
+              <div class="term-line"><span class="term-dim">$</span> nscry --action scry --subwindow "CMake: Run" --fps 144</div>
+              <div class="term-line term-cyan">[D3D11 / WGC] Initializing low-latency sub-viewport swapchain... OK</div>
+              <div class="term-line term-green">[Kernel] Zero background hook · Memory footprint: 8.24 MB</div>
+              <div class="term-line term-white">[Clang-17] Compiling nscry_subview_stitch.cpp [84%] ...</div>
+              <div class="term-line term-dim">[Telemetry] CPU: 0.4% | GPU: 1.1% | Active Sub-rect: 640×360</div>
+              <div class="term-line term-gold">[Mirror] Live sub-region locked. Host application stays in background.</div>
+            </div>
+
+            <!-- Simulated Telemetry Sine Waves -->
+            <div class="mock-telemetry-box">
+              <div class="telemetry-wave-visualizer">
+                <span class="bar" style="height: 45%;"></span>
+                <span class="bar" style="height: 75%;"></span>
+                <span class="bar" style="height: 30%;"></span>
+                <span class="bar" style="height: 90%;"></span>
+                <span class="bar" style="height: 60%;"></span>
+                <span class="bar" style="height: 85%;"></span>
+                <span class="bar" style="height: 40%;"></span>
+                <span class="bar" style="height: 70%;"></span>
+                <span class="bar" style="height: 95%;"></span>
+                <span class="bar" style="height: 50%;"></span>
+              </div>
+              <div class="telemetry-info font-mono-scry">
+                <span>实时后台映射中 · 无焦点抢占</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Circular Arcane Water Boundary Ring -->
+        <div class="water-border-ring"></div>
+      </div>
+    </div>
+
+    <!-- Layer 6: Plunge Transition Flash / Water Burst -->
+    <div class="plunge-flash" id="plunge-flash"></div>
+  </div>
+</section>
+
+<style>
+  .act1-container {
+    position: relative;
+    width: 100%;
+    background: #06080b;
+    z-index: 10;
+  }
+
+  .act1-sticky-stage {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Layer 1: Background Garden */
+  .garden-bg-wrap {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    transform-origin: 75% 75%; /* Basin center in garden */
+    will-change: transform, opacity;
+  }
+
+  .garden-bg-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center 60%;
+    filter: brightness(0.9) contrast(1.08);
+  }
+
+  .garden-vignette {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at 50% 50%, transparent 40%, rgba(6, 8, 11, 0.75) 85%, #06080b 100%);
+    pointer-events: none;
+  }
+
+  /* Layer 2: Mist Canvas */
+  .mist-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  /* Layer 3: Hero Gothic Typography */
+  .hero-lore-overlay {
+    position: absolute;
+    top: 18%;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    z-index: 4;
+    width: 90%;
+    max-width: 860px;
+    pointer-events: none;
+    will-change: opacity, transform;
+  }
+
+  .lore-eyebrow {
+    font-size: 0.85rem;
+    color: var(--color-gold-antique);
+    letter-spacing: 0.22em;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+  }
+
+  .rune-sparkle {
+    color: #fde047;
+    animation: sparkle 2s ease-in-out infinite alternate;
+  }
+
+  @keyframes sparkle {
+    from { opacity: 0.3; transform: scale(0.8); }
+    to { opacity: 1; transform: scale(1.2); }
+  }
+
+  .hero-title {
+    font-size: clamp(2.4rem, 8vw, 7.5rem);
+    line-height: 1;
+    margin: 0 0 14px;
+    letter-spacing: 0.12em;
+  }
+
+  .hero-tagline {
+    font-size: clamp(1.1rem, 2.8vw, 2.2rem);
+    letter-spacing: 0.12em;
+    margin-bottom: 20px;
+    font-weight: 600;
+  }
+
+  .hero-description {
+    font-size: clamp(1rem, 1.8vw, 1.35rem);
+    color: #cbd5e1;
+    line-height: 1.8;
+    max-width: 680px;
+    margin: 0 auto 36px;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.95);
+  }
+  .hero-description strong {
+    color: var(--color-gold-bright);
+    font-weight: 600;
+  }
+
+  .hero-scroll-cue {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    color: var(--color-gold-antique);
+    font-size: 0.85rem;
+    letter-spacing: 0.15em;
+    opacity: 0.85;
+    animation: bounceDown 2s ease-in-out infinite;
+  }
+
+  @keyframes bounceDown {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(8px); }
+  }
+
+  /* Layer 4: Shimmering Arcane Light Sweep */
+  .arcane-light-sweep {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 600px;
+    height: 600px;
+    transform: translate(-50%, -50%) scale(0.6);
+    background: radial-gradient(circle, rgba(56, 189, 248, 0.5) 0%, rgba(14, 165, 233, 0.2) 40%, transparent 70%);
+    opacity: 0;
+    pointer-events: none;
+    z-index: 3;
+    mix-blend-mode: screen;
+  }
+
+  /* Layer 5: Top-Down Circular Scrying Well */
+  .scrying-well-wrapper {
+    position: absolute;
+    width: min(850px, 88vw);
+    height: min(850px, 88vw);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 5;
+    transform-origin: 50% 50%;
+    will-change: transform, opacity;
+  }
+
+  .scrying-well-img {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    pointer-events: none;
+    z-index: 2;
+    filter: drop-shadow(0 0 35px rgba(0, 0, 0, 0.95));
+  }
+
+  /* Center Water Basin */
+  .scry-water-portal {
+    position: absolute;
+    width: 53%;
+    height: 53%;
+    border-radius: 50%;
+    overflow: hidden;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #08111a;
+    box-shadow: inset 0 0 50px #02060b, 0 0 30px rgba(14, 165, 233, 0.45);
+  }
+
+  .water-surface-bg {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at 48% 48%, #132233 0%, #08111a 70%, #03060a 100%);
+    z-index: 1;
+    pointer-events: none;
+  }
+
+  .water-caustics {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at 50% 50%, rgba(56, 189, 248, 0.25) 0%, transparent 65%);
+    animation: causticSpin 12s linear infinite;
+    mix-blend-mode: screen;
+  }
+
+  @keyframes causticSpin {
+    from { transform: rotate(0deg) scale(1); }
+    50% { transform: rotate(180deg) scale(1.15); }
+    to { transform: rotate(360deg) scale(1); }
+  }
+
+  /* Live Windows Sub-Window Monitoring Viewport */
+  .live-scry-monitor {
+    position: relative;
+    width: 84%;
+    height: 80%;
+    border-radius: 8px;
+    background: rgba(10, 15, 22, 0.95);
+    border: 1px solid rgba(56, 189, 248, 0.4);
+    box-shadow: 0 0 24px rgba(0, 0, 0, 0.9), inset 0 0 12px rgba(14, 165, 233, 0.2);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    z-index: 2;
+    opacity: 0; /* Revealed as water ripples away */
+    transform: scale(0.92);
+    transition: opacity 0.5s ease, transform 0.5s ease;
+  }
+
+  .monitor-hud-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    background: #0f172a;
+    padding: 6px 12px;
+    border-bottom: 1px solid rgba(56, 189, 248, 0.3);
+    font-size: 0.72rem;
+    color: #94a3b8;
+  }
+
+  .hud-pulse-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #38bdf8;
+    box-shadow: 0 0 8px #38bdf8;
+    animation: pulseDot 1.4s ease-in-out infinite;
+  }
+
+  @keyframes pulseDot {
+    0%, 100% { opacity: 0.5; transform: scale(0.9); }
+    50% { opacity: 1; transform: scale(1.3); }
+  }
+
+  .hud-monitor-title {
+    color: #38bdf8;
+    font-weight: 600;
+  }
+
+  .hud-fps-badge {
+    color: #22c55e;
+    font-weight: 700;
+  }
+
+  .monitor-screen-content {
+    flex: 1;
+    padding: 10px 14px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    font-size: 0.74rem;
+    overflow: hidden;
+  }
+
+  .mock-terminal {
+    line-height: 1.5;
+  }
+  .term-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 3px; }
+  .term-dim { color: #64748b; }
+  .term-cyan { color: #38bdf8; }
+  .term-green { color: #4ade80; }
+  .term-white { color: #f1f5f9; }
+  .term-gold { color: #fde047; }
+
+  .mock-telemetry-box {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed rgba(56, 189, 248, 0.25);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .telemetry-wave-visualizer {
+    display: flex;
+    align-items: flex-end;
+    gap: 4px;
+    height: 22px;
+  }
+
+  .telemetry-wave-visualizer .bar {
+    width: 3.5px;
+    background: linear-gradient(180deg, #38bdf8, #0284c7);
+    border-radius: 2px;
+    animation: waveBounce 0.8s ease-in-out infinite alternate;
+  }
+  .telemetry-wave-visualizer .bar:nth-child(2n) { animation-duration: 0.6s; }
+  .telemetry-wave-visualizer .bar:nth-child(3n) { animation-duration: 1.1s; }
+
+  @keyframes waveBounce {
+    from { transform: scaleY(0.3); }
+    to { transform: scaleY(1); }
+  }
+
+  .telemetry-info {
+    font-size: 0.7rem;
+    color: #94a3b8;
+  }
+
+  .water-border-ring {
+    position: absolute;
+    inset: -2px;
+    border-radius: 50%;
+    border: 2px solid rgba(56, 189, 248, 0.5);
+    box-shadow: inset 0 0 16px rgba(14, 165, 233, 0.6), 0 0 20px rgba(56, 189, 248, 0.4);
+    pointer-events: none;
+    z-index: 3;
+  }
+
+  /* Layer 6: Plunge Transition Flash */
+  .plunge-flash {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle, #e0f2fe 0%, #38bdf8 45%, #06080b 100%);
+    opacity: 0;
+    pointer-events: none;
+    z-index: 99;
+  }
+</style>
+
+<script>
+  import { gsap } from 'gsap';
+  import { ScrollTrigger } from 'gsap/ScrollTrigger';
+  import { MistParticles } from '../lib/mist-particles';
+  import { arcaneAudio } from '../lib/arcane-audio';
+
+  gsap.registerPlugin(ScrollTrigger);
+
+  // Initialize Mist Particles Canvas
+  const canvas = document.getElementById('mist-canvas') as HTMLCanvasElement;
+  let particles: MistParticles | null = null;
+  if (canvas) {
+    particles = new MistParticles(canvas);
+    particles.start();
+  }
+
+  // Act 1 Cinematic Dolly Zoom ScrollTrigger Choreography
+  const act1Container = document.getElementById('act1-sanctuary');
+  const gardenWrap = document.getElementById('garden-bg-wrap');
+  const heroLore = document.getElementById('hero-lore');
+  const wellWrap = document.getElementById('scrying-well-wrap');
+  const lightSweep = document.getElementById('light-sweep');
+  const liveMonitor = document.getElementById('live-monitor');
+  const plungeFlash = document.getElementById('plunge-flash');
+
+  if (act1Container && gardenWrap && heroLore && wellWrap) {
+    // Initial setup: well is hidden and aligned with the garden well in the bottom-right
+    gsap.set(wellWrap, {
+      scale: 0.35,
+      x: '25%',
+      y: '25%',
+      opacity: 0,
+      rotationX: 25,
+      transformPerspective: 1200,
+    });
+    gsap.set(gardenWrap, { scale: 1.0, x: '0%', y: '0%', opacity: 1 });
+    gsap.set(liveMonitor, { opacity: 0, scale: 0.85 });
+    gsap.set(plungeFlash, { opacity: 0 });
+
+    const tl = gsap.timeline({
+      scrollTrigger: {
+        trigger: act1Container,
+        pin: '#act1-stage',
+        pinSpacing: true,
+        start: 'top top',
+        end: '+=1800',
+        scrub: 1.0,
+        anticipatePin: 1,
+        onUpdate: (self) => {
+          // Play subtle water sound at reveal threshold (around 50% - 60%)
+          if (self.progress > 0.45 && self.progress < 0.52) {
+            arcaneAudio.playWaterDrop(750);
+          }
+        },
+      },
+    });
+
+    // 0 -> 2.5: Hero text fades out, garden zooms toward well
+    tl.to(heroLore, { opacity: 0, y: -50, duration: 2 }, 0)
+      .to(lightSweep, { opacity: 0.85, scale: 1.5, duration: 2 }, 0.5)
+      .to(
+        gardenWrap,
+        { scale: 2.6, x: '-20%', y: '-20%', duration: 4.5, ease: 'power1.inOut' },
+        0
+      );
+
+    // 1 -> 5: Scrying Well aligns to dead-center top-down perspective and scales up
+    tl.to(
+      wellWrap,
+      {
+        scale: 1.0,
+        x: '0%',
+        y: '0%',
+        rotationX: 0,
+        opacity: 1,
+        duration: 4,
+        ease: 'power2.out',
+      },
+      1
+    );
+
+    // 3.5 -> 6: Water ripples away to reveal the live Windows Sub-window Monitor
+    tl.to(
+      liveMonitor,
+      {
+        opacity: 1,
+        scale: 1.0,
+        duration: 2.2,
+        ease: 'power1.out',
+      },
+      3.2
+    );
+
+    // 6.5 -> 9.5: THE PLUNGE — Camera pushes straight through the water surface into Act 2!
+    tl.to(
+      wellWrap,
+      {
+        scale: 8.5,
+        opacity: 0,
+        duration: 3.5,
+        ease: 'power2.in',
+      },
+      6.2
+    )
+      .to(
+        gardenWrap,
+        {
+          scale: 4.8,
+          opacity: 0,
+          duration: 3.5,
+          ease: 'power2.in',
+        },
+        6.2
+      )
+      .to(
+        plungeFlash,
+        {
+          opacity: 1,
+          duration: 1.2,
+          ease: 'power3.in',
+        },
+        7.8
+      )
+      .to(
+        plungeFlash,
+        {
+          opacity: 0,
+          duration: 0.8,
+          ease: 'power2.out',
+        },
+        9.0
+      );
+  }
+</script>

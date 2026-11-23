@@ -1,0 +1,265 @@
+---
+import { link } from '../lib/links';
+---
+
+<header class="arcane-hud" id="arcane-hud" aria-label="秘境导航仪">
+  <div class="hud-left">
+    <a href="#act1-sanctuary" class="hud-brand" aria-label="Nscry 窥镜">
+      <div class="hud-eye-rune" aria-hidden="true">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fde047" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M2 12c3.5-6 8-9 10-9s6.5 3 10 9c-3.5 6-8 9-10 9s-6.5-3-10-9z"></path>
+        </svg>
+      </div>
+      <div class="hud-brand-text">
+        <span class="hud-title font-gothic text-gold-emboss">Nscry</span>
+        <span class="hud-subtitle font-gothic">// 窥镜</span>
+      </div>
+    </a>
+  </div>
+
+  <nav class="hud-center" aria-label="篇章瞬移">
+    <a href="#act1-sanctuary" class="hud-chapter font-gothic">
+      <span class="chapter-num">Ⅰ</span>
+      <span class="chapter-title">幽潭水镜</span>
+    </a>
+    <span class="hud-divider">✦</span>
+    <a href="#act2-study" class="hud-chapter font-gothic">
+      <span class="chapter-num">Ⅱ</span>
+      <span class="chapter-title">秘仪法典</span>
+    </a>
+    <span class="hud-divider">✦</span>
+    <a href="#act3-spellslots" class="hud-chapter font-gothic">
+      <span class="chapter-num">Ⅲ</span>
+      <span class="chapter-title">咒法位阵</span>
+    </a>
+  </nav>
+
+  <div class="hud-right">
+    <!-- Web Audio Mute / Unmute Button -->
+    <button type="button" class="hud-audio-btn font-gothic" id="hud-audio-toggle" title="开启 / 关闭秘境声效">
+      <svg class="audio-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+        <path class="sound-wave" d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+        <line class="mute-slash" x1="23" y1="9" x2="17" y2="15" stroke="#ef4444" stroke-width="2.5"></line>
+      </svg>
+      <span id="audio-btn-text">音效: 沉寂</span>
+    </button>
+
+    <a href={link('download/')} class="btn-brass-rune hud-download-btn">
+      <span>获取核芯 ↓</span>
+    </a>
+
+    <a href="https://github.com/GuanT0u/Nskry" class="hud-github-seal" target="_blank" rel="noopener noreferrer" title="开源契约 (GitHub)">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+      </svg>
+    </a>
+  </div>
+</header>
+
+<style>
+  .arcane-hud {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 64px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 28px;
+    background: linear-gradient(180deg, rgba(6, 8, 11, 0.92) 0%, rgba(6, 8, 11, 0.6) 70%, transparent 100%);
+    backdrop-filter: blur(8px);
+    z-index: 99;
+    border-bottom: 1px solid rgba(212, 175, 55, 0.18);
+    transition: background 0.3s ease;
+  }
+
+  .hud-left {
+    display: flex;
+    align-items: center;
+  }
+
+  .hud-brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    text-decoration: none;
+  }
+
+  .hud-eye-rune {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: radial-gradient(circle, #2d230d 0%, #0d1217 100%);
+    border: 1.5px solid var(--color-gold-antique);
+    display: grid;
+    place-items: center;
+    box-shadow: 0 0 12px rgba(212, 175, 55, 0.35);
+  }
+
+  .hud-title {
+    font-size: 1.35rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+  }
+
+  .hud-subtitle {
+    font-size: 0.8rem;
+    color: var(--color-gold-antique);
+    opacity: 0.8;
+  }
+
+  .hud-center {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .hud-chapter {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: #94a3b8;
+    text-decoration: none;
+    font-size: 0.82rem;
+    letter-spacing: 0.08em;
+    padding: 4px 10px;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+  }
+  .hud-chapter:hover {
+    color: var(--color-gold-bright);
+    text-shadow: 0 0 8px rgba(254, 240, 138, 0.6);
+    background: rgba(212, 175, 55, 0.08);
+  }
+
+  .chapter-num {
+    color: var(--color-gold-antique);
+    font-size: 0.75rem;
+  }
+
+  .hud-divider {
+    color: var(--color-brass-border);
+    font-size: 0.65rem;
+    opacity: 0.6;
+  }
+
+  .hud-right {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .hud-audio-btn {
+    all: unset;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(14, 18, 23, 0.7);
+    border: 1px solid rgba(212, 175, 55, 0.3);
+    color: #cbd5e1;
+    font-size: 0.76rem;
+    padding: 6px 12px;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+  }
+  .hud-audio-btn:hover {
+    border-color: var(--color-gold-antique);
+    color: var(--color-gold-bright);
+    box-shadow: 0 0 10px rgba(212, 175, 55, 0.25);
+  }
+
+  .hud-audio-btn.sound-on .mute-slash {
+    display: none;
+  }
+  .hud-audio-btn.sound-on {
+    border-color: var(--color-arcane-cyan);
+    color: #7dd3fc;
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.35);
+  }
+
+  .hud-github-seal {
+    color: #94a3b8;
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    background: rgba(15, 23, 42, 0.6);
+    transition: all 0.2s ease;
+  }
+  .hud-github-seal:hover {
+    color: #ffffff;
+    border-color: var(--color-gold-antique);
+    box-shadow: 0 0 12px rgba(212, 175, 55, 0.4);
+  }
+
+  @media (max-width: 860px) {
+    .hud-center {
+      display: none;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .hud-subtitle {
+      display: none !important;
+    }
+    .arcane-hud {
+      padding: 8px 12px;
+    }
+    .hud-title {
+      font-size: 1.15rem;
+      letter-spacing: 0.05em;
+    }
+    .hud-right {
+      gap: 6px;
+    }
+    .hud-audio-btn {
+      padding: 4px 6px;
+      font-size: 0.7rem;
+    }
+    #audio-btn-text {
+      display: none;
+    }
+    .hud-download-btn {
+      white-space: nowrap !important;
+      padding: 4px 8px !important;
+      font-size: 0.72rem !important;
+      letter-spacing: 0;
+    }
+    .hud-github-seal {
+      width: 26px;
+      height: 26px;
+    }
+  }
+</style>
+
+<script>
+  import { arcaneAudio } from '../lib/arcane-audio';
+
+  const audioBtn = document.getElementById('hud-audio-toggle');
+  const audioText = document.getElementById('audio-btn-text');
+
+  function updateAudioState() {
+    const isMuted = arcaneAudio.getIsMuted();
+    if (!isMuted) {
+      audioBtn?.classList.add('sound-on');
+      if (audioText) audioText.textContent = '音效: 唤醒';
+    } else {
+      audioBtn?.classList.remove('sound-on');
+      if (audioText) audioText.textContent = '音效: 沉寂';
+    }
+  }
+
+  if (audioBtn) {
+    audioBtn.addEventListener('click', () => {
+      arcaneAudio.toggleMute();
+      updateAudioState();
+    });
+    updateAudioState();
+  }
+</script>

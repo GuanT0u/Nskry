@@ -1,0 +1,368 @@
+---
+import { link } from '../lib/links';
+---
+
+<footer class="diegetic-footer" id="diegetic-footer">
+  <div class="footer-mahogany-grain"></div>
+  <div class="footer-inner-wrap">
+    <!-- Top Row: Arcane Seal & Brand Lore -->
+    <div class="footer-top-row">
+      <div class="footer-brand-sigil">
+        <div class="brand-crest font-gothic">
+          <span class="crest-seal">NS</span>
+          <div class="crest-text">
+            <span class="brand-title text-gold-emboss">Nscry</span>
+            <span class="brand-subtitle font-mono-scry">LORE PROTOCOL // v1.4.0</span>
+          </div>
+        </div>
+        <p class="brand-motto font-tome text-gold-antique">
+          以水镜之法，洞见未显之境。专为 Windows 打造的超轻量多维灵镜与屏幕工具。
+        </p>
+      </div>
+
+      <!-- Quick Fast Travel / Back to Top Button -->
+      <div class="footer-actions">
+        <button type="button" class="btn-brass-rune" id="footer-back-to-top">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 19V5M5 12l7-7 7 7"/>
+          </svg>
+          <span>重登圣所 (Top)</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Middle: Diegetic Grimoire Navigation Columns -->
+    <div class="footer-nav-grid">
+      <!-- Col 1: Manual & Guides -->
+      <div class="footer-col">
+        <h4 class="col-title font-gothic">
+          <span class="col-rune">ᚠ</span>
+          <span>施法指南 (Guides)</span>
+        </h4>
+        <ul class="footer-links font-tome">
+          <li><a href={link('guide/')}>启蒙法典 · 快速开始</a></li>
+          <li><a href={link('guide/pin-monitor/')}>空间凝滞 · 子窗口实时监控</a></li>
+          <li><a href={link('guide/ocr/')}>端侧感知 · 离线神经 OCR</a></li>
+          <li><a href={link('guide/recording/')}>时光留影 · 硬件加速截帧</a></li>
+          <li><a href={link('guide/faq/')}>占星答疑 · 常见问题解答</a></li>
+        </ul>
+      </div>
+
+      <!-- Col 2: Modular Spell Slots -->
+      <div class="footer-col">
+        <h4 class="col-title font-gothic">
+          <span class="col-rune">ᚢ</span>
+          <span>法术插件 (Plugins)</span>
+        </h4>
+        <ul class="footer-links font-tome">
+          <li><a href={link('plugins/')}>万象法术库总览</a></li>
+          <li><a href={link('plugins/nskry-ocr/')}>启智识文 · 神经 OCR 宝石</a></li>
+          <li><a href={link('plugins/nskry-scroll/')}>延绵卷轴 · 双向拼缝长截图</a></li>
+          <li><a href={link('plugins/nskry-record/')}>时光留影 · 超轻量微秒录屏</a></li>
+          <li><a href={link('plugins/nskry-translate/')}>诸界通译 · 多语言流式直译</a></li>
+        </ul>
+      </div>
+
+      <!-- Col 3: Forge & Alchemy -->
+      <div class="footer-col">
+        <h4 class="col-title font-gothic">
+          <span class="col-rune">ᚦ</span>
+          <span>工坊秘闻 (Ecosystem)</span>
+        </h4>
+        <ul class="footer-links font-tome">
+          <li><a href={link('releases/')}>显影志 · 历史版本与补丁</a></li>
+          <li><a href={link('developers/')}>炼金术士会所 · SDK 与插件规范</a></li>
+          <li><a href={link('notices/')}>天机通报 · 已知边界与避忌</a></li>
+          <li><a href={link('about/')}>远古誓约 · 关于与开源许可</a></li>
+          <li><a href={link('download/')}>神圣卷轴 · 全量版本镜像下载</a></li>
+        </ul>
+      </div>
+
+      <!-- Col 4: Creed & Sanctum -->
+      <div class="footer-col col-creed">
+        <h4 class="col-title font-gothic">
+          <span class="col-rune">ᚨ</span>
+          <span>守则誓言 (The Creed)</span>
+        </h4>
+        <div class="creed-box font-mono-scry">
+          <div class="creed-item">
+            <span class="creed-icon text-cyan">✦</span>
+            <span>零强占焦点 · 0 Focus Stealing</span>
+          </div>
+          <div class="creed-item">
+            <span class="creed-icon text-green">✦</span>
+            <span>羽量级内核 · 8.24 MB Pure RAM</span>
+          </div>
+          <div class="creed-item">
+            <span class="creed-icon text-gold">✦</span>
+            <span>绝无云端窥探 · 100% Offline Local</span>
+          </div>
+          <div class="creed-item">
+            <span class="creed-icon text-crimson">✦</span>
+            <span>自由开源 · GPL-3.0 License</span>
+          </div>
+        </div>
+
+        <div class="footer-repo-link">
+          <a
+            href="https://github.com/Tairraos/Nskry"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="repo-pill font-mono-scry"
+          >
+            <span>GITHUB REPOSITORY ↗</span>
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom: Filigree Divider & Copyright -->
+    <div class="footer-bottom-bar font-mono-scry">
+      <div class="bottom-left">
+        <span>&copy; {new Date().getFullYear()} Nscry. Peering through the veil.</span>
+        <span class="divider-dot">•</span>
+        <span>Windows x64 Native C++ / Direct3D / WGC</span>
+      </div>
+
+      <div class="bottom-right font-gothic">
+        <span>GPL-3.0-or-later · 羽量如风 · 专注眼前</span>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<style>
+  .diegetic-footer {
+    position: relative;
+    background: #090c10;
+    border-top: 2px solid var(--color-brass-border);
+    padding: 70px 24px 40px;
+    color: var(--color-parchment);
+    overflow: hidden;
+  }
+
+  .footer-mahogany-grain {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at 50% 0%, rgba(35, 25, 15, 0.45) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  .footer-inner-wrap {
+    max-width: 1240px;
+    margin: 0 auto;
+    position: relative;
+    z-index: 2;
+  }
+
+  .footer-top-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 20px;
+    padding-bottom: 32px;
+    margin-bottom: 40px;
+    border-bottom: 1px solid rgba(146, 116, 45, 0.35);
+  }
+
+  .footer-brand-sigil {
+    max-width: 540px;
+  }
+
+  .brand-crest {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 12px;
+  }
+
+  .crest-seal {
+    width: 44px;
+    height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(circle at 35% 35%, #991b1b 0%, #450a0a 100%);
+    border: 2px solid #ef4444;
+    border-radius: 50%;
+    color: #fff;
+    font-size: 1.1rem;
+    font-weight: 800;
+    box-shadow: 0 0 16px rgba(185, 28, 28, 0.6);
+  }
+
+  .crest-text {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .brand-title {
+    font-size: 1.8rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    line-height: 1;
+  }
+
+  .brand-subtitle {
+    font-size: 0.72rem;
+    color: var(--color-arcane-cyan);
+    letter-spacing: 0.12em;
+    margin-top: 4px;
+  }
+
+  .brand-motto {
+    font-size: 0.95rem;
+    line-height: 1.6;
+    margin: 0;
+  }
+
+  /* Grid Columns */
+  .footer-nav-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 36px;
+    padding-bottom: 40px;
+    margin-bottom: 32px;
+    border-bottom: 1px solid rgba(146, 116, 45, 0.25);
+  }
+
+  .col-title {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--color-gold-bright);
+    margin-bottom: 18px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .col-rune {
+    color: var(--color-arcane-cyan);
+    font-size: 1.1rem;
+  }
+
+  .footer-links {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .footer-links a {
+    color: var(--color-parchment-aged);
+    text-decoration: none;
+    font-size: 0.92rem;
+    transition: all 0.2s ease;
+    display: inline-block;
+  }
+
+  .footer-links a:hover {
+    color: var(--color-gold-bright);
+    transform: translateX(4px);
+    text-shadow: 0 0 8px rgba(254, 240, 138, 0.4);
+  }
+
+  /* Creed box */
+  .creed-box {
+    background: rgba(14, 18, 24, 0.8);
+    border: 1px solid rgba(146, 116, 45, 0.3);
+    border-radius: 6px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 0.76rem;
+    margin-bottom: 16px;
+  }
+
+  .creed-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .text-cyan { color: #38bdf8; }
+  .text-green { color: #10b981; }
+  .text-gold { color: #facc15; }
+  .text-crimson { color: #f87171; }
+
+  .repo-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.75rem;
+    color: var(--color-arcane-cyan);
+    background: rgba(56, 189, 248, 0.1);
+    border: 1px solid rgba(56, 189, 248, 0.3);
+    padding: 6px 12px;
+    border-radius: 4px;
+    text-decoration: none;
+    transition: all 0.2s ease;
+  }
+
+  .repo-pill:hover {
+    background: rgba(56, 189, 248, 0.2);
+    border-color: #38bdf8;
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.4);
+  }
+
+  /* Bottom bar */
+  .footer-bottom-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 16px;
+    font-size: 0.78rem;
+    color: #64748b;
+  }
+
+  .bottom-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .divider-dot {
+    color: var(--color-gold-antique);
+  }
+
+  .bottom-right {
+    color: var(--color-gold-antique);
+    font-size: 0.8rem;
+  }
+
+  @media (max-width: 900px) {
+    .footer-nav-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+
+  @media (max-width: 600px) {
+    .footer-nav-grid {
+      grid-template-columns: 1fr;
+    }
+    .footer-bottom-bar {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+  }
+</style>
+
+<script>
+  import { arcaneAudio } from '../lib/arcane-audio';
+
+  const backToTopBtn = document.getElementById('footer-back-to-top');
+  if (backToTopBtn) {
+    backToTopBtn.addEventListener('click', () => {
+      arcaneAudio.playWaterDrop();
+      window.scrollTo({
+        top: 0,
+        behavior: 'smooth'
+      });
+    });
+  }
+</script>

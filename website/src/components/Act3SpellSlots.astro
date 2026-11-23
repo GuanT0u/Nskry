@@ -1,0 +1,1264 @@
+---
+import { link } from '../lib/links';
+---
+
+<section class="act3-container" id="act3-spellslots">
+  <div class="act3-inner-wrap">
+    <!-- Chapter Eyebrow & Lore -->
+    <div class="act3-header text-center">
+      <div class="chapter-tag font-gothic">
+        <span class="rune-sparkle">✦</span>
+        <span>ACT III · D&D / BG3 法术位哲学与模块灵契</span>
+        <span class="rune-sparkle">✦</span>
+      </div>
+      <h2 class="act3-title font-gothic text-gold-emboss">
+        拒绝臃肿全家桶 · 随需召唤法术位
+      </h2>
+      <p class="act3-subtitle font-tome text-gold-antique">
+        市面传统截图工具常年吞噬数百兆内存与数十个隐形后台进程。<br/>
+        <strong>Nscry</strong> 坚守羽量之道：核心仅 <strong>8.2 MB</strong>，法术位按需装配，随用随插。
+      </p>
+    </div>
+
+    <!-- Quick Loadout Preset Switcher -->
+    <div class="preset-selector-bar">
+      <span class="preset-label font-gothic">快速法术流派：</span>
+      <div class="preset-buttons" id="preset-buttons">
+        <button type="button" class="btn-brass-rune" data-preset="minimal">
+          <span>❖ 羽量探微 (9.6 MB)</span>
+        </button>
+        <button type="button" class="btn-brass-rune active" data-preset="scholar">
+          <span>❖ 研读学者 (13.8 MB)</span>
+        </button>
+        <button type="button" class="btn-brass-rune" data-preset="archmage">
+          <span>❖ 大宗师全装配 (19.7 MB)</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- The Inlaid Bronze Spell Rack (Spell Slots) -->
+    <div class="spell-rack-frame brass-panel corner-filigree" id="spell-rack">
+      <div class="spell-rack-titlebar font-gothic">
+        <div class="rack-title-left">
+          <span class="rack-rune">ᚱᚢᚾᛖ</span>
+          <span>BRONZE SPELL RACK // 符文槽位镶嵌台</span>
+        </div>
+        <div class="rack-status-right font-mono-scry" id="active-slots-count">
+          EQUIPPED SLOTS: 2 / 4
+        </div>
+      </div>
+
+      <!-- 4 Gem Slots Grid -->
+      <div class="spell-slots-grid">
+        <!-- Gem 1: Live Region Pinning -->
+        <div
+          class="spell-card-slot active"
+          id="slot-pin"
+          data-gem="pin"
+          data-name="凝滞术 (Live Region Pinning)"
+          data-school="空间系 / Transmutation"
+          data-weight="1.40"
+          data-color="cyan"
+          data-desc="将屏幕任意子区域凝固为可交互的浮动灵镜。无须将后台窗体切至前端，Direct3D/WGC 微秒级低时延推流，支持无焦点点击穿透与半透明调谐。"
+          data-hotkey="Alt + P"
+          tabindex="0"
+          role="button"
+          aria-pressed="true"
+        >
+          <div class="slot-header font-gothic">
+            <span class="slot-idx">SLOT I</span>
+            <span class="slot-status-pill font-mono-scry">ACTIVE</span>
+          </div>
+
+          <div class="gem-pedestal-wrap">
+            <div class="socket-rune-ring ring-cyan"></div>
+            <div class="gem-radial-glow glow-cyan"></div>
+            <img
+              src={link('assets/gem-pin.png')}
+              alt="空间凝滞术宝石"
+              class="gem-crystal-img"
+              loading="lazy"
+            />
+          </div>
+
+          <div class="slot-meta">
+            <h3 class="gem-name font-gothic text-gold-bright">凝滞术</h3>
+            <span class="gem-eng font-mono-scry">Live Region Pinning</span>
+            <div class="gem-cost font-mono-scry">+1.40 MB</div>
+          </div>
+
+          <div class="slot-toggle-hint font-mono-scry">
+            <span>[单击装配 / 卸下]</span>
+          </div>
+        </div>
+
+        <!-- Gem 2: Neural Offline OCR -->
+        <div
+          class="spell-card-slot active"
+          id="slot-ocr"
+          data-gem="ocr"
+          data-name="启智识文 (Neural Offline OCR)"
+          data-school="预言系 / Divination"
+          data-weight="4.20"
+          data-color="purple"
+          data-desc="端侧轻量神经离线感知，毫秒级解析多语种图文、代码块与数学公式。严守隐私天机，0 字节网络上报，断网亦能明辨秋毫。"
+          data-hotkey="Alt + O"
+          tabindex="0"
+          role="button"
+          aria-pressed="true"
+        >
+          <div class="slot-header font-gothic">
+            <span class="slot-idx">SLOT II</span>
+            <span class="slot-status-pill font-mono-scry">ACTIVE</span>
+          </div>
+
+          <div class="gem-pedestal-wrap">
+            <div class="socket-rune-ring ring-purple"></div>
+            <div class="gem-radial-glow glow-purple"></div>
+            <img
+              src={link('assets/gem-ocr.png')}
+              alt="启智识文宝石"
+              class="gem-crystal-img"
+              loading="lazy"
+            />
+          </div>
+
+          <div class="slot-meta">
+            <h3 class="gem-name font-gothic text-gold-bright">启智识文</h3>
+            <span class="gem-eng font-mono-scry">Neural Offline OCR</span>
+            <div class="gem-cost font-mono-scry">+4.20 MB</div>
+          </div>
+
+          <div class="slot-toggle-hint font-mono-scry">
+            <span>[单击装配 / 卸下]</span>
+          </div>
+        </div>
+
+        <!-- Gem 3: Bidirectional Long Scroll -->
+        <div
+          class="spell-card-slot"
+          id="slot-scroll"
+          data-gem="scroll"
+          data-name="延绵卷轴 (Bidirectional Long Scroll)"
+          data-school="时空系 / Conjuration"
+          data-weight="2.10"
+          data-color="amber"
+          data-desc="纵览长卷秘术。自研特征点特征匹配与启发式去重拼缝算法，轻松捕捉超长聊天记录、百万行代码与无限网页，无惧吸顶浮动栏干扰。"
+          data-hotkey="Alt + S"
+          tabindex="0"
+          role="button"
+          aria-pressed="false"
+        >
+          <div class="slot-header font-gothic">
+            <span class="slot-idx">SLOT III</span>
+            <span class="slot-status-pill font-mono-scry">DORMANT</span>
+          </div>
+
+          <div class="gem-pedestal-wrap">
+            <div class="socket-rune-ring ring-amber"></div>
+            <div class="gem-radial-glow glow-amber"></div>
+            <img
+              src={link('assets/gem-scroll.png')}
+              alt="延绵卷轴宝石"
+              class="gem-crystal-img"
+              loading="lazy"
+            />
+          </div>
+
+          <div class="slot-meta">
+            <h3 class="gem-name font-gothic text-gold-bright">延绵卷轴</h3>
+            <span class="gem-eng font-mono-scry">Bidirectional Scroll</span>
+            <div class="gem-cost font-mono-scry">+2.10 MB</div>
+          </div>
+
+          <div class="slot-toggle-hint font-mono-scry">
+            <span>[单击装配 / 卸下]</span>
+          </div>
+        </div>
+
+        <!-- Gem 4: Lite Screen Recording -->
+        <div
+          class="spell-card-slot"
+          id="slot-record"
+          data-gem="record"
+          data-name="时光留影 (Lite Screen Recording)"
+          data-school="塑能系 / Evocation"
+          data-weight="3.80"
+          data-color="crimson"
+          data-desc="硬件编码极速捕获，微秒级帧队列调度。录制丝滑 60/120 FPS 高清演示与短 GIF，仅在按下快门时唤醒算力，闲置期间绝对零 CPU 消耗。"
+          data-hotkey="Alt + R"
+          tabindex="0"
+          role="button"
+          aria-pressed="false"
+        >
+          <div class="slot-header font-gothic">
+            <span class="slot-idx">SLOT IV</span>
+            <span class="slot-status-pill font-mono-scry">DORMANT</span>
+          </div>
+
+          <div class="gem-pedestal-wrap">
+            <div class="socket-rune-ring ring-crimson"></div>
+            <div class="gem-radial-glow glow-crimson"></div>
+            <img
+              src={link('assets/gem-record.png')}
+              alt="时光留影宝石"
+              class="gem-crystal-img"
+              loading="lazy"
+            />
+          </div>
+
+          <div class="slot-meta">
+            <h3 class="gem-name font-gothic text-gold-bright">时光留影</h3>
+            <span class="gem-eng font-mono-scry">Lite Screen Recording</span>
+            <div class="gem-cost font-mono-scry">+3.80 MB</div>
+          </div>
+
+          <div class="slot-toggle-hint font-mono-scry">
+            <span>[单击装配 / 卸下]</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Active Gem Inscription Details Board -->
+      <div class="gem-details-drawer font-tome" id="gem-details-drawer">
+        <div class="drawer-header font-gothic">
+          <div class="drawer-title-group">
+            <span class="drawer-icon">❖</span>
+            <h4 class="drawer-title text-gold-emboss" id="detail-name">凝滞术 (Live Region Pinning)</h4>
+            <span class="drawer-school font-mono-scry" id="detail-school">空间系 / Transmutation</span>
+          </div>
+          <div class="drawer-hotkey font-mono-scry">
+            快捷施法: <kbd id="detail-hotkey">Alt + P</kbd>
+          </div>
+        </div>
+        <p class="drawer-desc" id="detail-desc">
+          将屏幕任意子区域凝固为可交互的浮动灵镜。无须将后台窗体切至前端，Direct3D/WGC 微秒级低时延推流，支持无焦点点击穿透与半透明调谐。
+        </p>
+      </div>
+    </div>
+
+    <!-- Live Core Weight & Memory Footprint Meter -->
+    <div class="footprint-meter-box brass-panel corner-filigree" id="footprint-meter">
+      <div class="meter-header font-gothic">
+        <div class="meter-title">
+          <span class="meter-pulse"></span>
+          <span>LIVE MEMORY & FOOTPRINT TELEMETRY // 灵契能耗能效仪</span>
+        </div>
+        <div class="meter-verdict font-mono-scry">
+          RATING: <span class="verdict-badge">TIER S · HYPER-LIGHTWEIGHT</span>
+        </div>
+      </div>
+
+      <div class="meter-body-grid">
+        <!-- Dynamic Gauge 1: Nscry Dynamic Footprint -->
+        <div class="meter-column nscry-col">
+          <div class="meter-col-title font-gothic">
+            <span class="brand-sparkle">✦</span>
+            <span>Nscry 实时装配内存占用</span>
+          </div>
+
+          <div class="memory-number-display">
+            <span class="mem-value font-mono-scry text-arcane-glow" id="nscry-total-mb">13.84</span>
+            <span class="mem-unit font-gothic">MB</span>
+          </div>
+
+          <div class="memory-breakdown font-mono-scry" id="memory-breakdown">
+            <div class="breakdown-item">
+              <span class="b-label">Base Core (纯净核心):</span>
+              <span class="b-val">8.24 MB</span>
+            </div>
+            <div class="breakdown-item pin-line">
+              <span class="b-label">+ 凝滞术 (Live Pinning):</span>
+              <span class="b-val">+1.40 MB</span>
+            </div>
+            <div class="breakdown-item ocr-line">
+              <span class="b-label">+ 启智识文 (Offline OCR):</span>
+              <span class="b-val">+4.20 MB</span>
+            </div>
+            <div class="breakdown-item scroll-line is-dormant">
+              <span class="b-label">+ 延绵卷轴 (Long Scroll):</span>
+              <span class="b-val">未装配 (0 MB)</span>
+            </div>
+            <div class="breakdown-item record-line is-dormant">
+              <span class="b-label">+ 时光留影 (Lite Record):</span>
+              <span class="b-val">未装配 (0 MB)</span>
+            </div>
+          </div>
+
+          <!-- Progress Bar Representation -->
+          <div class="progress-track">
+            <div class="progress-fill nscry-fill" id="nscry-bar" style="width: 5.76%;"></div>
+          </div>
+          <div class="progress-subtext font-mono-scry">
+            <span>峰值限制: 32 MB · 零垃圾回收抖动</span>
+            <span id="efficiency-percent">4.6% of bloated suites</span>
+          </div>
+        </div>
+
+        <!-- Dynamic Gauge 2: Bloated Market Legacy Comparison -->
+        <div class="meter-column bloated-col">
+          <div class="meter-col-title font-gothic">
+            <span class="skull-mark">☠</span>
+            <span>市面传统全家桶截图工具</span>
+          </div>
+
+          <div class="memory-number-display">
+            <span class="mem-value font-mono-scry text-crimson-seal">240.00+</span>
+            <span class="mem-unit font-gothic">MB</span>
+          </div>
+
+          <div class="memory-breakdown font-mono-scry">
+            <div class="breakdown-item bloat">
+              <span class="b-label">常驻常开后台守护进程:</span>
+              <span class="b-val">~110 MB</span>
+            </div>
+            <div class="breakdown-item bloat">
+              <span class="b-label">内嵌 Chromium / Webview2 渲染:</span>
+              <span class="b-val">~85 MB</span>
+            </div>
+            <div class="breakdown-item bloat">
+              <span class="b-label">云端遥测与强制自动升级:</span>
+              <span class="b-val">~45 MB</span>
+            </div>
+            <div class="breakdown-item bloat">
+              <span class="b-label">强制捆绑无用商业插件:</span>
+              <span class="b-val">不可卸载</span>
+            </div>
+            <div class="breakdown-item bloat">
+              <span class="b-label">焦点抢占与主线程卡顿:</span>
+              <span class="b-val">频繁发生</span>
+            </div>
+          </div>
+
+          <div class="progress-track">
+            <div class="progress-fill bloat-fill" style="width: 100%;"></div>
+          </div>
+          <div class="progress-subtext font-mono-scry">
+            <span>多线程冗余监听 · 占用 18x 甚至更多内存</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Final Call to Action Banner (Diegetic Artifact) -->
+    <div class="act3-cta-banner brass-panel corner-filigree" id="download-cta">
+      <div class="cta-inner">
+        <div class="cta-text-content">
+          <div class="cta-eyebrow font-gothic">
+            <span class="rune-sparkle">✦</span>
+            <span>READY TO SCRY // 契约缔结</span>
+            <span class="rune-sparkle">✦</span>
+          </div>
+          <h3 class="cta-title font-gothic text-gold-emboss">
+            立即召唤羽量水镜
+          </h3>
+          <p class="cta-desc font-tome text-gold-antique">
+            支持 Windows 10 / 11 64-bit 原生环境。解压即用或一键安装，核心纯净无广告，代码完全开源。
+          </p>
+          <div class="cta-meta-specs font-mono-scry">
+            <span>v1.4.0 (x64)</span>
+            <span>•</span>
+            <span>8.24 MB 安装包</span>
+            <span>•</span>
+            <span>GPL-3.0 协议</span>
+            <span>•</span>
+            <span>纯离线原生运行</span>
+          </div>
+        </div>
+
+        <div class="cta-action-group">
+          <a href={link('download/')} class="btn-wax-seal cta-primary-btn" id="cta-download-btn">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+            </svg>
+            <span>召唤下载 · Windows x64</span>
+          </a>
+
+          <div class="cta-secondary-links">
+            <a href="https://github.com/Tairraos/Nskry" target="_blank" rel="noopener noreferrer" class="btn-brass-rune">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/>
+              </svg>
+              <span>GitHub 秘钥库</span>
+            </a>
+
+            <a href={link('guide/')} class="btn-brass-rune">
+              <span>阅读启蒙法典 (文档) →</span>
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .act3-container {
+    position: relative;
+    background: radial-gradient(circle at 50% 20%, #151a22 0%, #0d1015 60%, #06080b 100%);
+    padding: 100px 24px 140px;
+    min-height: 100vh;
+    overflow: hidden;
+    color: var(--color-parchment);
+  }
+
+  .act3-inner-wrap {
+    max-width: 1240px;
+    margin: 0 auto;
+    position: relative;
+    z-index: 10;
+  }
+
+  .act3-header {
+    margin-bottom: 40px;
+  }
+
+  .chapter-tag {
+    font-size: 0.85rem;
+    color: var(--color-arcane-cyan);
+    letter-spacing: 0.2em;
+    margin-bottom: 12px;
+    text-transform: uppercase;
+  }
+
+  .act3-title {
+    font-size: clamp(2rem, 4vw, 3.2rem);
+    font-weight: 800;
+    margin-bottom: 16px;
+    line-height: 1.25;
+  }
+
+  .act3-subtitle {
+    font-size: 1.15rem;
+    max-width: 780px;
+    margin: 0 auto;
+    line-height: 1.7;
+  }
+
+  .act3-subtitle strong {
+    color: var(--color-gold-bright);
+  }
+
+  /* Preset switcher */
+  .preset-selector-bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-bottom: 32px;
+  }
+
+  .preset-label {
+    font-size: 0.9rem;
+    color: var(--color-gold-antique);
+  }
+
+  .preset-buttons {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .preset-buttons .btn-brass-rune.active {
+    background: linear-gradient(180deg, #5b4520 0%, #3a2a10 100%);
+    border-color: #fde047;
+    box-shadow: 0 0 16px rgba(253, 224, 71, 0.45);
+    color: #fffbeb;
+  }
+
+  /* Spell Rack Frame */
+  .spell-rack-frame {
+    margin-bottom: 50px;
+    padding: 24px;
+    border-radius: 8px;
+    background: linear-gradient(180deg, rgba(26, 32, 42, 0.95) 0%, rgba(14, 18, 24, 0.98) 100%);
+  }
+
+  .spell-rack-titlebar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 16px;
+    margin-bottom: 24px;
+    border-bottom: 1px solid rgba(146, 116, 45, 0.35);
+  }
+
+  .rack-title-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--color-gold-bright);
+  }
+
+  .rack-rune {
+    font-size: 1.2rem;
+    color: var(--color-arcane-cyan);
+    letter-spacing: 0.1em;
+  }
+
+  .rack-status-right {
+    font-size: 0.82rem;
+    color: var(--color-arcane-cyan);
+    background: rgba(56, 189, 248, 0.1);
+    border: 1px solid rgba(56, 189, 248, 0.3);
+    padding: 4px 10px;
+    border-radius: 4px;
+  }
+
+  /* 4 Slots Grid */
+  .spell-slots-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 20px;
+    margin-bottom: 24px;
+  }
+
+  .spell-card-slot {
+    background: rgba(10, 14, 19, 0.7);
+    border: 1.5px solid rgba(146, 116, 45, 0.3);
+    border-radius: 6px;
+    padding: 20px 14px 16px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    position: relative;
+    user-select: none;
+    outline: none;
+  }
+
+  .spell-card-slot:hover {
+    border-color: var(--color-gold-bright);
+    background: rgba(18, 24, 32, 0.85);
+    transform: translateY(-4px);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.6);
+  }
+
+  .spell-card-slot:focus-visible {
+    border-color: var(--color-arcane-cyan);
+    box-shadow: 0 0 0 2px var(--color-arcane-glow);
+  }
+
+  .spell-card-slot.active {
+    border-color: var(--color-gold-bright);
+    background: linear-gradient(180deg, rgba(32, 40, 52, 0.85) 0%, rgba(14, 18, 24, 0.95) 100%);
+    box-shadow: 
+      0 8px 24px rgba(0, 0, 0, 0.7),
+      inset 0 0 20px rgba(212, 175, 55, 0.15);
+  }
+
+  .slot-header {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    margin-bottom: 12px;
+  }
+
+  .slot-idx {
+    color: var(--color-gold-antique);
+    font-weight: 700;
+  }
+
+  .slot-status-pill {
+    font-size: 0.68rem;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.08);
+    color: #94a3b8;
+  }
+
+  .spell-card-slot.active .slot-status-pill {
+    background: rgba(56, 189, 248, 0.2);
+    color: #38bdf8;
+    border: 1px solid rgba(56, 189, 248, 0.5);
+    font-weight: 700;
+  }
+
+  /* Gem pedestal & crystal image */
+  .gem-pedestal-wrap {
+    position: relative;
+    width: 120px;
+    height: 180px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 12px;
+  }
+
+  .gem-crystal-img {
+    position: relative;
+    z-index: 2;
+    max-height: 155px;
+    max-width: 95px;
+    object-fit: contain;
+    filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.8)) brightness(0.65) grayscale(0.6);
+    transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+
+  .spell-card-slot.active .gem-crystal-img {
+    filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.9)) brightness(1.1) grayscale(0);
+    transform: translateY(-6px) scale(1.04);
+    animation: gemFloat 4s ease-in-out infinite alternate;
+  }
+
+  @keyframes gemFloat {
+    0% { transform: translateY(-6px) scale(1.04); }
+    100% { transform: translateY(-12px) scale(1.06); }
+  }
+
+  .gem-radial-glow {
+    position: absolute;
+    inset: 15%;
+    border-radius: 50%;
+    filter: blur(18px);
+    opacity: 0;
+    transition: opacity 0.35s ease;
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  .spell-card-slot.active .gem-radial-glow {
+    opacity: 0.85;
+  }
+
+  .glow-cyan { background: radial-gradient(circle, #38bdf8 0%, #0284c7 60%, transparent 100%); }
+  .glow-purple { background: radial-gradient(circle, #c084fc 0%, #7e22ce 60%, transparent 100%); }
+  .glow-amber { background: radial-gradient(circle, #fbbf24 0%, #d97706 60%, transparent 100%); }
+  .glow-crimson { background: radial-gradient(circle, #f87171 0%, #b91c1c 60%, transparent 100%); }
+
+  .socket-rune-ring {
+    position: absolute;
+    inset: -6px;
+    border-radius: 50%;
+    border: 1.5px dashed rgba(212, 175, 55, 0.2);
+    opacity: 0;
+    transition: opacity 0.35s ease;
+    pointer-events: none;
+  }
+
+  .spell-card-slot.active .socket-rune-ring {
+    opacity: 1;
+    animation: runeRotate 18s linear infinite;
+  }
+
+  @keyframes runeRotate {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
+  .ring-cyan { border-color: rgba(56, 189, 248, 0.5); box-shadow: 0 0 16px rgba(56, 189, 248, 0.3); }
+  .ring-purple { border-color: rgba(192, 132, 252, 0.5); box-shadow: 0 0 16px rgba(192, 132, 252, 0.3); }
+  .ring-amber { border-color: rgba(251, 191, 36, 0.5); box-shadow: 0 0 16px rgba(251, 191, 36, 0.3); }
+  .ring-crimson { border-color: rgba(248, 113, 113, 0.5); box-shadow: 0 0 16px rgba(248, 113, 113, 0.3); }
+
+  .slot-meta {
+    margin-bottom: 8px;
+  }
+
+  .gem-name {
+    font-size: 1.05rem;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+
+  .gem-eng {
+    display: block;
+    font-size: 0.7rem;
+    color: #94a3b8;
+    margin-bottom: 6px;
+  }
+
+  .gem-cost {
+    display: inline-block;
+    font-size: 0.78rem;
+    color: var(--color-arcane-cyan);
+    background: rgba(56, 189, 248, 0.12);
+    border: 1px solid rgba(56, 189, 248, 0.25);
+    padding: 2px 8px;
+    border-radius: 9999px;
+  }
+
+  .slot-toggle-hint {
+    font-size: 0.7rem;
+    color: rgba(212, 175, 55, 0.7);
+    margin-top: auto;
+  }
+
+  /* Gem Inscription Details Board */
+  .gem-details-drawer {
+    background: rgba(15, 20, 27, 0.9);
+    border: 1px solid rgba(146, 116, 45, 0.4);
+    border-radius: 6px;
+    padding: 18px 24px;
+    margin-top: 12px;
+  }
+
+  .drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+
+  .drawer-title-group {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .drawer-icon {
+    color: var(--color-arcane-cyan);
+  }
+
+  .drawer-title {
+    font-size: 1.15rem;
+    font-weight: 700;
+  }
+
+  .drawer-school {
+    font-size: 0.78rem;
+    color: var(--color-gold-antique);
+    background: rgba(212, 175, 55, 0.12);
+    border: 1px solid rgba(212, 175, 55, 0.25);
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+
+  .drawer-hotkey {
+    font-size: 0.8rem;
+    color: #94a3b8;
+  }
+
+  .drawer-hotkey kbd {
+    background: #1e293b;
+    border: 1px solid #475569;
+    border-radius: 3px;
+    padding: 2px 6px;
+    color: #f1f5f9;
+    font-weight: 700;
+  }
+
+  .drawer-desc {
+    font-size: 0.98rem;
+    line-height: 1.7;
+    color: var(--color-parchment-aged);
+    margin: 0;
+  }
+
+  /* Memory & Footprint Meter */
+  .footprint-meter-box {
+    margin-bottom: 50px;
+    padding: 24px;
+    border-radius: 8px;
+    background: linear-gradient(180deg, rgba(22, 28, 37, 0.95) 0%, rgba(12, 16, 21, 0.98) 100%);
+  }
+
+  .meter-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding-bottom: 16px;
+    margin-bottom: 24px;
+    border-bottom: 1px solid rgba(146, 116, 45, 0.35);
+  }
+
+  .meter-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--color-gold-bright);
+  }
+
+  .meter-pulse {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #10b981;
+    box-shadow: 0 0 10px #10b981;
+    animation: pulseDot 2s infinite;
+  }
+
+  @keyframes pulseDot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(1.3); }
+  }
+
+  .verdict-badge {
+    color: #10b981;
+    font-weight: 700;
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.4);
+    padding: 3px 8px;
+    border-radius: 4px;
+  }
+
+  .meter-body-grid {
+    display: grid;
+    grid-template-columns: 1.15fr 1fr;
+    gap: 32px;
+  }
+
+  .meter-column {
+    background: rgba(10, 13, 17, 0.7);
+    border: 1px solid rgba(146, 116, 45, 0.3);
+    border-radius: 6px;
+    padding: 20px;
+  }
+
+  .nscry-col {
+    border-color: rgba(56, 189, 248, 0.4);
+    background: linear-gradient(180deg, rgba(14, 25, 38, 0.8) 0%, rgba(9, 15, 23, 0.9) 100%);
+  }
+
+  .bloated-col {
+    border-color: rgba(239, 68, 68, 0.3);
+    background: linear-gradient(180deg, rgba(34, 15, 15, 0.6) 0%, rgba(16, 9, 9, 0.85) 100%);
+  }
+
+  .meter-col-title {
+    font-size: 0.92rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .nscry-col .meter-col-title { color: #bae6fd; }
+  .bloated-col .meter-col-title { color: #fca5a5; }
+
+  .memory-number-display {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+
+  .mem-value {
+    font-size: 2.8rem;
+    font-weight: 800;
+    line-height: 1;
+  }
+
+  .mem-unit {
+    font-size: 1.2rem;
+    color: var(--color-gold-antique);
+  }
+
+  .memory-breakdown {
+    font-size: 0.8rem;
+    line-height: 1.9;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    padding-top: 12px;
+    margin-bottom: 16px;
+  }
+
+  .breakdown-item {
+    display: flex;
+    justify-content: space-between;
+    color: #cbd5e1;
+  }
+
+  .breakdown-item.is-dormant {
+    color: #64748b;
+    text-decoration: line-through;
+  }
+
+  .breakdown-item.bloat {
+    color: #f87171;
+  }
+
+  .progress-track {
+    width: 100%;
+    height: 10px;
+    background: rgba(0, 0, 0, 0.6);
+    border-radius: 9999px;
+    overflow: hidden;
+    margin-bottom: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .progress-fill {
+    height: 100%;
+    border-radius: 9999px;
+    transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .nscry-fill {
+    background: linear-gradient(90deg, #0284c7 0%, #38bdf8 70%, #fef08a 100%);
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.7);
+  }
+
+  .bloat-fill {
+    background: linear-gradient(90deg, #991b1b 0%, #ef4444 100%);
+    box-shadow: 0 0 12px rgba(239, 68, 68, 0.6);
+  }
+
+  .progress-subtext {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.72rem;
+    color: #94a3b8;
+  }
+
+  /* CTA Banner */
+  .act3-cta-banner {
+    padding: 36px 40px;
+    border-radius: 8px;
+    background: radial-gradient(circle at 75% 50%, rgba(45, 34, 18, 0.9) 0%, rgba(18, 22, 29, 0.98) 75%);
+  }
+
+  .cta-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 40px;
+    flex-wrap: wrap;
+  }
+
+  .cta-text-content {
+    max-width: 620px;
+  }
+
+  .cta-eyebrow {
+    font-size: 0.8rem;
+    color: var(--color-arcane-cyan);
+    letter-spacing: 0.15em;
+    margin-bottom: 8px;
+  }
+
+  .cta-title {
+    font-size: clamp(1.8rem, 3vw, 2.5rem);
+    font-weight: 800;
+    margin-bottom: 12px;
+  }
+
+  .cta-desc {
+    font-size: 1.05rem;
+    line-height: 1.65;
+    margin-bottom: 14px;
+  }
+
+  .cta-meta-specs {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.8rem;
+    color: var(--color-arcane-cyan);
+    flex-wrap: wrap;
+  }
+
+  .cta-action-group {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 16px;
+  }
+
+  .cta-primary-btn {
+    font-size: 1.05rem;
+    padding: 14px 32px;
+  }
+
+  .cta-secondary-links {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  /* Responsive Breakpoints */
+  @media (max-width: 1024px) {
+    .spell-slots-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .meter-body-grid {
+      grid-template-columns: 1fr;
+    }
+    .cta-action-group {
+      align-items: flex-start;
+      width: 100%;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .act3-container {
+      padding: 70px 16px 100px;
+    }
+    .spell-rack-titlebar {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 10px;
+    }
+    .preset-buttons {
+      flex-direction: column;
+      width: 100%;
+    }
+    .preset-buttons .btn-brass-rune {
+      width: 100%;
+      justify-content: center;
+    }
+    .spell-slots-grid {
+      grid-template-columns: 1fr;
+    }
+    .spell-card-slot {
+      padding: 16px;
+    }
+    .gem-pedestal-wrap {
+      height: 140px;
+    }
+    .gem-crystal-img {
+      max-height: 120px;
+    }
+    .act3-cta-banner {
+      padding: 24px 18px;
+    }
+    .cta-action-group {
+      align-items: stretch;
+    }
+    .cta-primary-btn {
+      justify-content: center;
+    }
+    .cta-secondary-links {
+      flex-direction: column;
+    }
+    .cta-secondary-links .btn-brass-rune {
+      justify-content: center;
+    }
+  }
+</style>
+
+<script>
+  import { arcaneAudio } from '../lib/arcane-audio';
+
+  interface GemData {
+    id: string;
+    weight: number;
+    name: string;
+    school: string;
+    desc: string;
+    hotkey: string;
+    freq: number;
+  }
+
+  const GEMS_MAP: Record<string, GemData> = {
+    pin: {
+      id: 'pin',
+      weight: 1.40,
+      name: '凝滞术 (Live Region Pinning)',
+      school: '空间系 / Transmutation',
+      desc: '将屏幕任意子区域凝固为可交互的浮动灵镜。Direct3D/WGC 微秒级低时延推流，支持无焦点点击穿透与半透明调谐。',
+      hotkey: 'Alt + P',
+      freq: 659.25 // E5
+    },
+    ocr: {
+      id: 'ocr',
+      weight: 4.20,
+      name: '启智识文 (Neural Offline OCR)',
+      school: '预言系 / Divination',
+      desc: '端侧轻量神经离线感知，毫秒级解析多语种图文、代码块与数学公式。严守隐私天机，0 字节网络上报，断网亦能明辨秋毫。',
+      hotkey: 'Alt + O',
+      freq: 783.99 // G5
+    },
+    scroll: {
+      id: 'scroll',
+      weight: 2.10,
+      name: '延绵卷轴 (Bidirectional Long Scroll)',
+      school: '时空系 / Conjuration',
+      desc: '纵览长卷秘术。自研特征点特征匹配与启发式去重拼缝算法，轻松捕捉超长聊天记录、百万行代码与无限网页，无惧吸顶浮动栏干扰。',
+      hotkey: 'Alt + S',
+      freq: 880.00 // A5
+    },
+    record: {
+      id: 'record',
+      weight: 3.80,
+      name: '时光留影 (Lite Screen Recording)',
+      school: '塑能系 / Evocation',
+      desc: '硬件编码极速捕获，微秒级帧队列调度。录制丝滑 60/120 FPS 高清演示与短 GIF，仅在按下快门时唤醒算力，闲置期间绝对零 CPU 消耗。',
+      hotkey: 'Alt + R',
+      freq: 1046.50 // C6
+    }
+  };
+
+  const BASE_WEIGHT = 8.24;
+  const BLOATED_BASELINE = 240.0;
+
+  function initSpellSlots() {
+    const slots = document.querySelectorAll<HTMLElement>('.spell-card-slot');
+    const activeSlotsCount = document.getElementById('active-slots-count');
+    const nscryTotalMb = document.getElementById('nscry-total-mb');
+    const nscryBar = document.getElementById('nscry-bar');
+    const efficiencyPercent = document.getElementById('efficiency-percent');
+
+    // Drawer elements
+    const detailName = document.getElementById('detail-name');
+    const detailSchool = document.getElementById('detail-school');
+    const detailDesc = document.getElementById('detail-desc');
+    const detailHotkey = document.getElementById('detail-hotkey');
+
+    // Memory breakdown rows
+    const pinRow = document.querySelector<HTMLElement>('.breakdown-item.pin-line');
+    const ocrRow = document.querySelector<HTMLElement>('.breakdown-item.ocr-line');
+    const scrollRow = document.querySelector<HTMLElement>('.breakdown-item.scroll-line');
+    const recordRow = document.querySelector<HTMLElement>('.breakdown-item.record-line');
+
+    const breakdownRows: Record<string, HTMLElement | null> = {
+      pin: pinRow,
+      ocr: ocrRow,
+      scroll: scrollRow,
+      record: recordRow
+    };
+
+    function updateTelemetry() {
+      let activeCount = 0;
+      let totalWeight = BASE_WEIGHT;
+
+      slots.forEach((slot) => {
+        const gemKey = slot.dataset.gem;
+        const isActive = slot.classList.contains('active');
+        const statusPill = slot.querySelector('.slot-status-pill');
+
+        if (statusPill) {
+          statusPill.textContent = isActive ? 'ACTIVE' : 'DORMANT';
+        }
+        slot.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+
+        const row = gemKey ? breakdownRows[gemKey] : null;
+
+        if (isActive && gemKey && GEMS_MAP[gemKey]) {
+          activeCount++;
+          totalWeight += GEMS_MAP[gemKey].weight;
+          if (row) {
+            row.classList.remove('is-dormant');
+            const valEl = row.querySelector('.b-val');
+            if (valEl) valEl.textContent = `+${GEMS_MAP[gemKey].weight.toFixed(2)} MB`;
+          }
+        } else if (row) {
+          row.classList.add('is-dormant');
+          const valEl = row.querySelector('.b-val');
+          if (valEl) valEl.textContent = '未装配 (0 MB)';
+        }
+      });
+
+      if (activeSlotsCount) {
+        activeSlotsCount.textContent = `EQUIPPED SLOTS: ${activeCount} / 4`;
+      }
+
+      if (nscryTotalMb) {
+        nscryTotalMb.textContent = totalWeight.toFixed(2);
+      }
+
+      if (nscryBar) {
+        // Percentage relative to 240 MB bloated baseline
+        const pct = Math.min(100, (totalWeight / BLOATED_BASELINE) * 100);
+        nscryBar.style.width = `${pct.toFixed(2)}%`;
+      }
+
+      if (efficiencyPercent) {
+        const eff = ((totalWeight / BLOATED_BASELINE) * 100).toFixed(1);
+        efficiencyPercent.textContent = `${eff}% of bloated suites`;
+      }
+    }
+
+    function selectGemDetails(gemKey: string) {
+      const data = GEMS_MAP[gemKey];
+      if (!data) return;
+
+      if (detailName) detailName.textContent = data.name;
+      if (detailSchool) detailSchool.textContent = data.school;
+      if (detailDesc) detailDesc.textContent = data.desc;
+      if (detailHotkey) detailHotkey.textContent = data.hotkey;
+    }
+
+    function toggleSlot(slot: HTMLElement) {
+      const gemKey = slot.dataset.gem;
+      if (!gemKey || !GEMS_MAP[gemKey]) return;
+
+      const wasActive = slot.classList.contains('active');
+      const nowActive = !wasActive;
+
+      if (nowActive) {
+        slot.classList.add('active');
+        arcaneAudio.playCrystalChime(GEMS_MAP[gemKey].freq);
+      } else {
+        slot.classList.remove('active');
+        arcaneAudio.playBrassClick();
+      }
+
+      selectGemDetails(gemKey);
+      updateTelemetry();
+    }
+
+    // Bind slot click and enter key
+    slots.forEach((slot) => {
+      slot.addEventListener('click', () => toggleSlot(slot));
+      slot.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          toggleSlot(slot);
+        }
+      });
+      slot.addEventListener('mouseenter', () => {
+        const gemKey = slot.dataset.gem;
+        if (gemKey) selectGemDetails(gemKey);
+      });
+    });
+
+    // Preset Buttons
+    const presetButtons = document.querySelectorAll<HTMLButtonElement>('.preset-buttons button');
+    presetButtons.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        presetButtons.forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        arcaneAudio.playBrassClick();
+
+        const preset = btn.dataset.preset;
+        if (preset === 'minimal') {
+          // Only Pin
+          slots.forEach((slot) => {
+            const k = slot.dataset.gem;
+            if (k === 'pin') slot.classList.add('active');
+            else slot.classList.remove('active');
+          });
+          selectGemDetails('pin');
+        } else if (preset === 'scholar') {
+          // Pin + OCR
+          slots.forEach((slot) => {
+            const k = slot.dataset.gem;
+            if (k === 'pin' || k === 'ocr') slot.classList.add('active');
+            else slot.classList.remove('active');
+          });
+          selectGemDetails('ocr');
+        } else if (preset === 'archmage') {
+          // All 4
+          slots.forEach((slot) => slot.classList.add('active'));
+          selectGemDetails('record');
+        }
+
+        updateTelemetry();
+      });
+    });
+
+    // Initial update
+    updateTelemetry();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initSpellSlots);
+  } else {
+    initSpellSlots();
+  }
+</script>

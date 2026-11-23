@@ -1,0 +1,292 @@
+/**
+ * Nscry: Diegetic Dark Fantasy UI (BG3 x Cinematic Scrollytelling)
+ * Tactile Gothic CRPG aesthetics: weathered mahogany, tarnished brass,
+ * aged parchment, arcane runes, and liquid water reflections.
+ */
+
+:root {
+  --color-void: #06080b;
+  --color-obsidian: #0e1217;
+  --color-obsidian-card: rgba(14, 18, 23, 0.85);
+
+  --color-gold-bright: #fef08a;
+  --color-gold-antique: #d4af37;
+  --color-gold-dark: #854d0e;
+  --color-brass-border: #92742d;
+  --color-brass-bevel: #5c4717;
+
+  --color-arcane-cyan: #38bdf8;
+  --color-arcane-deep: #0284c7;
+  --color-arcane-glow: rgba(56, 189, 248, 0.65);
+
+  --color-parchment: #e4d7bd;
+  --color-parchment-aged: #cfbf9e;
+  --color-parchment-ink: #221911;
+  --color-parchment-muted: #564736;
+  --color-crimson-wax: #991b1b;
+  --color-crimson-light: #ef4444;
+
+  --font-gothic: "Cinzel", "Cinzel Decorative", "Times New Roman", "Source Han Serif CN", "Songti SC", "SimSun", serif;
+  --font-tome: "EB Garamond", "Georgia", "Source Han Serif CN", "STSong", "KaiTi", serif;
+  --font-scry-mono: "Cascadia Code", "Consolas", "Courier New", monospace;
+}
+
+/* ==========================================================================
+   Gothic Typography & Text Effects
+   ========================================================================== */
+.font-gothic {
+  font-family: var(--font-gothic);
+  letter-spacing: 0.08em;
+}
+
+.font-tome {
+  font-family: var(--font-tome);
+}
+
+.font-mono-scry {
+  font-family: var(--font-scry-mono);
+}
+
+.text-gold-emboss {
+  background: linear-gradient(180deg, #fffbeb 0%, #fef08a 20%, #d4af37 60%, #78350f 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.9));
+}
+
+.text-gold-antique {
+  color: var(--color-gold-antique);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+
+.text-arcane-glow {
+  color: #bae6fd;
+  text-shadow: 0 0 12px rgba(56, 189, 248, 0.8), 0 0 28px rgba(14, 165, 233, 0.45);
+}
+
+.text-crimson-seal {
+  color: #fca5a5;
+  text-shadow: 0 0 10px rgba(220, 38, 38, 0.6);
+}
+
+/* ==========================================================================
+   Diegetic Brass & Gothic Frames
+   ========================================================================== */
+.brass-panel {
+  background: linear-gradient(145deg, rgba(22, 27, 34, 0.95), rgba(10, 13, 17, 0.98));
+  border: 1.5px solid var(--color-brass-border);
+  box-shadow: 
+    inset 0 0 14px rgba(0, 0, 0, 0.8),
+    0 8px 32px rgba(0, 0, 0, 0.75),
+    0 0 20px rgba(146, 116, 45, 0.2);
+  position: relative;
+}
+
+/* Corner filigree brackets */
+.corner-filigree::before,
+.corner-filigree::after {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-color: var(--color-gold-antique);
+  border-style: solid;
+  pointer-events: none;
+}
+.corner-filigree::before {
+  top: -2px;
+  left: -2px;
+  border-width: 2.5px 0 0 2.5px;
+}
+.corner-filigree::after {
+  bottom: -2px;
+  right: -2px;
+  border-width: 0 2.5px 2.5px 0;
+}
+
+/* Diegetic Wax Seal Button */
+.btn-wax-seal {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  background: radial-gradient(circle at 35% 35%, #b91c1c 0%, #7f1d1d 70%, #450a0a 100%);
+  color: #fef2f2;
+  border: 2px solid #ef4444;
+  border-radius: 9999px;
+  padding: 10px 24px;
+  font-family: var(--font-gothic);
+  font-weight: 700;
+  text-decoration: none;
+  box-shadow: 
+    0 4px 16px rgba(0, 0, 0, 0.65),
+    inset 0 2px 4px rgba(254, 202, 202, 0.4),
+    0 0 18px rgba(185, 28, 28, 0.4);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  cursor: pointer;
+  user-select: none;
+}
+.btn-wax-seal:hover {
+  transform: translateY(-2px) scale(1.03);
+  box-shadow: 
+    0 6px 24px rgba(0, 0, 0, 0.75),
+    inset 0 2px 6px rgba(254, 202, 202, 0.6),
+    0 0 28px rgba(239, 68, 68, 0.6);
+  color: #ffffff;
+}
+.btn-wax-seal:active {
+  transform: translateY(1px) scale(0.98);
+}
+
+/* Diegetic Brass Runic Button */
+.btn-brass-rune {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: linear-gradient(180deg, #372a15 0%, #20170a 100%);
+  color: var(--color-gold-bright);
+  border: 1.5px solid var(--color-gold-antique);
+  border-radius: 4px;
+  padding: 8px 18px;
+  font-family: var(--font-gothic);
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-decoration: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(254, 240, 138, 0.3);
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+.btn-brass-rune:hover {
+  background: linear-gradient(180deg, #4d3b1e 0%, #2b1f0d 100%);
+  border-color: #fde047;
+  box-shadow: 0 0 18px rgba(212, 175, 55, 0.5), inset 0 1px 2px rgba(255, 255, 255, 0.4);
+  transform: translateY(-1px);
+}
+
+/* ==========================================================================
+   Spell Socket & Gem Aesthetics (Baldur's Gate 3 Style)
+   ========================================================================== */
+.spell-socket {
+  position: relative;
+  width: 110px;
+  height: 140px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+  user-select: none;
+}
+.spell-socket:hover {
+  transform: translateY(-4px) scale(1.05);
+}
+
+.socket-pedestal {
+  position: absolute;
+  bottom: 8px;
+  width: 72px;
+  height: 24px;
+  background: radial-gradient(ellipse, #453518 0%, #1a1409 70%, #000 100%);
+  border: 1.5px solid var(--color-brass-border);
+  border-radius: 50%;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.8);
+}
+
+.socket-rune-ring {
+  position: absolute;
+  inset: -12px;
+  border-radius: 50%;
+  border: 1px dashed rgba(212, 175, 55, 0.3);
+  opacity: 0;
+  transition: opacity 0.3s ease, transform 0.6s ease;
+  pointer-events: none;
+}
+.spell-socket.active .socket-rune-ring {
+  opacity: 1;
+  border-color: rgba(56, 189, 248, 0.7);
+  box-shadow: 0 0 20px rgba(56, 189, 248, 0.35);
+  animation: runeSpin 20s linear infinite;
+}
+
+@keyframes runeSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.gem-glow {
+  position: absolute;
+  top: 40%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(56, 189, 248, 0.8) 0%, rgba(14, 165, 233, 0.4) 45%, transparent 75%);
+  opacity: 0;
+  filter: blur(8px);
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+.spell-socket.active .gem-glow {
+  opacity: 1;
+  animation: arcanePulse 2.8s ease-in-out infinite alternate;
+}
+
+@keyframes arcanePulse {
+  0% { transform: translate(-50%, -50%) scale(0.9); opacity: 0.65; }
+  100% { transform: translate(-50%, -50%) scale(1.3); opacity: 1; }
+}
+
+/* ==========================================================================
+   Water Mirror & Scrying Ripple Animation
+   ========================================================================== */
+.water-surface {
+  background: radial-gradient(circle at 45% 45%, #162436 0%, #0c1522 55%, #050a11 100%);
+  box-shadow: inset 0 0 60px rgba(0, 0, 0, 0.9), 0 0 40px rgba(14, 165, 233, 0.25);
+  position: relative;
+  overflow: hidden;
+}
+
+.water-ripple-layer {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 50% 50%, rgba(56, 189, 248, 0.18) 0%, transparent 60%);
+  mix-blend-mode: screen;
+  pointer-events: none;
+  animation: waterCaustic 8s ease-in-out infinite alternate;
+}
+
+@keyframes waterCaustic {
+  0% { transform: scale(1) rotate(0deg); opacity: 0.4; }
+  50% { transform: scale(1.15) rotate(180deg); opacity: 0.75; }
+  100% { transform: scale(1) rotate(360deg); opacity: 0.4; }
+}
+
+/* ==========================================================================
+   Grimoire Parchment Styling
+   ========================================================================== */
+.grimoire-parchment-text {
+  color: var(--color-parchment-ink);
+  font-family: var(--font-tome);
+  text-shadow: 0 0.5px 0.5px rgba(255, 255, 255, 0.4);
+  line-height: 1.68;
+}
+
+.grimoire-parchment-text h3 {
+  font-family: var(--font-gothic);
+  color: #3b2812;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid rgba(75, 55, 30, 0.3);
+  padding-bottom: 6px;
+  margin-bottom: 12px;
+}
+
+/* Accessibility: Reduced Motion */
+@media (prefers-reduced-motion: reduce) {
+  .socket-rune-ring,
+  .gem-glow,
+  .water-ripple-layer {
+    animation: none !important;
+  }
+}
