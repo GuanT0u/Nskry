@@ -2,12 +2,16 @@
 #include "ui/long_image_crop_window.h"
 #include "ui/precision_loupe.h"
 #include "ui/interaction_visuals.h"
+#include "ui/ui_preferences.h"
 
 #include <algorithm>
 #include <windowsx.h>
 
 namespace nskry {
 namespace {
+const wchar_t* EditorText(const wchar_t* en, const wchar_t* zh) {
+    return DesktopUiChinese() ? zh : en;
+}
 constexpr int kApplyId = 1;
 constexpr int kCancelId = 2;
 constexpr int kZoomInId = 3;
@@ -68,7 +72,7 @@ LongImageCropWindow::LongImageCropWindow(HBITMAP bitmap, int width, int height,
     const int windowH = (std::min)(760, workH);
 
     m_hwnd = ::CreateWindowExW(WS_EX_TOPMOST | WS_EX_APPWINDOW, kClassName,
-        L"Nskry - Image editor / Crop", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
+        EditorText(L"Nskry — Image editor", L"Nskry — 图片编辑"), WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
             WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_CLIPCHILDREN,
         work.left + (workW - windowW) / 2, work.top + (workH - windowH) / 2,
         windowW, windowH, nullptr, nullptr,
@@ -81,6 +85,7 @@ LongImageCropWindow::~LongImageCropWindow() {
     if (m_bitmap) ::DeleteObject(m_bitmap);
     if (m_backDc) { ::SelectObject(m_backDc, m_backOriginal); ::DeleteDC(m_backDc); }
     if (m_backBitmap) ::DeleteObject(m_backBitmap);
+    if (m_uiFont) ::DeleteObject(m_uiFont);
 }
 
 bool LongImageCropWindow::Show(HWND owner) {
@@ -119,38 +124,90 @@ LRESULT CALLBACK LongImageCropWindow::WndProc(HWND hwnd, UINT message, WPARAM wp
     return self ? self->HandleMessage(hwnd, message, wp, lp) : ::DefWindowProcW(hwnd, message, wp, lp);
 }
 
+bool LongImageCropWindow::HandleTab(const MSG &message) const {
+    if (!m_hwnd || message.message != WM_KEYDOWN || message.wParam != VK_TAB ||
+        (message.hwnd != m_hwnd && !::IsChild(m_hwnd, message.hwnd)) ||
+        ::GetKeyState(VK_CONTROL) < 0)
+        return false;
+    const HWND focused = ::GetFocus();
+    const HWND next = ::GetNextDlgTabItem(m_hwnd, ::IsChild(m_hwnd, focused) ? focused : nullptr,
+                                        ::GetKeyState(VK_SHIFT) < 0);
+    if (!next)
+        return false;
+    ::SetFocus(next);
+    return true;
+}
+
+int LongImageCropWindow::Dip(int value) const {
+    const UINT dpi = ::GetDpiForWindow(m_hwnd);
+    return ::MulDiv(value, dpi ? dpi : 96, 96);
+}
+
+void LongImageCropWindow::RefreshFont() {
+    NONCLIENTMETRICSW metrics{sizeof(metrics)};
+    const UINT dpi = ::GetDpiForWindow(m_hwnd);
+    if (!::SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0, dpi ? dpi : 96))
+        return;
+    HFONT font = ::CreateFontIndirectW(&metrics.lfMessageFont);
+    if (!font) return;
+    ::EnumChildWindows(m_hwnd, [](HWND child, LPARAM value) -> BOOL {
+        ::SendMessageW(child, WM_SETFONT, value, TRUE);
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(font));
+    if (m_uiFont) ::DeleteObject(m_uiFont);
+    m_uiFont = font;
+}
+
 LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
     switch (message) {
+    case WM_NSKRY_REFRESH_UI:
+    case WM_SETTINGCHANGE:
+    case WM_SYSCOLORCHANGE:
+        m_palette = GetDesktopPalette();
+        ::SetWindowTextW(hwnd, UiText(L"Nskry — Image editor", L"Nskry — 图片编辑"));
+        RefreshLabels();
+        ::InvalidateRect(hwnd, nullptr, TRUE);
+        return 0;
     case WM_CREATE:
         for (const auto& button : std::vector<std::pair<int, const wchar_t*>>{
-            {kCutRowsId, L"Cut rows"}, {kCutColumnsId, L"Cut columns"}, {kConfirmCutId, L"Delete strip"},
-            {kExitCutId, L"Cancel cut"}, {kUndoCutId, L"Undo cut"}, {kRedoCutId, L"Redo cut"}})
-            if (!::CreateWindowExW(0, L"BUTTON", button.second, WS_CHILD | WS_VISIBLE,
+            {kCutRowsId, EditorText(L"Cut rows", L"切除行")}, {kCutColumnsId, EditorText(L"Cut columns", L"切除列")}, {kConfirmCutId, EditorText(L"Delete strip", L"删除区段")},
+            {kExitCutId, EditorText(L"Cancel cut", L"取消切除")}, {kUndoCutId, EditorText(L"Undo cut", L"撤销切除")}, {kRedoCutId, EditorText(L"Redo cut", L"重做切除")}})
+            if (!::CreateWindowExW(0, L"BUTTON", button.second, WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                 0, 0, 80, 30, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(button.first)),
                 ::GetModuleHandleW(nullptr), nullptr)) return -1;
-        m_applyButton = ::CreateWindowExW(0, L"BUTTON", L"Open annotation editor", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+        m_applyButton = ::CreateWindowExW(0, L"BUTTON", EditorText(L"Open annotation editor", L"打开标注"), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
             0, 0, 160, 30, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kApplyId)), ::GetModuleHandleW(nullptr), nullptr);
-        m_cancelButton = ::CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE,
+        m_cancelButton = ::CreateWindowExW(0, L"BUTTON", EditorText(L"Cancel", L"取消"), WS_CHILD | WS_VISIBLE | WS_TABSTOP,
             0, 0, 86, 30, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelId)), ::GetModuleHandleW(nullptr), nullptr);
-        m_zoomOutButton = ::CreateWindowExW(0, L"BUTTON", L"Zoom -", WS_CHILD | WS_VISIBLE,
+        m_zoomOutButton = ::CreateWindowExW(0, L"BUTTON", EditorText(L"Zoom -", L"缩小"), WS_CHILD | WS_VISIBLE | WS_TABSTOP,
             0, 0, 64, 30, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kZoomOutId)), ::GetModuleHandleW(nullptr), nullptr);
-        m_zoomInButton = ::CreateWindowExW(0, L"BUTTON", L"Zoom +", WS_CHILD | WS_VISIBLE,
+        m_zoomInButton = ::CreateWindowExW(0, L"BUTTON", EditorText(L"Zoom +", L"放大"), WS_CHILD | WS_VISIBLE | WS_TABSTOP,
             0, 0, 64, 30, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kZoomInId)), ::GetModuleHandleW(nullptr), nullptr);
-        m_copyButton = ::CreateWindowExW(0, L"BUTTON", L"Copy", WS_CHILD | WS_VISIBLE,
+        m_copyButton = ::CreateWindowExW(0, L"BUTTON", EditorText(L"Copy", L"复制"), WS_CHILD | WS_VISIBLE | WS_TABSTOP,
             0, 0, 70, 30, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCopyId)), ::GetModuleHandleW(nullptr), nullptr);
-        m_saveButton = ::CreateWindowExW(0, L"BUTTON", L"Save", WS_CHILD | WS_VISIBLE,
+        m_saveButton = ::CreateWindowExW(0, L"BUTTON", EditorText(L"Save", L"保存"), WS_CHILD | WS_VISIBLE | WS_TABSTOP,
             0, 0, 70, 30, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSaveId)), ::GetModuleHandleW(nullptr), nullptr);
         if (!m_imageActions.empty()) {
             const std::wstring label = m_imageActions.size() == 1
-                ? L"Select " + m_imageActions.front().label + L" area" : L"Select image area";
-            m_imageActionButton = ::CreateWindowExW(0, L"BUTTON", label.c_str(), WS_CHILD | WS_VISIBLE,
+                ? EditorText(L"Select area for ", L"选取区域 · ") + m_imageActions.front().label
+                : EditorText(L"Select image area", L"选取图片区域");
+            m_imageActionButton = ::CreateWindowExW(0, L"BUTTON", label.c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                 0, 0, 118, 30, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kImageActionId)), ::GetModuleHandleW(nullptr), nullptr);
         }
         if (!m_applyButton || !m_cancelButton || !m_zoomOutButton || !m_zoomInButton ||
             !m_copyButton || !m_saveButton ||
             (!m_imageActions.empty() && !m_imageActionButton)) return -1;
+        RefreshFont();
         LayoutControls();
         return 0;
+    case WM_DPICHANGED: {
+        const auto &bounds = *reinterpret_cast<const RECT*>(lp);
+        ::SetWindowPos(hwnd, nullptr, bounds.left, bounds.top, bounds.right - bounds.left,
+                       bounds.bottom - bounds.top, SWP_NOACTIVATE | SWP_NOZORDER);
+        RefreshFont();
+        LayoutControls();
+        return 0;
+    }
     case WM_SIZE:
         LayoutControls();
         ::InvalidateRect(hwnd, nullptr, FALSE);
@@ -158,8 +215,8 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
     case WM_GETMINMAXINFO: {
         auto* limits = reinterpret_cast<MINMAXINFO*>(lp);
         if (limits) {
-            limits->ptMinTrackSize.x = (std::max)(limits->ptMinTrackSize.x, 560L);
-            limits->ptMinTrackSize.y = (std::max)(limits->ptMinTrackSize.y, 420L);
+            limits->ptMinTrackSize.x = (std::max)(limits->ptMinTrackSize.x, static_cast<LONG>(Dip(560)));
+            limits->ptMinTrackSize.y = (std::max)(limits->ptMinTrackSize.y, static_cast<LONG>(Dip(360)));
         }
         return 0;
     }
@@ -347,7 +404,7 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
         ::GetCursorPos(&point);
         ::ScreenToClient(hwnd, &point);
         const RECT image = ImageRect();
-        RECT client{};GetClientRect(hwnd,&client);RECT canvas{kCanvasMargin,kCanvasMargin,client.right-kCanvasMargin,client.bottom-kControlsHeight};
+        RECT client{};GetClientRect(hwnd,&client);RECT canvas{Dip(kCanvasMargin),Dip(kCanvasMargin),client.right-Dip(kCanvasMargin),client.bottom-Dip(kControlsHeight)};
         if(m_cutMode){::SetCursor(::PtInRect(&image,point) && ::PtInRect(&canvas,point)?InteractionCursor(m_cutMode==2?3:2):LoadCursorW(nullptr,IDC_ARROW));return TRUE;}
         if(m_selectingOcr){::SetCursor(::PtInRect(&image,point) && ::PtInRect(&canvas,point)?InteractionCursor(0):LoadCursorW(nullptr,IDC_ARROW));return TRUE;}
         if(m_drag==DragHandle::Pan){::SetCursor(InteractionCursor(4));return TRUE;}
@@ -428,24 +485,44 @@ void LongImageCropWindow::LayoutControls() {
         !m_copyButton || !m_saveButton) return;
     RECT client{};
     if (!::GetClientRect(m_hwnd, &client)) return;
-    const int upperY = (std::max)(0, static_cast<int>(client.bottom - 78));
-    const int lowerY = (std::max)(0, static_cast<int>(client.bottom - 42));
-    int cutX = 12;
+    const auto place = [&](HWND control, int x, int y, int width, int height = 32) {
+        ::SetWindowPos(control, nullptr, x, y, Dip(width), Dip(height), SWP_NOZORDER | SWP_NOACTIVATE);
+    };
+    const int upperY = (std::max)(0, static_cast<int>(client.bottom - Dip(84)));
+    const int lowerY = (std::max)(0, static_cast<int>(client.bottom - Dip(44)));
+    int cutX = Dip(12);
     for (int id : {kCutRowsId, kCutColumnsId, kConfirmCutId, kExitCutId, kUndoCutId, kRedoCutId}) {
         const int width = id == kCutColumnsId || id == kConfirmCutId ? 92 : 76;
-        ::SetWindowPos(::GetDlgItem(m_hwnd, id), nullptr, cutX, client.bottom - 114, width, 30, SWP_NOZORDER | SWP_NOACTIVATE);
-        cutX += width + 4;
+        place(::GetDlgItem(m_hwnd, id), cutX, client.bottom - Dip(124), width);
+        cutX += Dip(width + 4);
     }
-    const int cancelX = (std::max)(0, static_cast<int>(client.right - 100));
-    const int applyX = (std::max)(0, cancelX - 170);
-    const int imageActionX = (std::max)(12, applyX - 126);
-    ::SetWindowPos(m_zoomOutButton, nullptr, 12, upperY, 64, 30, SWP_NOZORDER | SWP_NOACTIVATE);
-    ::SetWindowPos(m_zoomInButton, nullptr, 82, upperY, 64, 30, SWP_NOZORDER | SWP_NOACTIVATE);
-    ::SetWindowPos(m_copyButton, nullptr, 152, upperY, 70, 30, SWP_NOZORDER | SWP_NOACTIVATE);
-    ::SetWindowPos(m_saveButton, nullptr, 228, upperY, 70, 30, SWP_NOZORDER | SWP_NOACTIVATE);
-    ::SetWindowPos(m_cancelButton, nullptr, cancelX, lowerY, 86, 30, SWP_NOZORDER | SWP_NOACTIVATE);
-    ::SetWindowPos(m_applyButton, nullptr, applyX, lowerY, 160, 30, SWP_NOZORDER | SWP_NOACTIVATE);
-    if (m_imageActionButton) ::SetWindowPos(m_imageActionButton, nullptr, imageActionX, lowerY, 118, 30, SWP_NOZORDER | SWP_NOACTIVATE);
+    const int cancelX = (std::max)(0, static_cast<int>(client.right - Dip(100)));
+    const int applyX = (std::max)(0, cancelX - Dip(170));
+    const int imageActionX = (std::max)(Dip(12), applyX - Dip(126));
+    place(m_zoomOutButton, Dip(12), upperY, 64);
+    place(m_zoomInButton, Dip(82), upperY, 64);
+    place(m_copyButton, Dip(152), upperY, 70);
+    place(m_saveButton, Dip(228), upperY, 70);
+    place(m_cancelButton, cancelX, lowerY, 86);
+    place(m_applyButton, applyX, lowerY, 160);
+    if (m_imageActionButton) place(m_imageActionButton, imageActionX, lowerY, 118);
+}
+
+void LongImageCropWindow::RefreshLabels() {
+    const std::pair<int, const wchar_t*> labels[] = {
+        {kCutRowsId, m_cutMode == 1 ? EditorText(L"Rows (on)", L"切除行（开启）") : EditorText(L"Cut rows", L"切除行")},
+        {kCutColumnsId, m_cutMode == 2 ? EditorText(L"Columns (on)", L"切除列（开启）") : EditorText(L"Cut columns", L"切除列")},
+        {kConfirmCutId, EditorText(L"Delete strip", L"删除区段")},
+        {kExitCutId, EditorText(L"Cancel cut", L"取消切除")},
+        {kUndoCutId, EditorText(L"Undo cut", L"撤销切除")},
+        {kRedoCutId, EditorText(L"Redo cut", L"重做切除")},
+        {kApplyId, m_selectingOcr ? EditorText(L"Recognize selection", L"识别选区")
+                                : EditorText(L"Open annotation editor", L"打开标注")},
+        {kCancelId, m_selectingOcr ? EditorText(L"Cancel selection", L"取消选择") : EditorText(L"Cancel", L"取消")},
+        {kZoomOutId, EditorText(L"Zoom -", L"缩小")}, {kZoomInId, EditorText(L"Zoom +", L"放大")},
+        {kCopyId, EditorText(L"Copy", L"复制")}, {kSaveId, EditorText(L"Save", L"保存")},
+    };
+    for (const auto &[id, label] : labels) ::SetDlgItemTextW(m_hwnd, id, label);
 }
 
 void LongImageCropWindow::SetOcrSelectionMode(bool enabled) {
@@ -453,8 +530,8 @@ void LongImageCropWindow::SetOcrSelectionMode(bool enabled) {
     m_selectingOcr = enabled;
     m_drag = DragHandle::None;
     if (!enabled) m_ocrSelection = {};
-    if (m_applyButton) ::SetWindowTextW(m_applyButton, enabled ? L"Recognize selection" : L"Open annotation editor");
-    if (m_cancelButton) ::SetWindowTextW(m_cancelButton, enabled ? L"Cancel selection" : L"Cancel");
+    if (m_applyButton) ::SetWindowTextW(m_applyButton, enabled ? EditorText(L"Recognize selection", L"识别选区") : EditorText(L"Open annotation editor", L"打开标注"));
+    if (m_cancelButton) ::SetWindowTextW(m_cancelButton, enabled ? EditorText(L"Cancel selection", L"取消选择") : EditorText(L"Cancel", L"取消"));
     if (m_copyButton) ::EnableWindow(m_copyButton, !enabled);
     if (m_saveButton) ::EnableWindow(m_saveButton, !enabled);
     if (m_imageActionButton) ::ShowWindow(m_imageActionButton, enabled ? SW_HIDE : SW_SHOW);
@@ -468,8 +545,8 @@ void LongImageCropWindow::SetCutMode(int mode) {
     if (mode && m_selectingOcr) SetOcrSelectionMode(false);
     m_drag = DragHandle::None; if (::GetCapture() == m_hwnd) ::ReleaseCapture();
     m_cutMode = mode; m_hasCut = false;
-    ::SetWindowTextW(::GetDlgItem(m_hwnd, kCutRowsId), mode == 1 ? L"Rows (on)" : L"Cut rows");
-    ::SetWindowTextW(::GetDlgItem(m_hwnd, kCutColumnsId), mode == 2 ? L"Columns (on)" : L"Cut columns");
+    ::SetWindowTextW(::GetDlgItem(m_hwnd, kCutRowsId), mode == 1 ? EditorText(L"Rows (on)", L"切除行（开启）") : EditorText(L"Cut rows", L"切除行"));
+    ::SetWindowTextW(::GetDlgItem(m_hwnd, kCutColumnsId), mode == 2 ? EditorText(L"Columns (on)", L"切除列（开启）") : EditorText(L"Cut columns", L"切除列"));
     ::InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 void LongImageCropWindow::ConfirmCut() {
@@ -506,25 +583,25 @@ void LongImageCropWindow::DrawMappedImage(HDC target, HDC source, RECT destinati
 RECT LongImageCropWindow::ImageRect() const {
     if (!m_hwnd || m_width <= 0 || m_height <= 0) return {};
     RECT client{}; ::GetClientRect(m_hwnd, &client);
-    const int availableWidth = (std::max)(1, static_cast<int>(client.right) - 2 * kCanvasMargin);
-    const int availableHeight = (std::max)(1, static_cast<int>(client.bottom) - kControlsHeight - 2 * kCanvasMargin);
+    const int availableWidth = (std::max)(1, static_cast<int>(client.right) - 2 * Dip(kCanvasMargin));
+    const int availableHeight = (std::max)(1, static_cast<int>(client.bottom) - Dip(kControlsHeight) - 2 * Dip(kCanvasMargin));
     const double fitScale = (std::min)(static_cast<double>(availableWidth) / m_width, static_cast<double>(availableHeight) / m_height);
     const double scale = fitScale * m_zoom;
     const int width = (std::max)(1, static_cast<int>(m_width * scale));
     const int height = (std::max)(1, static_cast<int>(m_height * scale));
     int left = (client.right - width) / 2;
-    int top = kCanvasMargin + (availableHeight - height) / 2;
+    int top = Dip(kCanvasMargin) + (availableHeight - height) / 2;
     if (height > availableHeight) {
         const double visibleSourceHeight = static_cast<double>(availableHeight) / scale;
         const double maximumTop = (std::max)(0.0, static_cast<double>(m_height) - visibleSourceHeight);
         const double viewTop = (std::clamp)(m_viewTopY, 0.0, maximumTop);
-        top = kCanvasMargin - static_cast<int>(viewTop * scale);
+        top = Dip(kCanvasMargin) - static_cast<int>(viewTop * scale);
     }
     if (width > availableWidth) {
         const double visibleSourceWidth = static_cast<double>(availableWidth) / scale;
         const double maximumLeft = (std::max)(0.0, static_cast<double>(m_width) - visibleSourceWidth);
         const double viewLeft = (std::clamp)(m_viewLeftX, 0.0, maximumLeft);
-        left = kCanvasMargin - static_cast<int>(viewLeft * scale);
+        left = Dip(kCanvasMargin) - static_cast<int>(viewLeft * scale);
     }
     return { left, top, left + width, top + height };
 }
@@ -540,11 +617,11 @@ void LongImageCropWindow::ZoomAt(POINT clientPoint, int wheelDelta) {
     const RECT after = ImageRect();
     const double newScale = static_cast<double>(after.right - after.left) / m_width;
     RECT client{}; ::GetClientRect(m_hwnd, &client);
-    const int availableWidth = (std::max)(1, static_cast<int>(client.right) - 2 * kCanvasMargin);
-    const int availableHeight = (std::max)(1, static_cast<int>(client.bottom) - kControlsHeight - 2 * kCanvasMargin);
-    if (m_width * newScale > availableWidth) m_viewLeftX = sourceX - (clientPoint.x - kCanvasMargin) / newScale;
+    const int availableWidth = (std::max)(1, static_cast<int>(client.right) - 2 * Dip(kCanvasMargin));
+    const int availableHeight = (std::max)(1, static_cast<int>(client.bottom) - Dip(kControlsHeight) - 2 * Dip(kCanvasMargin));
+    if (m_width * newScale > availableWidth) m_viewLeftX = sourceX - (clientPoint.x - Dip(kCanvasMargin)) / newScale;
     else m_viewLeftX = 0.0;
-    if (m_height * newScale > availableHeight) m_viewTopY = sourceY - (clientPoint.y - kCanvasMargin) / newScale;
+    if (m_height * newScale > availableHeight) m_viewTopY = sourceY - (clientPoint.y - Dip(kCanvasMargin)) / newScale;
     else m_viewTopY = 0.0;
     ::InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -553,8 +630,8 @@ void LongImageCropWindow::CenterViewOn(int sourceY) {
     if (!m_hwnd || m_width <= 0 || m_height <= 0) return;
     RECT client{};
     if (!::GetClientRect(m_hwnd, &client)) return;
-    const int availableWidth = (std::max)(1, static_cast<int>(client.right) - 2 * kCanvasMargin);
-    const int availableHeight = (std::max)(1, static_cast<int>(client.bottom) - kControlsHeight - 2 * kCanvasMargin);
+    const int availableWidth = (std::max)(1, static_cast<int>(client.right) - 2 * Dip(kCanvasMargin));
+    const int availableHeight = (std::max)(1, static_cast<int>(client.bottom) - Dip(kControlsHeight) - 2 * Dip(kCanvasMargin));
     const double scale = (std::min)(static_cast<double>(availableWidth) / m_width,
                                     static_cast<double>(availableHeight) / m_height) * m_zoom;
     if (scale <= 0.0 || m_height * scale <= availableHeight) { m_viewTopY = 0.0; return; }
@@ -567,8 +644,8 @@ void LongImageCropWindow::ScrollView(int wheelDelta) {
     if (m_zoom <= 1.0 || wheelDelta == 0 || !m_hwnd) return;
     RECT client{};
     if (!::GetClientRect(m_hwnd, &client)) return;
-    const int availableWidth = (std::max)(1, static_cast<int>(client.right) - 2 * kCanvasMargin);
-    const int availableHeight = (std::max)(1, static_cast<int>(client.bottom) - kControlsHeight - 2 * kCanvasMargin);
+    const int availableWidth = (std::max)(1, static_cast<int>(client.right) - 2 * Dip(kCanvasMargin));
+    const int availableHeight = (std::max)(1, static_cast<int>(client.bottom) - Dip(kControlsHeight) - 2 * Dip(kCanvasMargin));
     const double scale = (std::min)(static_cast<double>(availableWidth) / m_width,
                                     static_cast<double>(availableHeight) / m_height) * m_zoom;
     if (scale <= 0.0 || m_height * scale <= availableHeight) return;
@@ -582,8 +659,8 @@ void LongImageCropWindow::ScrollView(int wheelDelta) {
 void LongImageCropWindow::ScrollHorizontal(int wheelDelta) {
     if (m_zoom <= 1.0 || wheelDelta == 0 || !m_hwnd) return;
     RECT client{}; if (!::GetClientRect(m_hwnd, &client)) return;
-    const int availableWidth = (std::max)(1, static_cast<int>(client.right) - 2 * kCanvasMargin);
-    const int availableHeight = (std::max)(1, static_cast<int>(client.bottom) - kControlsHeight - 2 * kCanvasMargin);
+    const int availableWidth = (std::max)(1, static_cast<int>(client.right) - 2 * Dip(kCanvasMargin));
+    const int availableHeight = (std::max)(1, static_cast<int>(client.bottom) - Dip(kControlsHeight) - 2 * Dip(kCanvasMargin));
     const double scale = (std::min)(static_cast<double>(availableWidth) / m_width,
                                     static_cast<double>(availableHeight) / m_height) * m_zoom;
     if (scale <= 0.0 || m_width * scale <= availableWidth) return;
@@ -632,12 +709,13 @@ void LongImageCropWindow::Paint(HWND hwnd) {
         ::EndPaint(hwnd, &ps);
         return;
     }
-    HBRUSH background = ::CreateSolidBrush(RGB(30, 31, 36));
+    const auto &palette = m_palette;
+    HBRUSH background = ::CreateSolidBrush(palette.window);
     ::FillRect(dc, &client, background ? background : static_cast<HBRUSH>(::GetStockObject(BLACK_BRUSH)));
     if (background) ::DeleteObject(background);
     const RECT image = ImageRect();
     const int canvasState = ::SaveDC(dc);
-    ::IntersectClipRect(dc, kCanvasMargin, kCanvasMargin, client.right - kCanvasMargin, client.bottom - kControlsHeight);
+    ::IntersectClipRect(dc, Dip(kCanvasMargin), Dip(kCanvasMargin), client.right - Dip(kCanvasMargin), client.bottom - Dip(kControlsHeight));
     if (m_bitmap && image.right > image.left && image.bottom > image.top) {
         HDC memory = ::CreateCompatibleDC(dc);
         HGDIOBJ old = memory ? ::SelectObject(memory, m_bitmap) : nullptr;
@@ -651,7 +729,7 @@ void LongImageCropWindow::Paint(HWND hwnd) {
         const int bottomY = image.top + static_cast<int>((static_cast<double>(m_cropBottom) / m_height) * (image.bottom - image.top));
         const int leftX = image.left + static_cast<int>((static_cast<double>(m_cropLeft) / m_width) * (image.right - image.left));
         const int rightX = image.left + static_cast<int>((static_cast<double>(m_cropRight) / m_width) * (image.right - image.left));
-        HBRUSH shade = ::CreateSolidBrush(RGB(18, 18, 22));
+        HBRUSH shade = ::CreateSolidBrush(palette.panel);
         RECT topShade{ image.left, image.top, image.right, topY };
         RECT bottomShade{ image.left, bottomY, image.right, image.bottom };
         RECT leftShade{ image.left, topY, leftX, bottomY };
@@ -737,11 +815,14 @@ void LongImageCropWindow::Paint(HWND hwnd) {
         if (memory) ::DeleteDC(memory);
     }
     ::RestoreDC(dc, canvasState);
-    ::SetBkMode(dc, TRANSPARENT); ::SetTextColor(dc, RGB(235, 235, 235));
-    const wchar_t* help = m_cutMode ? L"Choose/drag two cut lines, then Delete strip. Copy/Save use confirmed edits only." : m_selectingOcr
-        ? L"Drag a gold rectangle around the target content, then run the selected image action"
-        : L"Drag crop lines · Zoom +/- for detail · Configure precision/gestures in Settings";
-    ::TextOutW(dc, kCanvasMargin, client.bottom - 142, help, static_cast<int>(wcslen(help)));
+    ::SetBkMode(dc, TRANSPARENT); ::SetTextColor(dc, palette.text);
+    const wchar_t* help = m_cutMode ? EditorText(L"Choose/drag two cut lines, then Delete strip. Copy/Save use confirmed edits only.", L"选择或拖动两条切除线，再删除区段。复制和保存使用已确认的编辑。") : m_selectingOcr
+        ? EditorText(L"Drag a gold rectangle around the target content, then run the selected image action", L"用金色矩形框选目标内容，再执行图片操作。")
+        : EditorText(L"Drag crop lines · Zoom +/- for detail · Configure precision/gestures in Settings", L"拖动边线裁剪。使用缩放查看细节，在设置中配置精调与手势。");
+    const auto oldFont = m_uiFont ? ::SelectObject(dc, m_uiFont) : nullptr;
+    RECT helpArea{Dip(kCanvasMargin), client.bottom - Dip(148), client.right - Dip(kCanvasMargin), client.bottom - Dip(124)};
+    ::DrawTextW(dc, help, -1, &helpArea, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    if (oldFont) ::SelectObject(dc, oldFont);
     ::BitBlt(paintDc, 0, 0, client.right - client.left, client.bottom - client.top, dc, 0, 0, SRCCOPY);
     ::EndPaint(hwnd, &ps);
 }
@@ -787,7 +868,7 @@ HBITMAP LongImageCropWindow::CreateRegionBitmap(RECT sourceRegion) const {
 void LongImageCropWindow::ApplyCrop() {
     HBITMAP cropped = CreateCroppedBitmap();
     if (!cropped) {
-        ::MessageBoxW(m_hwnd, L"Failed to crop the screenshot.", L"Nskry", MB_ICONERROR);
+        ::MessageBoxW(m_hwnd, EditorText(L"Failed to crop the screenshot.", L"无法裁剪截图。"), L"Nskry", MB_ICONERROR);
         return;
     }
     if (m_apply) {
@@ -796,7 +877,7 @@ void LongImageCropWindow::ApplyCrop() {
         } catch (...) {
             // Ownership transfers when the callback is invoked; it remains the
             // callback's responsibility even when it reports failure by throwing.
-            ::MessageBoxW(m_hwnd, L"Failed to open the annotation editor.", L"Nskry", MB_ICONERROR);
+            ::MessageBoxW(m_hwnd, EditorText(L"Failed to open the annotation editor.", L"无法打开标注编辑器。"), L"Nskry", MB_ICONERROR);
             return;
         }
     } else {
@@ -810,7 +891,7 @@ void LongImageCropWindow::ExportCrop(bool save) {
     if (!callback) return;
     HBITMAP cropped = CreateCroppedBitmap();
     if (!cropped) {
-        ::MessageBoxW(m_hwnd, L"Failed to prepare the cropped screenshot.", L"Nskry", MB_ICONERROR);
+        ::MessageBoxW(m_hwnd, EditorText(L"Failed to prepare the cropped screenshot.", L"无法准备裁剪后的截图。"), L"Nskry", MB_ICONERROR);
         return;
     }
     bool exported = false;
@@ -824,7 +905,7 @@ void LongImageCropWindow::RunImageAction(size_t actionIndex) {
     if (actionIndex >= m_imageActions.size()) return;
     HBITMAP cropped = CreateRegionBitmap(m_ocrSelection);
     if (!cropped) {
-        ::MessageBoxW(m_hwnd, L"Failed to prepare the selected screenshot area.", L"Nskry", MB_ICONERROR);
+        ::MessageBoxW(m_hwnd, EditorText(L"Failed to prepare the selected screenshot area.", L"无法准备选中的截图区域。"), L"Nskry", MB_ICONERROR);
         return;
     }
     RECT region{};

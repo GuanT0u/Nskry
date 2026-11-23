@@ -1,4 +1,7 @@
 #pragma once
+#include "ui/ui_preferences.h"
+#include "ui/annotation_toolbar_input.h"
+
 
 #include <functional>
 #include <windows.h>
@@ -34,6 +37,9 @@ public:
     bool SetVisualSettings(WindowVisualSettings settings);
 
 private:
+    DesktopPalette m_palette = GetDesktopPalette();
+    AnnotationToolbarInput m_toolbarInput;
+    RECT m_editOriginalBounds{}, m_editExpandedBounds{};
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 

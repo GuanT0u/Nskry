@@ -1,10 +1,13 @@
+#include <oleacc.h>
 #include <windows.h>
 #include <commctrl.h>
 #include "ui/settings/settings_window.h"
 #include "ui/long_image_crop_window.h"
 #include "ui/image_action.h"
 #include "ui/selection_window.h"
+#include "ui/pin_window.h"
 #include "ui/window_visual_style.h"
+#include "ui/toolbar_layout.h"
 #include "core/monitor_visibility_controller.h"
 #include "ui/interaction_visuals.h"
 #include "core/json.h"
@@ -123,6 +126,60 @@ struct ImageEditorTestAccess {
     }
 };
 struct SelectionWindowTestAccess {
+    static bool VerifyOverflow() {
+        std::vector<PluginToolbarAction> plugins;
+        for (int i = 0; i < 8; ++i)
+            plugins.push_back({L"org.test", std::wstring(180, L'W'), std::to_wstring(i)});
+        bool copied = false;
+        SelectionWindow window([&](SelectionAction action, SelectionResult result) {
+            copied = action == SelectionAction::Copy;
+            if (result.bitmap) DeleteObject(result.bitmap);
+        }, std::move(plugins));
+        window.m_windows.clear();
+        window.OnLButtonDown(30, 40);
+        window.OnLButtonUp(130, 140);
+        const auto &visible = window.m_toolbarItems;
+        const auto &overflow = window.m_overflowItems;
+        if (visible.empty() || overflow.empty() || visible.back().type != SelectionWindow::ToolbarItemType::More)
+            return false;
+        IAccessible* accessible = nullptr;
+        if (FAILED(::AccessibleObjectFromWindow(window.m_hwnd, OBJID_CLIENT, IID_IAccessible,
+                                                reinterpret_cast<void**>(&accessible))) || !accessible)
+            return false;
+        LONG childCount{};
+        bool hasCopy = false;
+        if (SUCCEEDED(accessible->get_accChildCount(&childCount))) {
+            for (LONG child = 1; child <= childCount; ++child) {
+                VARIANT id{};
+                id.vt = VT_I4;
+                id.lVal = child;
+                BSTR name = nullptr;
+                if (SUCCEEDED(accessible->get_accName(id, &name)) && name &&
+                    (!wcscmp(name, L"Copy image") || !wcscmp(name, L"复制图片"))) {
+                    VARIANT role{};
+                    hasCopy = SUCCEEDED(accessible->get_accRole(id, &role)) &&
+                        role.vt == VT_I4 && role.lVal == ROLE_SYSTEM_PUSHBUTTON;
+                }
+                ::SysFreeString(name);
+            }
+        }
+        accessible->Release();
+        if (!hasCopy) return false;
+        std::wstring order;
+        for (const auto &item : overflow)
+            if (item.type == SelectionWindow::ToolbarItemType::PluginAction)
+                order += item.pluginActionId;
+        if (order.empty() || order.back() != L'7' || !std::is_sorted(order.begin(), order.end()))
+            return false;
+        for (size_t i = 0; i < visible.size(); ++i) {
+            if (!window.HandleToolbarKey(VK_TAB))
+                return false;
+            if (visible[window.m_toolbarFocus].action == SelectionAction::Copy)
+                return window.HandleToolbarKey(VK_RETURN) && copied;
+        }
+        return false;
+    }
+
     static bool Verify() {
         bool direct=false;
         {
@@ -147,6 +204,14 @@ struct SelectionWindowTestAccess {
                     const int x = item.rect.left + 3, y = item.rect.top + 3;
                     actionWindow.OnLButtonDown(x, y);
                     break;
+                }
+            }
+            if (!extra) {
+                for (const auto &item : actionWindow.m_overflowItems) {
+                    if (item.pluginActionId == L"gif") {
+                        actionWindow.ActivateToolbarItem(item);
+                        break;
+                    }
                 }
             }
         }
@@ -214,6 +279,9 @@ bool InClient(HWND parent, HWND child) {
 }
 }
 int wmain() {
+    if (FAILED(::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 1;
+    struct ComGuard { ~ComGuard() { ::CoUninitialize(); } } com;
+
     Gdiplus::GdiplusStartupInput gdiplusInput;ULONG_PTR gdiplusToken{};
     if(Gdiplus::GdiplusStartup(&gdiplusToken,&gdiplusInput,nullptr)!=Gdiplus::Ok)return 1;
     struct GdiplusGuard{ULONG_PTR token;~GdiplusGuard(){Gdiplus::GdiplusShutdown(token);}} gdiplusGuard{gdiplusToken};
@@ -231,6 +299,17 @@ int wmain() {
         std::unique_lock lock(waitMutex);waitSignal.wait(lock,stop,[]{return false;});return UpdateTaskResult{};
     },{}),"background wait starts without blocking UI");
     ok &= Expect(InputPageTestAccess::Verify(),"display/record/type/delete, blur cancellation, plugin sections, jump pulse and virtual rows");
+    for (UINT dpi : {96, 120, 144, 192}) {
+        const RECT display{-920, -560, -120, -40}, selection{-800, -180, -180, -70};
+        const std::vector<int> widths(7, ::MulDiv(44, dpi, 96));
+        const auto rectangles = LayoutSelectionToolbar(widths, selection, display, 5, dpi);
+        ok &= Expect(rectangles.size() == widths.size() && std::all_of(rectangles.begin(), rectangles.end(),
+            [&](RECT r) {
+                return r.left >= display.left && r.right <= display.right && r.top >= display.top &&
+                    r.bottom <= display.bottom && (r.bottom - r.top) == ::MulDiv(32, dpi, 96);
+            }), "toolbar stays in negative-coordinate work area at 100, 125, 150 and 200 percent DPI");
+    }
+    ok &= Expect(SelectionWindowTestAccess::VerifyOverflow(), "selection overflow preserves copy, plugin order and keyboard activation");
     ok &= Expect(SelectionWindowTestAccess::Verify(), "desktop drag, reverse drag, release endpoint, empty click and window snap");
     ok &= Expect(MonitorControllerTestAccess::Verify(), "event controller focus/menu/override/release/resume/source destruction");
     waitingUpdate.Cancel();waitingUpdate.Shutdown();
@@ -243,6 +322,7 @@ int wmain() {
     }
     ok &= Expect(manager.Load(),"future configuration fields do not block known settings");
     auto stored = manager.GetUserSettings(); stored.hideMonitorOnSourceFocus = true;
+    stored.language = L"zh-CN";
     stored.visuals.shadowEnabled = true; stored.visuals.cornersEnabled = true;
     stored.visuals.cornerMode = CornerMode::Percent; stored.visuals.cornerPercent = 11;
     stored.interaction.dashed=true;stored.interaction.borderWidth=6;stored.interaction.borderOpacity=42;
@@ -250,7 +330,7 @@ int wmain() {
     stored.shortcuts[L"core.monitor"]=L"Ctrl+Alt+M";stored.shortcuts[L"plugin.nskry-ocr.launch"]=L"Ctrl+Alt+O";
     manager.SetUserSettings(stored);
     ok &= Expect(manager.Save() && manager.Load() && manager.GetUserSettings().hideMonitorOnSourceFocus &&
-        manager.GetUserSettings().visuals == stored.visuals && manager.GetUserSettings().interaction==stored.interaction &&
+        manager.GetUserSettings().language == L"zh-CN" && manager.GetUserSettings().visuals == stored.visuals && manager.GetUserSettings().interaction==stored.interaction &&
         manager.GetHotkey(L"core.monitor")==L"Ctrl+Alt+M" && manager.GetHotkey(L"plugin.nskry-ocr.launch")==L"Ctrl+Alt+O",
         "atomic settings round trip including all input/custom visual values");
     {
@@ -278,7 +358,11 @@ int wmain() {
     std::filesystem::remove(testDirectory / L"Nskry"); std::filesystem::remove(testDirectory);
     int networkCalls = 0, pluginSettingsCalls = 0;
     SettingsWindowServices services;
-    services.getSettings = [] { return UserSettings{}; };
+    services.getSettings = [&] { return manager.GetUserSettings(); };
+    services.applySettings = [&](const UserSettings &next, std::wstring &) {
+        manager.SetUserSettings(next);
+        return true;
+    };
     services.getPlugins = [] {
         SettingsPluginItem item;
         item.id = L"org.example.image"; item.name = L"Test image plugin";
@@ -299,14 +383,34 @@ int wmain() {
     HWND window = OwnWindow(L"NskrySettings");
     ok &= Expect(window != nullptr, "settings created");
     HWND tabs = GetDlgItem(window, 100);
+    HWND language = GetDlgItem(window, 105);
+    SendMessageW(language, CB_SETCURSEL, 2, 0);
+    SendMessageW(window, WM_COMMAND, MAKEWPARAM(105, CBN_SELCHANGE), LPARAM(language));
+    ok &= Expect(IsWindowEnabled(GetDlgItem(window, 130)), "changing language marks settings dirty");
+    SendMessageW(window, WM_COMMAND, 130, LPARAM(GetDlgItem(window, 130)));
+    ok &= Expect(manager.GetUserSettings().language == L"en" && Text(window) == L"Nskry Settings" &&
+                 !IsWindowEnabled(GetDlgItem(window, 130)), "applying language refreshes active controls and clears the draft");
+    tabs = GetDlgItem(window, 100);
     TabCtrl_SetCurSel(tabs, 4);
     NMHDR effects{tabs, 100, TCN_SELCHANGE}; SendMessageW(window, WM_NOTIFY, 100, reinterpret_cast<LPARAM>(&effects));
     for (int id : {140,141,142,143,144,149,150,151,152,153,154})
         ok &= Expect(InClient(window, GetDlgItem(window, id)) && IsWindowVisible(GetDlgItem(window, id)), "effects controls fit default client");
+    SetWindowPos(window, nullptr, 0, 0, 420, 380, SWP_NOMOVE | SWP_NOZORDER);
+    SCROLLINFO horiz{sizeof(horiz), SIF_RANGE | SIF_PAGE};
+    SCROLLINFO vert{sizeof(vert), SIF_RANGE | SIF_PAGE};
+    GetScrollInfo(window, SB_HORZ, &horiz);
+    GetScrollInfo(window, SB_VERT, &vert);
+    SendMessageW(window, WM_HSCROLL, SB_RIGHT, 0);
+    SendMessageW(window, WM_VSCROLL, SB_BOTTOM, 0);
+    ok &= Expect(horiz.nPage < static_cast<UINT>(horiz.nMax) && vert.nPage < static_cast<UINT>(vert.nMax) &&
+                 InClient(window, GetDlgItem(window, 130)), "narrow settings scroll in both axes and keep Apply in view");
+    SetWindowPos(window, nullptr, 0, 0, 720, 590, SWP_NOMOVE | SWP_NOZORDER);
+    SendMessageW(window, WM_HSCROLL, SB_LEFT, 0);
+    SendMessageW(window, WM_VSCROLL, SB_TOP, 0);
     TabCtrl_SetCurSel(tabs, 2);
     NMHDR selected{tabs, 100, TCN_SELCHANGE}; SendMessageW(window, WM_NOTIFY, 100, reinterpret_cast<LPARAM>(&selected));
     ok &= Expect(Text(GetDlgItem(window, 125)).find(L"Plugin description from manifest only") != std::wstring::npos, "selected plugin description shown");
-    ok &= Expect(Text(GetDlgItem(window, 125)).find(L"Local / unverified") != std::wstring::npos, "source does not imply certified publisher");
+    ok &= Expect(Text(GetDlgItem(window, 125)).find(UiText(L"Local / unverified", L"本地安装／未经验证")) != std::wstring::npos, "source does not imply certified publisher");
     for (int id : {120, 121, 122, 123, 124, 125, 126, 127, 128})
         ok &= Expect(InClient(window, GetDlgItem(window, id)) && IsWindowVisible(GetDlgItem(window, id)), "plugin controls fit default client");
     SetWindowPos(window, nullptr, 0, 0, 1000, 800, SWP_NOMOVE | SWP_NOZORDER);
@@ -317,7 +421,7 @@ int wmain() {
     ok &= Expect(networkCalls == 0, "opening plugins page does not request updates");
     SendMessageW(window,WM_COMMAND,124,LPARAM(GetDlgItem(window,124)));
     auto stale=pendingUpdate;
-    ok &= Expect(Text(GetDlgItem(window,124))==L"Cancel update" && !IsWindowEnabled(GetDlgItem(window,123)),"active task UI and commit exclusion");
+    ok &= Expect(Text(GetDlgItem(window,124))==UiText(L"Cancel update", L"取消更新") && !IsWindowEnabled(GetDlgItem(window,123)),"active task UI and commit exclusion");
     SendMessageW(window,WM_COMMAND,124,LPARAM(GetDlgItem(window,124)));
     UpdateTaskResult late;late.message=L"stale response";stale(late);
     ok &= Expect(updateCancels==1 && Text(GetDlgItem(window,125)).find(L"stale response")==std::wstring::npos,"cancel ignores stale completion");
@@ -346,6 +450,30 @@ int wmain() {
     ok &= Expect(copied, "core crop export uses original dimensions");
     SendMessageW(crop, WM_CLOSE, 0, 0);
     ok &= Expect(editorClosed, "core crop closes without plugin");
+    HBITMAP pinBitmap = CreateBitmap(120, 80, 1, 32, nullptr);
+    PinWindow pin(pinBitmap, 120, 80, {}, {}, {60, 60, 230, 170});
+    ok &= Expect(pin.ShowInEditMode(), "small fixed image can enter annotation mode");
+    RECT expanded{};
+    GetWindowRect(pin.Hwnd(), &expanded);
+    ok &= Expect(expanded.right - expanded.left > 170 && expanded.bottom - expanded.top > 110,
+                 "annotation controls fit by temporarily expanding a small fixed image");
+    IAccessible* annotation = nullptr;
+    if (SUCCEEDED(::AccessibleObjectFromWindow(pin.Hwnd(), OBJID_CLIENT, IID_IAccessible,
+        reinterpret_cast<void**>(&annotation))) && annotation) {
+        LONG count{};
+        ok &= Expect(SUCCEEDED(annotation->get_accChildCount(&count)) && count > 8,
+                     "fixed image annotation commands are visible to assistive tools");
+        annotation->Release();
+    } else {
+        ok &= Expect(false, "fixed image annotation toolbar publishes accessibility");
+    }
+    SendMessageW(pin.Hwnd(), WM_KEYDOWN, VK_ESCAPE, 0);
+    SendMessageW(pin.Hwnd(), WM_KEYDOWN, VK_ESCAPE, 0);
+    RECT restored{};
+    GetWindowRect(pin.Hwnd(), &restored);
+    ok &= Expect(restored.right - restored.left == 170 && restored.bottom - restored.top == 110,
+                 "leaving annotation restores the original fixed image bounds");
+
     ImageActions actions;
     ok &= Expect(!ChooseImageAction(nullptr, actions), "no empty action selection");
     actions.push_back({L"org.thirdparty.action", L"Different translated label", [](HBITMAP, int, int, RECT, HWND) {}});

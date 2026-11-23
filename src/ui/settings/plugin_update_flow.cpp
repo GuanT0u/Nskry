@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "ui/ui_preferences.h"
 #include "ui/settings/settings_window.h"
 namespace nskry {
 namespace {
@@ -23,19 +24,19 @@ void SettingsWindow::CheckForPluginUpdates() {
         })) {
         SetUpdateBusy(false);
         SetUpdateNotice(
-            L"Cannot start update task; a previous cancellation may still be completing. Try again shortly.");
+            UiText(L"Cannot start update task; a previous cancellation may still be completing. Try again shortly.", L"无法开始更新。上一项任务可能仍在取消，请稍后重试。"));
     }
 }
 void SettingsWindow::SetUpdateBusy(bool busy) {
     m_updateBusy = busy;
     if (!m_hwnd)
         return;
-    SetText(m_pluginCheckUpdates, busy ? L"Cancel update" : L"Check for updates");
+    SetText(m_pluginCheckUpdates, busy ? UiText(L"Cancel update", L"取消更新") : UiText(L"Check for updates", L"检查更新"));
     for (HWND button : {m_pluginToggle, m_pluginUninstall, m_pluginInstall})
         EnableWindow(button, !busy);
     if (busy)
         SetUpdateNotice(
-            L"Update task in progress. Capture and monitoring remain available. Click Cancel update to stop." +
+            UiText(L"Update task in progress. Capture and monitoring remain available. Click Cancel update to stop.", L"正在检查或准备更新。截图和画中画仍可用，可选择「取消更新」停止。") +
             (m_checkWarnings.empty() ? L"" : L"\r\nCheck warnings:\r\n" + m_checkWarnings));
 }
 void SettingsWindow::SetUpdateNotice(std::wstring notice) {
@@ -52,14 +53,14 @@ void SettingsWindow::CancelPluginUpdate() {
     m_nextUpdate = 0;
     SetUpdateBusy(false);
     if (wasBusy && !m_closed && m_hwnd)
-        SetUpdateNotice(L"Update cancelled. Temporary resource cleanup may still be completing.");
+        SetUpdateNotice(UiText(L"Update cancelled. Temporary resource cleanup may still be completing.", L"已取消更新，可能仍在清理临时文件。"));
 }
 void SettingsWindow::HandleUpdateCheck(UpdateTaskResult result) {
     SetUpdateBusy(false);
     if (m_closed || result.cancelled)
         return;
     if (result.updates.empty()) {
-        SetUpdateNotice(result.message.empty() ? L"No compatible newer versions were reported." : result.message);
+        SetUpdateNotice(result.message.empty() ? UiText(L"No compatible newer versions were reported.", L"未找到兼容的新版本。") : result.message);
         return;
     }
     if (!result.message.empty())
@@ -76,13 +77,13 @@ void SettingsWindow::DownloadNextUpdate() {
         const std::wstring prompt =
             update.name + L"  " + update.currentVersion + L" → " + update.version + L"\nID: " + update.pluginId +
             L"\nSource: " +
-            (update.source == PluginSource::Official ? L"Official catalog (publisher identity not yet verified)"
-                                                     : L"Publisher's feed (not an official certification)") +
+            (update.source == PluginSource::Official ? UiText(L"Official catalog (publisher identity not yet verified)", L"官方目录（尚未验证发布者身份）")
+                                                     : UiText(L"Publisher's feed (not an official certification)", L"发布者的更新源（未经官方认证）")) +
             L"\nPackage: " + update.packageUrl + (update.releaseNotes.empty() ? L"" : L"\n\n" + update.releaseNotes) +
-            L"\n\nDownload and stage this update for the next restart?" +
+            UiText(L"\n\nDownload and stage this update for the next restart?", L"\n\n下载更新并在下次重启时应用吗？") +
             (m_checkWarnings.empty() ? L"" : L"\n\nOther sources were not checked. See plugin details for warnings.");
         const auto answer =
-            MessageBoxW(m_hwnd, prompt.c_str(), L"Plugin update available", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2);
+            MessageBoxW(m_hwnd, prompt.c_str(), UiText(L"Plugin update available", L"发现插件更新"), MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2);
         if (lifetime.expired())
             return;
         if (answer != IDYES)
@@ -106,7 +107,7 @@ void SettingsWindow::DownloadNextUpdate() {
                         try {
                             committed = m_services.commitPluginUpdate(update, *result.download);
                         } catch (...) {
-                            committed.message = L"Unable to commit the prepared update.";
+                            committed.message = UiText(L"Unable to commit the prepared update.", L"无法提交已准备的更新。");
                         }
                     } else
                         committed.message = result.message;
@@ -119,7 +120,7 @@ void SettingsWindow::DownloadNextUpdate() {
                 },
                 error)) {
             SetUpdateBusy(false);
-            SetUpdateNotice(error.empty() ? L"Update task unavailable; try again shortly." : error);
+            SetUpdateNotice(error.empty() ? UiText(L"Update task unavailable; try again shortly.", L"更新服务暂不可用，请稍后重试。") : error);
         }
         return;
     }

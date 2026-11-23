@@ -1,4 +1,5 @@
 #pragma once
+#include "nskry_ui_preferences.h"
 
 #include "core/plugin_registry.h"
 #include "sdk/nskry_plugin.h"
@@ -67,10 +68,10 @@ class PluginManager {
     bool EnsureLoaded(const std::wstring &pluginId);
     bool Unload(const std::wstring &pluginId);
     bool ExecutePlugin(const std::wstring &pluginId, const NskryHostContext &hostContext,
-                       const std::wstring &actionId = {});
+                       const std::wstring &actionId = {}, const NskryUiPreferencesV1 *ui = nullptr);
     // Does not load idle plugins. Cleanup commands remain usable after disable.
     bool ExecuteCommand(const std::wstring& pluginId, const std::wstring& localId, std::wstring& error);
-    bool ShowPluginSettings(const std::wstring &pluginId, HWND owner);
+    bool ShowPluginSettings(const std::wstring &pluginId, HWND owner, const NskryUiPreferencesV1* ui = nullptr);
     bool HasTextTranslation() const; // Metadata discovery only, UI thread.
     int32_t TranslateText(const NskryTextTranslationV1 *, NskryTranslationResultV1 *);
     bool HasImageRecognition(const wchar_t* providerId) const;
@@ -81,7 +82,7 @@ class PluginManager {
     void SetCaptureService(const NskryCaptureServiceV1& service) { m_captureService = service; }
     void SetCaptureServiceV2(const NskryCaptureServiceV2& service) { m_captureServiceV2 = service; }
     bool IsLoaded(const std::wstring &pluginId) const;
-    std::vector<PluginToolbarAction> GetEnabledToolbarActions() const;
+    std::vector<PluginToolbarAction> GetEnabledToolbarActions(LANGID language = 0) const;
     std::vector<PluginImageAction> GetEnabledImageActions() const;
     std::vector<ShortcutDefinition> GetShortcutDefinitions() const;
     void SetShortcutProvider(std::function<std::wstring(const ShortcutDefinition &)> provider) {

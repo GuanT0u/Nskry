@@ -1,4 +1,6 @@
 #include "pch.h"
+#include "ui/ui_preferences.h"
+#include "ui/resources/resource.h"
 #include "interop/window_enumerator.h"
 #include "capture/d3d_device.h"
 #include "capture/capture_session.h"
@@ -26,6 +28,7 @@ namespace Gdiplus { using std::min; using std::max; }
 
 #include <commdlg.h>     // GetSaveFileNameW
 #include <shlobj.h>      // SHGetKnownFolderPath
+#include <windowsx.h>
 #include <shellapi.h>    // Shell_NotifyIconW
 
 // ============================================================================
@@ -307,14 +310,25 @@ int WINAPI wWinMain(
         if (g_pip) effectsReady = g_pip->SetVisualSettings(next.visuals);
         for (auto& pin : g_pins) effectsReady = pin->SetVisualSettings(next.visuals) && effectsReady;
         if (!effectsReady) ShowPluginNotification(L"Some optional window effects are unavailable; image content is unchanged.", 3500);
+        if (next.theme != previous.theme || next.language != previous.language) {
+            if (g_pip) ::SendMessageW(g_pip->Hwnd(), nskry::WM_NSKRY_REFRESH_UI, 0, 0);
+            for (const auto &pin : g_pins)
+                ::SendMessageW(pin->Hwnd(), nskry::WM_NSKRY_REFRESH_UI, 0, 0);
+            if (g_longImageEditor)
+                ::SendMessageW(g_longImageEditor->Hwnd(), nskry::WM_NSKRY_REFRESH_UI, 0, 0);
+        }
         return true;
     };
-    settingsServices.getPlugins = [&pluginRegistry, &settings]() {
+    settingsServices.getPlugins = [&pluginRegistry, &settings, &packageManager]() {
+        const auto pending = packageManager.PendingRestartActions();
         std::vector<nskry::SettingsPluginItem> items;
         for (const nskry::PluginRecord* record : pluginRegistry.GetAll()) {
             nskry::SettingsPluginItem item;
             item.hasSettings = record->manifest.settingsUiApi == 1;
-            item.id = record->manifest.id; item.name = record->manifest.name; item.version = record->manifest.version;
+            item.id = record->manifest.id;
+            item.name = nskry::DesktopUiChinese() && !record->manifest.toolbarLabelZhCn.empty()
+                ? record->manifest.toolbarLabelZhCn : record->manifest.name;
+            item.version = record->manifest.version;
             item.author = record->manifest.author; item.enabled = record->enabled;
             item.description = record->manifest.description;
             item.description+=L"\n\nInput configuration: "+nskry::PluginManager::Instance().GetInputReport(record->manifest.id).message;
@@ -323,16 +337,26 @@ int WINAPI wWinMain(
             item.source = record->source;
             item.loadPolicy = record->manifest.loadPolicy == nskry::PluginLoadPolicy::Startup ? L"startup" : L"on_demand";
             item.minVersion = record->manifest.nskryMinVersion; item.maxVersion = record->manifest.nskryMaxVersion;
-            if (!record->manifest.IsCompatibleWithHost()) item.status = L"Incompatible with this Nskry version";
-            else item.status = record->enabled ? (record->loaded ? L"Enabled · Loaded" : L"Enabled · Not loaded") :
-                (record->loaded ? L"Disabled · Loaded (restart to stop)" : L"Disabled · Not loaded");
+            if (!record->manifest.IsCompatibleWithHost()) item.status = nskry::UiText(L"Incompatible with this Nskry version", L"与当前 Nskry 版本不兼容");
+            else item.status = record->enabled ? (record->loaded ? nskry::UiText(L"Enabled · Loaded", L"已启用 · 已加载") : nskry::UiText(L"Enabled · Not loaded", L"已启用 · 按需加载")) :
+                (record->loaded ? nskry::UiText(L"Disabled · Loaded (restart to stop)", L"已禁用 · 重启后停止") : nskry::UiText(L"Disabled · Not loaded", L"已禁用 · 未加载"));
+            const auto queued = std::find_if(pending.begin(), pending.end(), [&](const auto &entry) {
+                return entry.first == item.id;
+            });
+            if (queued != pending.end()) {
+                item.status += L" · ";
+                item.status += queued->second == nskry::PluginRestartAction::Remove
+                    ? nskry::UiText(L"Restart to uninstall", L"等待重启后卸载")
+                    : nskry::UiText(L"Restart to update", L"等待重启后更新");
+            }
             items.push_back(std::move(item));
         }
         return items;
     };
     settingsServices.setPluginEnabled = [&pluginRegistry](const std::wstring& id, bool enabled) { return pluginRegistry.SetEnabled(id, enabled); };
     settingsServices.showPluginSettings = [](const std::wstring &id, HWND owner) {
-        return nskry::PluginManager::Instance().ShowPluginSettings(id, owner);
+        const auto ui = nskry::DesktopUiPreferences();
+        return nskry::PluginManager::Instance().ShowPluginSettings(id, owner, &ui);
     };
     settingsServices.uninstallPlugin = [&packageManager](const std::wstring& id, std::wstring& error) {
         const auto result = packageManager.Uninstall(id); error = result.message; return result.success;
@@ -360,19 +384,22 @@ int WINAPI wWinMain(
     nid.cbSize           = sizeof(nid);
     nid.hWnd             = g_mainHwnd;
     nid.uID              = 1;
-    nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP;
     nid.uCallbackMessage = WM_USER_TRAY;
-    nid.hIcon            = ::LoadIconW(nullptr, MAKEINTRESOURCEW(32512)); /* IDI_APPLICATION */
+    nid.hIcon            = ::LoadIconW(::GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_NSKRY));
     const std::wstring captureShortcut = settings.GetHotkey(L"core.capture");
     wcscpy_s(nid.szTip, (L"Nskry (" + captureShortcut + L")").c_str());
-    ::Shell_NotifyIconW(NIM_ADD, &nid);
+    if (::Shell_NotifyIconW(NIM_ADD, &nid)) {
+        nid.uVersion = NOTIFYICON_VERSION_4;
+        ::Shell_NotifyIconW(NIM_SETVERSION, &nid);
+    }
 
     // Notify user
     auto startupSettings = settings.GetUserSettings();
     if (startupSettings.showStartupHint) {
-        const std::wstring startupMessage = std::wstring(L"Nskry is running in the background.\n\n") +
-            L"  " + settings.GetHotkey(L"core.capture") + L" \u2014 capture a window\n" +
-            L"  " + settings.GetHotkey(L"core.exit") + L" \u2014 quit";
+        const std::wstring startupMessage = std::wstring(nskry::UiText(L"Nskry is running in the background.\n\n", L"Nskry 正在后台运行。\n\n")) +
+            L"  " + settings.GetHotkey(L"core.capture") + nskry::UiText(L" — capture a window\n", L" — 框选截图\n") +
+            L"  " + settings.GetHotkey(L"core.exit") + nskry::UiText(L" — quit", L" — 退出");
         if (ShowStartupHint(startupMessage)) {
             startupSettings.showStartupHint = false;
             settings.SetUserSettings(startupSettings);
@@ -383,6 +410,9 @@ int WINAPI wWinMain(
     // Message loop
     MSG msg{};
     while (::GetMessageW(&msg, nullptr, 0, 0)) {
+        if ((g_longImageEditor && g_longImageEditor->HandleTab(msg)) ||
+            (g_settingsWindow && g_settingsWindow->HandleTab(msg)))
+            continue;
         ::TranslateMessage(&msg);
         ::DispatchMessageW(&msg);
     }
@@ -492,22 +522,34 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_USER_TRAY:
-        if (LOWORD(lp) == WM_LBUTTONDBLCLK) {
+        if (LOWORD(lp) == WM_LBUTTONDBLCLK || LOWORD(lp) == NIN_KEYSELECT) {
             nskry::CommandRegistry::Instance().Execute(L"core.capture");
         }
-        else if (LOWORD(lp) == WM_RBUTTONUP) {
-            POINT pt;
-            ::GetCursorPos(&pt);
+        else if ((LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_CONTEXTMENU)) {
+            POINT pt{};
+            if (LOWORD(lp) == WM_CONTEXTMENU)
+                pt = {GET_X_LPARAM(wp), GET_Y_LPARAM(wp)};
+            else
+                ::GetCursorPos(&pt);
             HMENU hMenu = ::CreatePopupMenu();
-            const std::wstring captureLabel = L"Capture (" + nskry::SettingsManager::Instance().GetHotkey(L"core.capture") + L")";
-            const std::wstring exitLabel = L"Quit (" + nskry::SettingsManager::Instance().GetHotkey(L"core.exit") + L")";
+            if (!hMenu)
+                return 0;
+            const auto label = [](std::wstring text, const wchar_t* command) {
+                const auto &shortcut = nskry::SettingsManager::Instance().GetHotkey(command);
+                if (!shortcut.empty())
+                    text += L" (" + shortcut + L")";
+                return text;
+            };
+            const auto captureLabel = label(nskry::UiText(L"Capture", L"截图"), L"core.capture");
+            const auto exitLabel = label(nskry::UiText(L"Quit", L"退出"), L"core.exit");
             ::InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, 1001, captureLabel.c_str());
-            ::InsertMenuW(hMenu, 1, MF_BYPOSITION | MF_STRING, 1003, L"Settings...");
+            ::InsertMenuW(hMenu, 1, MF_BYPOSITION | MF_STRING, 1003, nskry::UiText(L"Settings…", L"设置…"));
             ::InsertMenuW(hMenu, 2, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
             ::InsertMenuW(hMenu, 3, MF_BYPOSITION | MF_STRING, 1002, exitLabel.c_str());
             ::SetForegroundWindow(hwnd);
             int cmd = ::TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hwnd, nullptr);
             ::DestroyMenu(hMenu);
+            ::PostMessageW(hwnd, WM_NULL, 0, 0);
             if (cmd == 1001) nskry::CommandRegistry::Instance().Execute(L"core.capture");
             if (cmd == 1003) nskry::CommandRegistry::Instance().Execute(L"core.settings");
             if (cmd == 1002) nskry::CommandRegistry::Instance().Execute(L"core.exit");
@@ -583,7 +625,7 @@ static void ShowSelectionOverlay(nskry::SelectionAction direct,std::wstring plug
             g_selectionWindow.reset();
             OnSelectionComplete(action, std::move(result));
             g_captureWorkflowActive = false;
-        }, nskry::PluginManager::Instance().GetEnabledToolbarActions(),direct,std::move(pluginId));
+        }, nskry::PluginManager::Instance().GetEnabledToolbarActions(nskry::DesktopUiPreferences().language),direct,std::move(pluginId));
     g_selectionWindow->Show();
 }
 
@@ -645,7 +687,8 @@ static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionR
             context.showNotification = ShowPluginNotification;
             context.copyBitmapToClipboard = CopyBitmapToClipboard;
             context.openBitmapEditor = OpenBitmapEditor;
-            if (!nskry::PluginManager::Instance().ExecutePlugin(result.pluginId, context, result.pluginActionId))
+            const auto ui = nskry::DesktopUiPreferences();
+            if (!nskry::PluginManager::Instance().ExecutePlugin(result.pluginId, context, result.pluginActionId, &ui))
                 ShowPluginNotification(L"The plugin could not be loaded or did not complete successfully.", 3500);
             ::DeleteObject(result.bitmap);
         }
@@ -672,7 +715,8 @@ static void ExecuteImagePlugin(const std::wstring& pluginId, HBITMAP bitmap, int
     context.showNotification = ShowPluginNotification;
     context.copyBitmapToClipboard = CopyBitmapToClipboard;
     context.openBitmapEditor = OpenBitmapEditor;
-    if (!nskry::PluginManager::Instance().ExecutePlugin(pluginId, context))
+    const auto ui = nskry::DesktopUiPreferences();
+    if (!nskry::PluginManager::Instance().ExecutePlugin(pluginId, context, {}, &ui))
         ShowPluginNotification(L"The image action could not be loaded or did not complete successfully.", 3500);
 }
 
@@ -726,7 +770,7 @@ static void StartPiP(HWND targetHwnd, nskry::CropRegion crop, RECT screenRegion,
                 if (!g_pip) return;
                 if (release) { g_capture.reset(); return; }
                 if (!paused && !g_capture) {
-                    g_pip->SetCaptureStatus(L"Waiting for a fresh live frame...", true);
+                    g_pip->SetCaptureStatus(nskry::UiText(L"Waiting for a fresh live frame...", L"正在等待画面更新…"), true);
                     try {
                         auto capture = std::make_unique<nskry::CaptureSession>(g_device, targetHwnd, crop);
                         capture->SetFrameCallback([](ID3D11Texture2D* tex, UINT w, UINT h) {
@@ -735,7 +779,7 @@ static void StartPiP(HWND targetHwnd, nskry::CropRegion crop, RECT screenRegion,
                         capture->SetClosedCallback([generation] { ::PostMessageW(g_mainHwnd, WM_CLEANUP, generation, 0); });
                         capture->Start(); g_capture = std::move(capture);
                     } catch (...) {
-                        g_pip->SetCaptureStatus(L"Capture paused: reopen this monitor to retry.");
+                        g_pip->SetCaptureStatus(nskry::UiText(L"Capture paused: reopen this monitor to retry.", L"采集已暂停。重新打开画中画可重试。"));
                         ShowPluginNotification(L"Unable to resume capture. Reopen the monitor to retry.", 3500);
                     }
                 }

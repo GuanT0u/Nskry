@@ -12,6 +12,7 @@ struct PluginManifest {
     int manifestVersion = 0;
     std::wstring id;
     std::wstring name;
+    std::wstring toolbarLabelZhCn;
     std::wstring version;
     std::wstring author;
     std::wstring description;

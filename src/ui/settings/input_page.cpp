@@ -1,3 +1,4 @@
+#include "ui/ui_preferences.h"
 #include "ui/settings/input_page.h"
 #include "pch.h"
 #include <commctrl.h>
@@ -35,7 +36,7 @@ InputPage::InputPage(HWND parent, std::vector<ShortcutDefinition> definitions, b
         c.lpszClassName = L"NskryInputPage";
         RegisterClassW(&c);
     });
-    m_hwnd = CreateWindowExW(0, L"NskryInputPage", L"", WS_CHILD | WS_VSCROLL | WS_CLIPCHILDREN, 0, 0, 10, 10, parent,
+    m_hwnd = CreateWindowExW(WS_EX_CONTROLPARENT, L"NskryInputPage", L"", WS_CHILD | WS_VSCROLL | WS_CLIPCHILDREN, 0, 0, 10, 10, parent,
                              nullptr, GetModuleHandleW(nullptr), this);
     auto create = [&](const wchar_t *cls, const std::wstring &text, DWORD style, int id) {
         HWND w = CreateWindowExW(0, cls, text.c_str(), WS_CHILD | WS_VISIBLE | style, 0, 0, 10, 10, m_hwnd,
@@ -46,9 +47,9 @@ InputPage::InputPage(HWND parent, std::vector<ShortcutDefinition> definitions, b
     int y = 8;
     for (int section = 0; section < 3; ++section) {
         m_headings.push_back({create(L"STATIC",
-                                     section == 0   ? L"General / Core"
-                                     : section == 1 ? L"Official plugin profiles"
-                                                    : L"Third-party plugins",
+                                     section == 0   ? UiText(L"General / Core", L"常规／核心")
+                                     : section == 1 ? UiText(L"Official plugin profiles", L"官方插件")
+                                                    : UiText(L"Third-party plugins", L"第三方插件"),
                                      0, 0),
                               y});
         y += 32;
@@ -90,16 +91,16 @@ void InputPage::CreateRow(size_t i) {
     if (!m_values.contains(row.definition.id))
         m_values[row.definition.id] = row.definition.defaultShortcut;
     const auto &value = m_values[row.definition.id];
-    row.display = create(L"STATIC", value.empty() ? L"Not set" : value, SS_CENTERIMAGE, 0);
-    row.record = create(L"BUTTON", m_jumps ? L"Set " + row.definition.label + L" shortcut" : L"Record",
+    row.display = create(L"STATIC", value.empty() ? UiText(L"Not set", L"未设置") : value, SS_CENTERIMAGE, 0);
+    row.record = create(L"BUTTON", m_jumps ? UiText(L"Shortcut · ", L"快捷键 · ") + row.definition.label : UiText(L"Record", L"录制"),
                         BS_PUSHBUTTON | WS_TABSTOP, 10000);
     SetWindowLongPtrW(row.record, GWLP_USERDATA, LONG_PTR(i + 1));
     if (!m_jumps) {
         row.edit = create(L"EDIT", value, WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, 30000);
         ShowWindow(row.edit, SW_HIDE);
         SetWindowSubclass(row.edit, EditProc, i, DWORD_PTR(this));
-        row.type = create(L"BUTTON", L"Type", BS_PUSHBUTTON | WS_TABSTOP, 10001);
-        row.remove = create(L"BUTTON", L"Delete", BS_PUSHBUTTON | WS_TABSTOP, 10002);
+        row.type = create(L"BUTTON", UiText(L"Type", L"输入"), BS_PUSHBUTTON | WS_TABSTOP, 10001);
+        row.remove = create(L"BUTTON", UiText(L"Delete", L"删除"), BS_PUSHBUTTON | WS_TABSTOP, 10002);
         SetWindowLongPtrW(row.type, GWLP_USERDATA, LONG_PTR(i + 1));
         SetWindowLongPtrW(row.remove, GWLP_USERDATA, LONG_PTR(i + 1));
     }
@@ -120,20 +121,29 @@ void InputPage::Load(const UserSettings &settings) {
         if (!m_values.contains(row.definition.id))
             m_values[row.definition.id] = row.definition.defaultShortcut;
         const auto &value = m_values[row.definition.id];
-        SetWindowTextW(row.display, value.empty() ? L"Not set" : value.c_str());
+        SetWindowTextW(row.display, value.empty() ? UiText(L"Not set", L"未设置") : value.c_str());
         SetWindowTextW(row.edit, value.c_str());
         ShowWindow(row.edit, SW_HIDE);
         if (!m_jumps)
             ShowWindow(row.display, SW_SHOW);
     }
 }
+void InputPage::Draft(UserSettings &settings) const {
+    settings.shortcuts = m_values;
+    for (const auto &row : m_rows)
+        if (row.edit && (::GetWindowLongPtrW(row.edit, GWL_STYLE) & WS_VISIBLE))
+            settings.shortcuts[row.definition.id] = Text(row.edit);
+    if (const auto it = settings.shortcuts.find(L"core.capture"); it != settings.shortcuts.end())
+        settings.captureShortcut = it->second;
+    if (const auto it = settings.shortcuts.find(L"core.exit"); it != settings.shortcuts.end())
+        settings.exitShortcut = it->second;
+}
+
 void InputPage::Store(UserSettings &settings) {
     StopRecording();
     for (size_t i = 0; i < m_rows.size(); ++i)
         TypeDone(i);
-    settings.shortcuts = m_values;
-    settings.captureShortcut = m_values[L"core.capture"];
-    settings.exitShortcut = m_values[L"core.exit"];
+    Draft(settings);
 }
 void InputPage::TypeDone(size_t i) {
     if (i >= m_rows.size())
@@ -141,8 +151,9 @@ void InputPage::TypeDone(size_t i) {
     auto &row = m_rows[i];
     if (row.edit && (GetWindowLongPtrW(row.edit, GWL_STYLE) & WS_VISIBLE)) {
         m_values[row.definition.id] = Text(row.edit);
+        ::PostMessageW(::GetParent(m_hwnd), WM_NSKRY_SETTINGS_DIRTY, 0, 0);
         SetWindowTextW(row.display,
-                       m_values[row.definition.id].empty() ? L"Not set" : m_values[row.definition.id].c_str());
+                       m_values[row.definition.id].empty() ? UiText(L"Not set", L"未设置") : m_values[row.definition.id].c_str());
         ShowWindow(row.edit, SW_HIDE);
         ShowWindow(row.display, SW_SHOW);
     }
@@ -153,11 +164,13 @@ void InputPage::StopRecording(bool accept) {
     const auto i = size_t(m_recording);
     m_recording = -1;
     auto &row = m_rows[i];
-    if (accept)
+    if (accept) {
         m_values[row.definition.id] = m_recorder.Text(row.definition.kind == input::Kind::Wheel);
+        ::PostMessageW(::GetParent(m_hwnd), WM_NSKRY_SETTINGS_DIRTY, 0, 0);
+    }
     const auto &value = m_values[row.definition.id];
-    SetWindowTextW(row.display, value.empty() ? L"Not set" : value.c_str());
-    SetWindowTextW(row.record, L"Record");
+    SetWindowTextW(row.display, value.empty() ? UiText(L"Not set", L"未设置") : value.c_str());
+    SetWindowTextW(row.record, UiText(L"Record", L"录制"));
     if (m_recordState)
         m_recordState(false);
     m_recorder.Reset();
@@ -172,8 +185,8 @@ void InputPage::BeginRecord(size_t i) {
         TypeDone(j);
     m_recording = int(i);
     m_recorder.Reset();
-    SetWindowTextW(m_rows[i].record, L"Cancel");
-    SetWindowTextW(m_rows[i].display, L"Press keys...");
+    SetWindowTextW(m_rows[i].record, UiText(L"Cancel", L"取消"));
+    SetWindowTextW(m_rows[i].display, UiText(L"Press keys...", L"请按快捷键…"));
     if (m_recordState)
         m_recordState(true);
     SetFocus(m_hwnd);
@@ -181,13 +194,21 @@ void InputPage::BeginRecord(size_t i) {
 void InputPage::Layout() {
     RECT r{};
     GetClientRect(m_hwnd, &r);
+    const UINT dpi = ::GetDpiForWindow(m_hwnd);
+    const int units = dpi ? dpi : 96;
+    const auto move = [units](HWND control, HWND, int x, int y, int w, int h, UINT flags) {
+        const auto scale = [units](int n) { return ::MulDiv(n, units, 96); };
+        ::SetWindowPos(control, nullptr, scale(x), scale(y), scale(w), scale(h), flags);
+    };
+    r.right = ::MulDiv(r.right, 96, units);
+    r.bottom = ::MulDiv(r.bottom, 96, units);
     const int w = r.right;
     SCROLLINFO si{
         sizeof(si), SIF_RANGE | SIF_PAGE | SIF_POS, 0, (std::max)(0, m_height - 1), UINT((std::max)(0L, r.bottom)),
         m_scroll};
     SetScrollInfo(m_hwnd, SB_VERT, &si, TRUE);
     for (auto h : m_headings)
-        SetWindowPos(h.hwnd, nullptr, 8, h.y - m_scroll, (std::max)(1, w - 16), 24, SWP_NOZORDER | SWP_NOACTIVATE);
+        move(h.hwnd, nullptr, 8, h.y - m_scroll, (std::max)(1, w - 16), 24, SWP_NOZORDER | SWP_NOACTIVATE);
     for (size_t i = 0; i < m_rows.size(); ++i) {
         auto &row = m_rows[i];
         const bool visible = row.y + 52 >= m_scroll && row.y <= m_scroll + r.bottom + 52;
@@ -202,16 +223,16 @@ void InputPage::Layout() {
         if (m_jumps) {
             ShowWindow(row.label, SW_HIDE);
             ShowWindow(row.display, SW_HIDE);
-            SetWindowPos(row.record, nullptr, 16, y, (std::max)(1, w - 32), 34, SWP_NOZORDER | SWP_NOACTIVATE);
+            move(row.record, nullptr, 16, y, (std::max)(1, w - 32), 34, SWP_NOZORDER | SWP_NOACTIVATE);
         } else {
             const int labelW = (std::max)(140, w - 470), valueX = labelW + 14, valueW = 170,
                       buttonsX = valueX + valueW + 6;
-            SetWindowPos(row.label, nullptr, 8, y, labelW, 44, SWP_NOZORDER | SWP_NOACTIVATE);
+            move(row.label, nullptr, 8, y, labelW, 44, SWP_NOZORDER | SWP_NOACTIVATE);
             for (HWND c : {row.display, row.edit})
-                SetWindowPos(c, nullptr, valueX, y, valueW, 30, SWP_NOZORDER | SWP_NOACTIVATE);
-            SetWindowPos(row.record, nullptr, buttonsX, y, 96, 30, SWP_NOZORDER | SWP_NOACTIVATE);
-            SetWindowPos(row.type, nullptr, buttonsX + 100, y, 64, 30, SWP_NOZORDER | SWP_NOACTIVATE);
-            SetWindowPos(row.remove, nullptr, buttonsX + 168, y, 66, 30, SWP_NOZORDER | SWP_NOACTIVATE);
+                move(c, nullptr, valueX, y, valueW, 30, SWP_NOZORDER | SWP_NOACTIVATE);
+            move(row.record, nullptr, buttonsX, y, 96, 30, SWP_NOZORDER | SWP_NOACTIVATE);
+            move(row.type, nullptr, buttonsX + 100, y, 64, 30, SWP_NOZORDER | SWP_NOACTIVATE);
+            move(row.remove, nullptr, buttonsX + 168, y, 66, 30, SWP_NOZORDER | SWP_NOACTIVATE);
         }
     }
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -220,6 +241,10 @@ void InputPage::Scroll(int offset) {
     StopRecording();
     RECT r{};
     GetClientRect(m_hwnd, &r);
+    const UINT dpi = ::GetDpiForWindow(m_hwnd);
+    const int units = dpi ? dpi : 96;
+    r.right = ::MulDiv(r.right, 96, units);
+    r.bottom = ::MulDiv(r.bottom, 96, units);
     m_scroll = std::clamp(offset, 0, (std::max)(0, m_height - int(r.bottom)));
     Layout();
 }
@@ -324,6 +349,7 @@ LRESULT InputPage::Handle(UINT m, WPARAM p, LPARAM l) {
             StopRecording();
         break;
     case WM_COMMAND: {
+        if (HIWORD(p) == EN_CHANGE) ::PostMessageW(::GetParent(m_hwnd), WM_NSKRY_SETTINGS_DIRTY, 0, 0);
         // WM_COMMAND carries only a 16-bit control ID. Store the full row index on
         // the sender instead, so a large plugin catalog cannot alias another row.
         const HWND sender = HWND(l);
@@ -355,7 +381,8 @@ LRESULT InputPage::Handle(UINT m, WPARAM p, LPARAM l) {
                 if (action == 2) {
                     ShowWindow(row.edit, SW_HIDE);
                     m_values[row.definition.id].clear();
-                    SetWindowTextW(row.display, L"Not set");
+                    ::PostMessageW(::GetParent(m_hwnd), WM_NSKRY_SETTINGS_DIRTY, 0, 0);
+                    SetWindowTextW(row.display, UiText(L"Not set", L"未设置"));
                     ShowWindow(row.display, SW_SHOW);
                 }
             }

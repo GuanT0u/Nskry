@@ -2,6 +2,7 @@
   "manifest_version": 1,
   "id": "nskry-record",
   "name": "Screen recording",
+  "toolbar_label_zh_cn": "录屏",
   "version": "0.5.0",
   "author": "Nskry Team",
   "description": "MP4/H.264 or separate GIF recording; optional window follow, 30/60 fps video presets, post-record save/copy and trim. Optional MP4 audio from an application or output device.",

@@ -1,4 +1,8 @@
 #include "pch.h"
+#include "ui/floating_actions.h"
+#include "ui/toolbar_layout.h"
+#include <oleacc.h>
+#include "ui/ui_preferences.h"
 #include "ui/interaction_visuals.h"
 #include "ui/pin_window.h"
 #include <algorithm>
@@ -92,7 +96,7 @@ PinWindow::PinWindow(HBITMAP bitmap, int width, int height, CloseCallback closed
     const int y = m_hasInitialScreenRect ? initialScreenRect.top : workArea.top + (workH - outerH) / 2;
 
     m_hwnd = ::CreateWindowExW(
-        exStyle, kClassName, L"Nskry Pin",
+        exStyle, kClassName, UiText(L"Nskry — Pinned image", L"Nskry — 固定截图"),
         style,
         x, y, outerW, outerH,
         nullptr, nullptr, ::GetModuleHandleW(nullptr), this);
@@ -157,10 +161,31 @@ LRESULT CALLBACK PinWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+    case WM_GETOBJECT:
+        if (m_isEditing && static_cast<LONG>(lp) == OBJID_CLIENT)
+            return m_toolbarInput.GetObject(hwnd, wp, lp);
+        break;
+    case ToolbarAccessibility::InvokeMessage:
+    case ToolbarAccessibility::FocusMessage:
+        if (m_isEditing) m_toolbarInput.HandleObjectAction(hwnd, hwnd, msg, wp, lp);
+        return 0;
+
+    case WM_NSKRY_REFRESH_UI:
+    case WM_SETTINGCHANGE:
+    case WM_SYSCOLORCHANGE:
+        m_palette = GetDesktopPalette();
+        ::SetWindowTextW(hwnd, UiText(L"Nskry — Pinned image", L"Nskry — 固定截图"));
+        if (m_isEditing) {
+            RECT bounds{}; ::GetClientRect(hwnd, &bounds);
+            BuildPinToolbar(bounds.right, bounds.bottom);
+        }
+        ::InvalidateRect(hwnd, nullptr, TRUE);
+        return 0;
     case WM_ENTERSIZEMOVE: if (m_visualStyle) m_visualStyle->BeginSizeMove(); break;
     case WM_EXITSIZEMOVE: if (m_visualStyle) m_visualStyle->EndSizeMove(); break;
     case WM_WINDOWPOSCHANGED: if (m_visualStyle) m_visualStyle->Sync(); break;
     case WM_DPICHANGED:
+        LayoutQuickActions();
         if (m_visualStyle) m_visualStyle->Sync();
         break;
     case WM_CREATE:
@@ -336,6 +361,8 @@ LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         break;
 
     case WM_KEYDOWN:case WM_SYSKEYDOWN:
+        if (!m_isEditing && IsFloatingContextKey(wp))
+            return ::SendMessageW(hwnd, WM_CONTEXTMENU, reinterpret_cast<WPARAM>(hwnd), -1);
         if (m_isEditing) {
             if (Shortcut(L"core.cancel",UINT(wp))) {
                 FinishEdit(false);
@@ -355,6 +382,8 @@ LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     return 0;
                 }
             }
+            if (msg == WM_KEYDOWN && !m_hTextEdit && m_toolbarInput.Press(hwnd, hwnd, wp))
+                return 0;
         }
         break;
 
@@ -414,6 +443,7 @@ LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 1;
 
     case WM_DESTROY:
+        m_toolbarInput.Clear();
         m_visualStyle.reset();
         return 0;
     }
@@ -421,7 +451,7 @@ LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 void PinWindow::CreateQuickActions(HWND parent) {
-    m_quickFont = ::CreateFontW(-9, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+    m_quickFont = ::CreateFontW(-::MulDiv(16, ::GetDpiForWindow(parent), 96), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
     const wchar_t* labels[] = { L"\x270E", L"\x2026", L"\x2212", L"\x00D7" };
@@ -436,7 +466,7 @@ void PinWindow::CreateQuickActions(HWND parent) {
                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(ids[index])), ::GetModuleHandleW(nullptr), nullptr);
         if (m_quickButtons[index]) {
             if ((::GetWindowLongPtrW(m_quickButtons[index], GWL_EXSTYLE) & WS_EX_LAYERED) != 0 &&
-                !::SetLayeredWindowAttributes(m_quickButtons[index], 0, 109, LWA_ALPHA))
+                !::SetLayeredWindowAttributes(m_quickButtons[index], 0, DesktopHighContrast() ? 255 : 235, LWA_ALPHA))
                 ::SetWindowLongPtrW(m_quickButtons[index], GWL_EXSTYLE, 0);
             if (m_quickFont) ::SendMessageW(m_quickButtons[index], WM_SETFONT, reinterpret_cast<WPARAM>(m_quickFont), TRUE);
         }
@@ -445,15 +475,8 @@ void PinWindow::CreateQuickActions(HWND parent) {
 }
 
 void PinWindow::LayoutQuickActions() {
-    if (!m_hwnd) return;
-    RECT client{};
-    ::GetClientRect(m_hwnd, &client);
-    constexpr int width = 16, height = 14, gap = 3, margin = 8;
-    int x = (std::max)(margin, static_cast<int>(client.right) - margin - 4 * width - 3 * gap);
-    for (HWND button : m_quickButtons) {
-        if (button) ::SetWindowPos(button, HWND_TOP, x, margin, width, height, SWP_NOACTIVATE);
-        x += width + gap;
-    }
+    if (m_hwnd && !LayoutFloatingActions(m_hwnd, m_quickButtons, !m_imageActions.empty()))
+        ShowQuickActions(false);
 }
 
 bool PinWindow::IsQuickActionPoint(POINT clientPoint) const {
@@ -467,7 +490,8 @@ bool PinWindow::IsQuickActionPoint(POINT clientPoint) const {
 }
 
 void PinWindow::ShowQuickActions(bool show) {
-    if (m_isEditing) show = false;
+    if (m_isEditing || (show && !LayoutFloatingActions(m_hwnd, m_quickButtons, !m_imageActions.empty())))
+        show = false;
     bool visibilityMatches = m_quickActionsVisible == show;
     for (size_t i = 0; i < std::size(m_quickButtons); ++i)
         if (m_quickButtons[i] && (::IsWindowVisible(m_quickButtons[i]) != FALSE) !=
@@ -495,19 +519,20 @@ void PinWindow::RunQuickImageAction() {
 
 void PinWindow::ShowContextMenu(int screenX, int screenY) {
     HMENU hMenu = ::CreatePopupMenu();
-    ::InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, 201, L"\x270E \x6807\x6CE8\x7F16\x8F91 (Edit)");     // ✎ 标注编辑
+    ::InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, 201, UiText(L"Edit annotations", L"编辑标注"));     // ✎ 标注编辑
     ::InsertMenuW(hMenu, 1, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
     int position = 2;
-    if (m_editor) ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING, 205, L"Crop / cut strips (static image)");
+    if (m_editor) ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING, 205, UiText(L"Crop or cut strips", L"裁剪或切除区段"));
     for (size_t index = 0; index < m_imageActions.size() && index < 100; ++index) {
-        const std::wstring item = L"T  " + m_imageActions[index].label;
+        const std::wstring item = m_imageActions[index].label;
         ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING, 220 + static_cast<UINT>(index), item.c_str());
     }
     if (!m_imageActions.empty()) ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
-    ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING, 202, L"\x2398 \x590D\x5236 (Copy)");             // ⎘ 复制
-    ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING, 203, L"\x2193 \x4FDD\x5B58 (Save PNG)");         // ↓ 保存
+    ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING, 202, UiText(L"Copy image", L"复制图片"));             // ⎘ 复制
+    ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING, 203, UiText(L"Save PNG", L"保存 PNG"));         // ↓ 保存
     ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
-    ::InsertMenuW(hMenu, position, MF_BYPOSITION | MF_STRING, 204, L"\x2715 \x5173\x95ED (Close)");            // ✕ 关闭
+    ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING, 210, UiText(L"Minimize", L"最小化"));
+    ::InsertMenuW(hMenu, position, MF_BYPOSITION | MF_STRING, 204, UiText(L"Close", L"关闭"));            // ✕ 关闭
 
     ::SetForegroundWindow(m_hwnd);
     int cmd = ::TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, screenX, screenY, 0, m_hwnd, nullptr);
@@ -517,6 +542,7 @@ void PinWindow::ShowContextMenu(int screenX, int screenY) {
     case 201: EnterEditMode(); break;
     case 202: CopyToClipboard(); break;
     case 203: SaveToFile(); break;
+    case 210: ShowQuickActions(false); ::ShowWindow(m_hwnd, SW_MINIMIZE); break;
     case 204: ::DestroyWindow(m_hwnd); break;
     case 205: OpenStructureEditor(); break;
     default:
@@ -602,14 +628,14 @@ bool PinWindow::SaveToFile(HBITMAP bitmap) {
 
     CLSID clsid;
     if (GetPngEncoderClsidHelper(&clsid) < 0) {
-        ::MessageBoxW(m_hwnd, L"PNG encoder not found.", L"Nskry", MB_ICONERROR);
+        ::MessageBoxW(m_hwnd, UiText(L"PNG encoder is unavailable.", L"PNG 编码器不可用。"), L"Nskry", MB_ICONERROR);
         return false;
     }
 
     Gdiplus::Bitmap bmp(bitmap, nullptr);
     Gdiplus::Status st = bmp.Save(szFile, &clsid);
     if (st != Gdiplus::Ok) {
-        ::MessageBoxW(m_hwnd, L"Failed to save PNG file.", L"Nskry", MB_ICONERROR);
+        ::MessageBoxW(m_hwnd, UiText(L"Could not save the PNG file.", L"无法保存 PNG 文件。"), L"Nskry", MB_ICONERROR);
         return false;
     }
     return true;
@@ -624,6 +650,25 @@ void PinWindow::EnterEditMode() {
     m_isEditing = true;
     m_annotationEngine.Clear();
     m_annotationEngine.SetTool(ToolType::Pen);
+
+    RECT bounds{};
+    MONITORINFO monitor{sizeof(monitor)};
+    if (::GetWindowRect(m_hwnd, &bounds) &&
+        ::GetMonitorInfoW(::MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        const UINT dpi = ::GetDpiForWindow(m_hwnd);
+        const auto &work = monitor.rcWork;
+        const LONG width = (std::min)(work.right - work.left,
+            (std::max)(bounds.right - bounds.left, static_cast<LONG>(::MulDiv(340, dpi ? dpi : 96, 96))));
+        const LONG height = (std::min)(work.bottom - work.top,
+            (std::max)(bounds.bottom - bounds.top, static_cast<LONG>(::MulDiv(220, dpi ? dpi : 96, 96))));
+        if (width > bounds.right - bounds.left || height > bounds.bottom - bounds.top) {
+            m_editOriginalBounds = bounds;
+            const LONG x = std::clamp(bounds.left, work.left, work.right - width);
+            const LONG y = std::clamp(bounds.top, work.top, work.bottom - height);
+            ::SetWindowPos(m_hwnd, nullptr, x, y, width, height, SWP_NOACTIVATE | SWP_NOZORDER);
+            ::GetWindowRect(m_hwnd, &m_editExpandedBounds);
+        }
+    }
 
     RECT rc{}; ::GetClientRect(m_hwnd, &rc);
     BuildPinToolbar(rc.right, rc.bottom);
@@ -647,7 +692,17 @@ void PinWindow::FinishEdit(bool apply) {
     m_annotationEngine.Clear();
     m_annotationEngine.SetTool(ToolType::None);
     m_isEditing = false;
+    m_toolbarInput.Clear();
     m_toolbarItems.clear();
+    if (!::IsRectEmpty(&m_editExpandedBounds)) {
+        RECT current{};
+        if (::GetWindowRect(m_hwnd, &current) && ::EqualRect(&current, &m_editExpandedBounds)) {
+            const auto &old = m_editOriginalBounds;
+            ::SetWindowPos(m_hwnd, nullptr, old.left, old.top, old.right - old.left, old.bottom - old.top,
+                           SWP_NOACTIVATE | SWP_NOZORDER);
+        }
+        m_editOriginalBounds = m_editExpandedBounds = {};
+    }
     ::InvalidateRect(m_hwnd, nullptr, FALSE);
     if (m_requiresPinDecision) {
         if (apply) m_requiresPinDecision = false;
@@ -707,117 +762,79 @@ void PinWindow::CommitTextEdit() {
 void PinWindow::BuildPinToolbar(int clientW, int clientH) {
     m_toolbarItems.clear();
 
-    const bool hasSub = (m_annotationEngine.GetTool() != ToolType::None);
-
-    struct Def {
-        ToolType tool;
-        int      action;
-        const wchar_t* label;
-        int      width;
-        bool     isSep;
+    struct Command { ToolType tool; int action; const wchar_t* label; };
+    const Command commands[] = {
+        {ToolType::Rect,    0, UiText(L"Rect", L"矩形")},
+        {ToolType::Ellipse, 0, UiText(L"Oval", L"椭圆")},
+        {ToolType::Arrow,   0, UiText(L"Arrow", L"箭头")},
+        {ToolType::Pen,     0, UiText(L"Pen", L"画笔")},
+        {ToolType::Mosaic,  0, UiText(L"Mosaic", L"马赛克")},
+        {ToolType::Text,    0, UiText(L"Text", L"文本")},
+        {ToolType::None,    0, nullptr},
+        {ToolType::None,    3, UiText(L"Undo", L"撤销")},
+        {ToolType::None,    4, UiText(L"Redo", L"重做")},
+        {ToolType::None,    0, nullptr},
+        {ToolType::None,    1, m_requiresPinDecision ? UiText(L"Pin", L"固定") : UiText(L"Done", L"完成")},
+        {ToolType::None,    2, UiText(L"Cancel", L"取消")},
     };
-
-    Def defs[] = {
-        { ToolType::Rect,    0, L"矩形",   36, false },
-        { ToolType::Ellipse, 0, L"圆形",   36, false },
-        { ToolType::Arrow,   0, L"箭头",   36, false },
-        { ToolType::Pen,     0, L"画笔",   36, false },
-        { ToolType::Mosaic,  0, L"马赛克", 46, false },
-        { ToolType::Text,    0, L"文本",   36, false },
-        { ToolType::None,    0, nullptr,    4, true  },
-        { ToolType::None,    3, L"撤销",   36, false },
-        { ToolType::None,    4, L"重做",   36, false },
-        { ToolType::None,    0, nullptr,    4, true  },
-        { ToolType::None,    1, m_requiresPinDecision ? L"固定" : L"✓ 完成", 46, false },
-        { ToolType::None,    2, L"✕ 取消", 46, false },
-    };
-
-    constexpr int gap = 2;
-    constexpr int barH = 26;
-    constexpr int subItemH = 24;
-
-    int totalW = 0;
-    for (const auto& d : defs) totalW += d.width + gap;
-    totalW -= gap;
-
-    int startX = (clientW - totalW) / 2;
-    if (startX < 4) startX = 4;
-    int startY = clientH - barH - 6;
-    if (hasSub) {
-        startY = clientH - barH - subItemH - 10;
-    }
-    if (startY < 4) startY = 4;
-
-    int curX = startX;
-    for (const auto& d : defs) {
+    const auto append = [&](const Command &command) {
         PinToolItem item{};
-        item.rect        = { curX, startY, curX + d.width, startY + barH };
-        item.tool        = d.tool;
-        item.action      = d.action;
-        item.label       = d.label;
-        item.isSeparator = d.isSep;
-        item.selected    = (d.tool != ToolType::None && m_annotationEngine.GetTool() == d.tool);
+        item.tool = command.tool;
+        item.action = command.action;
+        item.label = command.label;
+        item.isSeparator = command.label == nullptr;
+        item.selected = command.tool != ToolType::None && m_annotationEngine.GetTool() == command.tool;
         m_toolbarItems.push_back(item);
-        curX += d.width + gap;
-    }
-
+    };
+    for (const auto &command : commands) append(command);
     if (m_requiresPinDecision) {
-        const int exportY = (std::max)(4, startY - 30);
-        const int exportX = (std::max)(4, (clientW - 116) / 2);
-        m_toolbarItems.push_back({ RECT{ exportX, exportY, exportX + 54, exportY + 26 },
-                                   ToolType::None, 7, 0, 0, L"复制" });
-        m_toolbarItems.push_back({ RECT{ exportX + 62, exportY, exportX + 116, exportY + 26 },
-                                   ToolType::None, 8, 0, 0, L"保存" });
+        append({ToolType::None, 7, UiText(L"Copy", L"复制")});
+        append({ToolType::None, 8, UiText(L"Save", L"保存")});
     }
 
-    if (hasSub) {
-        int subY = startY + barH + 4;
-        const int subBarW = 310;
-        int subStartX = (clientW - subBarW) / 2;
-        if (subStartX < 4) subStartX = 4;
-
-        int sx = subStartX;
-        int widths[] = { 2, 4, 8 };
-        const wchar_t* wLabels[] = { L"● 2", L"● 4", L"● 8" };
-        for (int i = 0; i < 3; i++) {
+    const size_t mainCount = m_toolbarItems.size();
+    if (m_annotationEngine.GetTool() != ToolType::None) {
+        constexpr const wchar_t* labels[] = {L"2", L"4", L"8"};
+        constexpr int widths[] = {2, 4, 8};
+        for (size_t i = 0; i < std::size(widths); ++i) {
             PinToolItem item{};
-            item.rect     = { sx, subY, sx + 32, subY + subItemH };
-            item.action   = 5; // Width
+            item.action = 5;
             item.widthVal = widths[i];
-            item.label    = wLabels[i];
-            item.selected = (m_annotationEngine.GetStrokeWidth() == widths[i]);
+            item.label = labels[i];
+            item.selected = m_annotationEngine.GetStrokeWidth() == widths[i];
             m_toolbarItems.push_back(item);
-            sx += 32 + gap;
         }
-
-        PinToolItem sep{};
-        sep.rect        = { sx, subY, sx + 4, subY + subItemH };
-        sep.isSeparator = true;
-        m_toolbarItems.push_back(sep);
-        sx += 4 + gap;
-
-        COLORREF colors[] = {
-            RGB(255, 59, 48),   // Red
-            RGB(255, 149, 0),  // Orange
-            RGB(255, 204, 0),  // Yellow
-            RGB(52, 199, 89),  // Green
-            RGB(0, 122, 255),  // Blue
-            RGB(175, 82, 222), // Purple
-            RGB(240, 240, 245),// White
-            RGB(30, 30, 35)    // Dark
-        };
-
-        for (int i = 0; i < 8; i++) {
+        constexpr COLORREF colors[] = {RGB(255,59,48), RGB(255,149,0), RGB(255,204,0), RGB(52,199,89),
+                                       RGB(0,122,255), RGB(175,82,222), RGB(240,240,245), RGB(30,30,35)};
+        for (COLORREF color : colors) {
             PinToolItem item{};
-            item.rect          = { sx, subY, sx + 22, subY + subItemH };
-            item.action        = 6; // Color
-            item.color         = colors[i];
+            item.action = 6;
+            item.color = color;
             item.isColorChoice = true;
-            item.selected      = (m_annotationEngine.GetColor() == colors[i]);
+            item.selected = m_annotationEngine.GetColor() == color;
             m_toolbarItems.push_back(item);
-            sx += 22 + gap;
         }
     }
+
+    const UINT windowDpi = ::GetDpiForWindow(m_hwnd);
+    const UINT dpi = windowDpi ? windowDpi : 96;
+    std::vector<int> widths;
+    widths.reserve(m_toolbarItems.size());
+    HDC measure = ::GetDC(m_hwnd);
+    HGDIOBJ oldFont = measure && m_font ? ::SelectObject(measure, m_font) : nullptr;
+    for (const auto &item : m_toolbarItems) {
+        int width = item.isSeparator ? 4 : 32;
+        SIZE text{};
+        if (measure && item.label &&
+            ::GetTextExtentPoint32W(measure, item.label, static_cast<int>(wcslen(item.label)), &text))
+            width = (std::max)(width, static_cast<int>(text.cx) + 16);
+        widths.push_back(::MulDiv(width, dpi, 96));
+    }
+    if (oldFont) ::SelectObject(measure, oldFont);
+    if (measure) ::ReleaseDC(m_hwnd, measure);
+    const auto layout = LayoutSelectionToolbar(widths, {0, clientH, clientW, clientH},
+                                                 {0, 0, clientW, clientH}, mainCount, dpi);
+    for (size_t i = 0; i < layout.size(); ++i) m_toolbarItems[i].rect = layout[i];
 
     if (!m_toolbarItems.empty()) {
         m_toolbarBounds = m_toolbarItems.front().rect;
@@ -831,15 +848,17 @@ void PinWindow::BuildPinToolbar(int clientW, int clientH) {
     } else {
         m_toolbarBounds = {};
     }
+    if (m_isEditing && m_hwnd) m_toolbarInput.Update(m_hwnd, m_hwnd, m_toolbarItems);
 }
 
 void PinWindow::DrawPinToolbar(HDC hdc, int /*clientW*/, int /*clientH*/) {
+    const auto &palette = m_palette;
     ::SetBkMode(hdc, TRANSPARENT);
 
     for (const auto& item : m_toolbarItems) {
         if (item.isSeparator) {
             int midX = (item.rect.left + item.rect.right) / 2;
-            HPEN sepPen = ::CreatePen(PS_SOLID, 1, RGB(70, 70, 80));
+            HPEN sepPen = ::CreatePen(PS_SOLID, 1, palette.border);
             HGDIOBJ oldPen = sepPen ? ::SelectObject(hdc, sepPen) : nullptr;
             if (oldPen && oldPen != HGDI_ERROR) {
                 ::MoveToEx(hdc, midX, item.rect.top + 3, nullptr);
@@ -851,7 +870,7 @@ void PinWindow::DrawPinToolbar(HDC hdc, int /*clientW*/, int /*clientH*/) {
         }
 
         if (item.isColorChoice) {
-            COLORREF bg = item.hovered ? RGB(60, 60, 70) : RGB(40, 40, 48);
+            COLORREF bg = item.hovered ? palette.hover : palette.panel;
             HBRUSH bgBrush = ::CreateSolidBrush(bg);
             ::FillRect(hdc, &item.rect, bgBrush);
             ::DeleteObject(bgBrush);
@@ -861,7 +880,7 @@ void PinWindow::DrawPinToolbar(HDC hdc, int /*clientW*/, int /*clientH*/) {
             int r = 6;
 
             HBRUSH colBrush = ::CreateSolidBrush(item.color);
-            HPEN borderPen = ::CreatePen(PS_SOLID, 1, item.selected ? RGB(255, 255, 255) : RGB(80, 80, 90));
+            HPEN borderPen = ::CreatePen(PS_SOLID, 1, item.selected ? palette.accent : palette.border);
             HGDIOBJ oldBrush = colBrush ? ::SelectObject(hdc, colBrush) : nullptr;
             HGDIOBJ oldPen   = borderPen ? ::SelectObject(hdc, borderPen) : nullptr;
 
@@ -870,7 +889,7 @@ void PinWindow::DrawPinToolbar(HDC hdc, int /*clientW*/, int /*clientH*/) {
             }
 
             if (item.selected) {
-                HPEN ringPen = ::CreatePen(PS_SOLID, 2, RGB(0, 150, 255));
+                HPEN ringPen = ::CreatePen(PS_SOLID, 2, palette.accent);
                 HGDIOBJ previousPen = ringPen ? ::SelectObject(hdc, ringPen) : nullptr;
                 HGDIOBJ previousBrush = ::SelectObject(hdc, ::GetStockObject(NULL_BRUSH));
                 if (previousPen && previousPen != HGDI_ERROR && previousBrush && previousBrush != HGDI_ERROR) {
@@ -888,35 +907,26 @@ void PinWindow::DrawPinToolbar(HDC hdc, int /*clientW*/, int /*clientH*/) {
             continue;
         }
 
-        COLORREF bg;
-        if (item.selected) {
-            bg = RGB(25, 118, 210);
-        } else if (item.action == 1 && item.hovered) { // Done
-            bg = RGB(46, 125, 50);
-        } else if (item.action == 2 && item.hovered) { // Cancel
-            bg = RGB(198, 40, 40);
-        } else if (item.hovered) {
-            bg = RGB(65, 65, 75);
-        } else {
-            bg = RGB(40, 40, 48);
-        }
+        const bool primary = item.action == 1;
+        const auto bg = item.selected || primary ? palette.accent : (item.hovered ? palette.hover : palette.panel);
 
         HBRUSH bgBrush = ::CreateSolidBrush(bg);
         ::FillRect(hdc, &item.rect, bgBrush);
         ::DeleteObject(bgBrush);
 
-        HBRUSH borderBrush = ::CreateSolidBrush(item.selected ? RGB(70, 160, 245) : (item.hovered ? RGB(90, 90, 100) : RGB(60, 60, 70)));
+        HBRUSH borderBrush = ::CreateSolidBrush(item.selected ? palette.accent : palette.border);
         ::FrameRect(hdc, &item.rect, borderBrush);
         ::DeleteObject(borderBrush);
 
         if (item.label) {
             HFONT oldFont = static_cast<HFONT>(::SelectObject(hdc, m_font));
-            ::SetTextColor(hdc, RGB(240, 240, 245));
+            ::SetTextColor(hdc, (item.selected || item.action == 1) ? palette.onAccent : palette.text);
             RECT textRect = item.rect;
             ::DrawTextW(hdc, item.label, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             ::SelectObject(hdc, oldFont);
         }
     }
+    m_toolbarInput.DrawFocus(hdc);
 }
 
 RECT PinWindow::ImageRect() const {

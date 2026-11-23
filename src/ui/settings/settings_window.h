@@ -3,6 +3,7 @@
 #include "core/plugin_package_manager.h"
 #include "core/plugin_update_manager.h"
 #include "core/settings_manager.h"
+#include "ui/ui_preferences.h"
 #include <functional>
 #include <mutex>
 #include <string>
@@ -46,6 +47,7 @@ public:
     SettingsWindow(SettingsWindowServices services, std::function<void()> onClosed);
     ~SettingsWindow();
     void Show(HWND owner);
+    bool HandleTab(const MSG &message);
 
 private:
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -58,7 +60,11 @@ private:
     void LayoutControls();
     void OpenOfficialPluginsPage();
     void ShowThirdPartyPolicy();
-    void ApplySettings();
+    bool ApplySettings();
+    UserSettings ReadSettingsDraft(bool commit = false) const;
+    void RefreshDirtyState();
+    void ApplyUiFont();
+    void ScrollSettings(int bar, int request);
     void ToggleSelectedPlugin();
     void UninstallSelectedPlugin();
     void BrowseAndInstallPlugin();
@@ -77,19 +83,25 @@ private:
     std::function<void()> m_onClosed;
     HWND m_hwnd{};
     HWND m_tab{};
-    HWND m_runAtStartup{}, m_notifications{}, m_theme{};
+    HWND m_runAtStartup{}, m_notifications{}, m_theme{}, m_language{};
     HWND m_hideMonitor{};
     HWND m_shadowEnabled{}, m_shadowPreset{}, m_cornersEnabled{}, m_cornerPreset{}, m_cornerMode{};
     HWND m_visualSliders[6]{}, m_visualValues[6]{};
     std::vector<HWND> m_visualControls;
     WindowVisualSettings m_visualDraft;
+    UserSettings m_appliedDraft;
     std::unique_ptr<InputPage> m_inputPage,m_jumpPage;
     std::unique_ptr<InteractionPage> m_interactionPage;
     HWND m_pluginList{}, m_pluginToggle{}, m_pluginUninstall{}, m_pluginInstall{}, m_pluginCheckUpdates{};
     HWND m_pluginDetails{}, m_officialPlugins{}, m_thirdPartyPolicy{};
     HWND m_pluginSettings{};
     HWND m_aboutText{};
-    HWND m_apply{};
+    HWND m_apply{}, m_footer{}, m_dirty{};
+    bool m_hasDraft{};
+    HFONT m_font{};
+    DesktopPalette m_palette = GetDesktopPalette();
+    int m_scrollX{}, m_scrollY{};
+    std::vector<std::pair<HWND, RECT>> m_controlBounds;
     int m_page = 0;
     bool m_closed = false;
     bool m_updateBusy=false;

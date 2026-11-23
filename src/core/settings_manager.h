@@ -8,6 +8,7 @@
 namespace nskry {
 
 struct UserSettings {
+    bool operator==(const UserSettings&) const = default;
     bool runAtStartup = false;
     bool notifications = true;
     bool showStartupHint = true;
@@ -16,6 +17,7 @@ struct UserSettings {
     InteractionStyle interaction;
     std::unordered_map<std::wstring,std::wstring> shortcuts;
     std::wstring theme = L"system";
+    std::wstring language = L"system";
     std::wstring captureShortcut = L"Ctrl+Alt+A";
     std::wstring exitShortcut = L"Ctrl+Alt+Q";
 };
@@ -37,6 +39,8 @@ public:
     const std::wstring& GetOfficialPluginCatalogUrl() const { return m_officialPluginCatalogUrl; }
     const std::wstring& GetOfficialPluginsPageUrl() const { return m_officialPluginsPageUrl; }
     const std::wstring& SettingsPath() const { return m_settingsPath; }
+    const std::wstring& Language() const { return m_language; }
+    const std::wstring& Theme() const { return m_theme; }
     const InteractionStyle& Interaction()const{return m_interaction;}
 
 private:
@@ -55,6 +59,7 @@ private:
     WindowVisualSettings m_visuals;
     InteractionStyle m_interaction;
     std::wstring m_theme = L"system";
+    std::wstring m_language = L"system";
     // Empty until the official site goes live. HTTPS/hash aren't publisher
     // signatures; catalog authentication is a separate planned release gate.
     std::wstring m_officialPluginCatalogUrl;

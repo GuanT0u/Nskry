@@ -1,5 +1,6 @@
 #include "scroll_composite.h"
 #include "scroll_local_match.h"
+#include "scroll_orientation.h"
 #include <iostream>
 #include <stdexcept>
 using namespace nskry::scroll;
@@ -575,6 +576,53 @@ void CheckResampledText() {
           "resampled glyphs still have a safe join between text lines");
 }
 
+void CheckHorizontalCapture() {
+    constexpr int width = 241, height = 119;
+    constexpr int left = 24, right = 32;
+    const auto document = Noise(1300, height);
+    const auto view = [&](int origin, int span) {
+        Frame frame{span, height, std::vector<unsigned int>(size_t(span) * height)};
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < span; ++x) {
+                const unsigned int color = x < left ? 0x102042u : x >= span - right ? 0xe0d7d4u
+                    : document.pixels[size_t(y) * document.width + origin + x];
+                frame.pixels[size_t(y) * span + x] = color;
+            }
+        }
+        return frame;
+    };
+    const auto axis = ScrollAxis::Horizontal;
+    Check(SupportsAxis(96, 64, axis) && !SupportsAxis(64, 96, axis),
+          "minimum span follows the horizontal axis");
+    Check(SupportsAxis(64, 96, ScrollAxis::Vertical) && !SupportsAxis(96, 64, ScrollAxis::Vertical),
+          "minimum span follows the vertical axis");
+    auto last = OrientFrame(view(500, width), axis);
+    Check(last.width == height && last.height == width, "transpose a rectangular viewport");
+    auto stitched = last;
+    int origin = 500, first = origin, lastEdge = origin + width, position = 0;
+    FixedBands bands{};
+    for (int target : {547, 521, 474, 550, 507, 455}) {
+        auto next = OrientFrame(view(target, width), axis);
+        const auto match = FindAlignment(last, next, 168, origin == 500 ? nullptr : &bands);
+        Check(match.shift == target - origin, "horizontal displacement follows left and right motion");
+        Check(match.fixed == FixedBands{left, right, 0, 0}, "retain fixed left and right columns once");
+        bands = match.fixed;
+        const auto placement = PlaceFrame(position, match.shift, next.height, stitched.height);
+        const auto join = FindJoin(stitched, last, next, placement, match);
+        Check(join.row >= 0, "find a horizontal seam");
+        Extend(stitched, next, placement, bands, join.row, join.path);
+        position = placement.top + placement.prepend;
+        origin = target;
+        first = (std::min)(first, target);
+        lastEdge = (std::max)(lastEdge, target + width);
+        const auto output = OrientFrame(stitched, axis);
+        Check(output.width == lastEdge - first && output.height == height, "horizontal capture grows in width");
+        Check(output.pixels == view(first, lastEdge - first).pixels,
+              "horizontal capture preserves pixel order without duplicating columns on reversal");
+        last = std::move(next);
+    }
+}
+
 int main() {
     try {
         const auto doc = Noise(160, 1400);
@@ -608,6 +656,7 @@ int main() {
         CheckFaintToolbarRules();
         CheckEndpointChrome();
         CheckResampledText();
+        CheckHorizontalCapture();
         Frame last = View(doc, 500, 256), stitched = last;
         int position = 0, absolute = 500, minimum = 500, maximum = 756;
         // Reversals within the existing image, new top/bottom, and repeated revisits.

@@ -1,3 +1,4 @@
+#include "../../common/native_ui.h"
 #include "core/json.h"
 #include "nskry_actions.h"
 #include "nskry_plugin.h"
@@ -21,6 +22,7 @@ namespace {
 using namespace nskry::translate;
 HWND window{}, sourceEdit{}, resultEdit{}, packEdit{}, directionChoice{}, statusLabel{}, providerChoice{};
 HMODULE module{};
+HFONT uiFont{};
 bool closing{};
 bool starting{}, uploadCanceled{};
 NskryImageRecognitionServiceV1 recognitionService{};
@@ -39,7 +41,7 @@ LRESULT CALLBACK TaskProcedure(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         try {
             FinishTask();
         } catch (...) {
-            SetWindowTextW(statusLabel, L"Could not deliver the task result. Close or cancel to retry cleanup.");
+            SetWindowTextW(statusLabel, nskry::plugin_ui::Text(L"Could not deliver the task result. Close or cancel to retry cleanup.", L"无法显示任务结果。可关闭或取消以重试清理。"));
         }
         return 0;
     }
@@ -239,9 +241,9 @@ template <class Work> void Start(bool ocr, Work work, bool online = false, uint6
     SetWindowTextW(resultEdit, L""); // Never offer a stale translation for a new request.
     EnableWindow(GetDlgItem(window, 3), FALSE);
     EnableWindow(GetDlgItem(window, 5), FALSE);
-    SetWindowTextW(statusLabel, ocr      ? L"Recognizing locally…"
-                                : online ? L"Translating online…"
-                                         : L"Translating offline…");
+    SetWindowTextW(statusLabel, ocr      ? nskry::plugin_ui::Text(L"Recognizing locally…", L"正在本地识别…")
+                                : online ? nskry::plugin_ui::Text(L"Translating online…", L"正在在线翻译…")
+                                         : nskry::plugin_ui::Text(L"Translating offline…", L"正在离线翻译…"));
 }
 bool BeginTranslation() {
     if (task || closing || starting)
@@ -257,7 +259,7 @@ bool BeginTranslation() {
     RefreshProviderControls();
     auto text = Text(sourceEdit), root = Text(packEdit);
     if (ValidateText(text) != InputError::None) {
-        SetWindowTextW(statusLabel, L"No valid text found. Edit the source (maximum 16000 UTF-16 units).");
+        SetWindowTextW(statusLabel, nskry::plugin_ui::Text(L"No valid text found. Edit the source (maximum 16000 UTF-16 units).", L"未找到有效文字。请编辑原文，最多 16000 个 UTF-16 代码单元。"));
         return false;
     }
     const auto selection = SendMessageW(directionChoice, CB_GETCURSEL, 0, 0);
@@ -297,29 +299,34 @@ bool BeginTranslation() {
             config.endpoint = L"https://api.mymemory.translated.net/get";
         }
         const auto prompt =
-            L"Send the source text shown on the left (" + std::to_wstring(text.size()) +
-            L" UTF-16 units) to:\r\n" + config.endpoint +
-            L"\r\n\r\nThe request contains this text and language direction, plus the configured model, "
-            L"translation instructions "
-            L"and credentials where applicable. The screenshot and previous tasks are not sent. "
-            L"This provider may charge fees, retain content or share it under its own policy. "
-            L"Canceling cannot recall text already sent. No automatic retry/fallback is used.\r\n\r\n" +
+            nskry::plugin_ui::Text(L"Send the source text shown on the left (", L"将左侧显示的原文（") + std::to_wstring(text.size()) +
+            nskry::plugin_ui::Text(L" UTF-16 units) to:\r\n", L" 个 UTF-16 代码单元）发送至：\r\n") + config.endpoint +
+            nskry::plugin_ui::Text(
+                L"\r\n\r\nThe request contains this text and language direction, plus the configured model, "
+                L"translation instructions and credentials where applicable. The screenshot and previous tasks are not sent. "
+                L"This provider may charge fees, retain content or share it under its own policy. "
+                L"Canceling cannot recall text already sent. No automatic retry/fallback is used.\r\n\r\n",
+                L"\r\n\r\n请求将发送这段文字和翻译方向，以及适用的模型、翻译指令和凭据。截图与历史任务内容会留在本机。"
+                L"服务商可能收费，并按自身政策留存或共享内容。取消无法撤回已发送的文字。请求不会自动重试或切换服务。\r\n\r\n") +
             (provider == Provider::MyMemory
-                 ? std::wstring(L"MyMemory is a third-party free service with quotas (currently 5000 "
+                 ? std::wstring(nskry::plugin_ui::Text(L"MyMemory is a third-party free service with quotas (currently 5000 "
                                 L"characters/day anonymously). "
                                 L"Its terms describe long-term storage and third-party processing. Text is "
                                 L"sent in URL query parameters. "
                                 L"Do not submit sensitive content. Terms: "
-                                L"https://mymemory.translated.net/terms-and-conditions\r\n\r\n")
+                                L"https://mymemory.translated.net/terms-and-conditions\r\n\r\n",
+                                L"MyMemory 是有额度的第三方免费服务，目前匿名用户每天最多 5000 字符。条款说明了长期存储与第三方处理。"
+                                L"文字通过 URL 查询参数发送，请勿提交敏感内容。条款："
+                                L"https://mymemory.translated.net/terms-and-conditions\r\n\r\n"))
                  : std::wstring(
-                       L"Check the provider's privacy and billing policy before continuing.\r\n\r\n")) +
-            L"Send this text now?";
-        if (MessageBoxW(window, prompt.c_str(), L"Confirm online text upload",
+                       nskry::plugin_ui::Text(L"Check the provider's privacy and billing policy before continuing.\r\n\r\n", L"继续前请核对服务商的隐私和计费政策。\r\n\r\n"))) +
+            nskry::plugin_ui::Text(L"Send this text now?", L"现在发送这段文字吗？");
+        if (MessageBoxW(window, prompt.c_str(), nskry::plugin_ui::Text(L"Confirm online text upload", L"确认在线上传"),
                         MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES ||
             !IsWindow(window) || closing) {
             uploadCanceled = true;
             if (IsWindow(window))
-                SetWindowTextW(statusLabel, L"Upload not authorized. No online request was sent.");
+                SetWindowTextW(statusLabel, nskry::plugin_ui::Text(L"Upload not authorized. No online request was sent.", L"已取消上传。"));
             return false;
         }
         Start(
@@ -355,34 +362,66 @@ void SaveResult() {
     std::ofstream file(std::filesystem::path(path), std::ios::binary | std::ios::trunc);
     file.write(utf8.data(), std::streamsize(utf8.size()));
     file.close();
-    SetWindowTextW(statusLabel, file ? L"Translation saved as UTF-8 text."
-                                     : L"Could not write the complete translation file.");
+    SetWindowTextW(statusLabel, file ? nskry::plugin_ui::Text(L"Translation saved as UTF-8 text.", L"已将译文保存为 UTF-8 文本。")
+                                     : nskry::plugin_ui::Text(L"Could not write the complete translation file.", L"无法完整写入译文文件。"));
 }
+void RefreshFont(HWND hwnd) {
+    HFONT font = nskry::plugin_ui::CreateMessageFont(hwnd);
+    if (!font) return;
+    ::EnumChildWindows(hwnd, [](HWND child, LPARAM value) -> BOOL {
+        ::SendMessageW(child, WM_SETFONT, value, TRUE);
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(font));
+    if (uiFont) ::DeleteObject(uiFont);
+    uiFont = font;
+}
+
 LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
     try {
+        if (message == WM_ERASEBKGND)
+            return nskry::plugin_ui::Background(hwnd, wp, nskry::plugin_ui::preferences.theme);
+        if (message == WM_CTLCOLORSTATIC || message == WM_CTLCOLOREDIT)
+            return nskry::plugin_ui::ControlColors(wp, nskry::plugin_ui::preferences.theme,
+                message == WM_CTLCOLOREDIT || reinterpret_cast<HWND>(lp) == resultEdit);
+        if (message == WM_DPICHANGED) {
+            const auto& r = *reinterpret_cast<const RECT*>(lp);
+            ::SetWindowPos(hwnd, nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                           SWP_NOACTIVATE | SWP_NOZORDER);
+            RefreshFont(hwnd);
+            return 0;
+        }
+        const UINT windowDpi = ::GetDpiForWindow(hwnd);
+        const UINT dpi = windowDpi ? windowDpi : 96;
+        const auto dip = [dpi](int value) { return ::MulDiv(value, dpi, 96); };
         if (message == WM_SIZE) {
             RECT r{};
             GetClientRect(hwnd, &r);
-            const int width = (std::max)(300L, r.right), height = (std::max)(200L, r.bottom);
-            MoveWindow(providerChoice, 8, 8, 280, 180, TRUE);
-            MoveWindow(GetDlgItem(hwnd, 21), 300, 8, 180, 26, TRUE);
-            MoveWindow(packEdit, 8, 42, width - 160, 26, TRUE);
-            MoveWindow(GetDlgItem(hwnd, 4), width - 144, 42, 136, 26, TRUE);
-            MoveWindow(GetDlgItem(hwnd, 22), 8, 78, width - 16, 26, TRUE);
-            MoveWindow(GetDlgItem(hwnd, 23), 8, 106, width - 16, 24, TRUE);
-            MoveWindow(sourceEdit, 8, 136, (width - 24) / 2, height - 216, TRUE);
-            MoveWindow(resultEdit, width / 2 + 4, 136, width / 2 - 12, height - 216, TRUE);
-            MoveWindow(directionChoice, 8, height - 72, 120, 120, TRUE);
-            MoveWindow(GetDlgItem(hwnd, 1), 136, height - 72, 100, 26, TRUE);
-            MoveWindow(GetDlgItem(hwnd, 2), 244, height - 72, 100, 26, TRUE);
-            MoveWindow(GetDlgItem(hwnd, 3), 352, height - 72, 110, 26, TRUE);
-            MoveWindow(GetDlgItem(hwnd, 5), 470, height - 72, 110, 26, TRUE);
-            MoveWindow(statusLabel, 8, height - 38, width - 16, 32, TRUE);
+            const int width = (std::max)(300, ::MulDiv(r.right, 96, dpi));
+            const int height = (std::max)(200, ::MulDiv(r.bottom, 96, dpi));
+            const auto move = [&](HWND child, int x, int y, int w, int h, BOOL repaint) {
+                if (child) ::MoveWindow(child, dip(x), dip(y), dip(w), dip(h), repaint);
+            };
+            move(providerChoice, 8, 8, 280, 180, TRUE);
+            move(GetDlgItem(hwnd, 21), 300, 8, 180, 26, TRUE);
+            move(packEdit, 8, 42, width - 160, 26, TRUE);
+            move(GetDlgItem(hwnd, 4), width - 144, 42, 136, 26, TRUE);
+            move(GetDlgItem(hwnd, 22), 8, 78, width - 16, 26, TRUE);
+            move(GetDlgItem(hwnd, 23), 8, 106, width - 16, 24, TRUE);
+            move(GetDlgItem(hwnd, 24), 8, 136, (width - 24) / 2, 22, TRUE);
+            move(GetDlgItem(hwnd, 25), width / 2 + 4, 136, width / 2 - 12, 22, TRUE);
+            move(sourceEdit, 8, 158, (width - 24) / 2, height - 238, TRUE);
+            move(resultEdit, width / 2 + 4, 158, width / 2 - 12, height - 238, TRUE);
+            move(directionChoice, 8, height - 72, 120, 120, TRUE);
+            move(GetDlgItem(hwnd, 1), 136, height - 72, 100, 26, TRUE);
+            move(GetDlgItem(hwnd, 2), 244, height - 72, 100, 26, TRUE);
+            move(GetDlgItem(hwnd, 3), 352, height - 72, 110, 26, TRUE);
+            move(GetDlgItem(hwnd, 5), 470, height - 72, 110, 26, TRUE);
+            move(statusLabel, 8, height - 38, width - 16, 32, TRUE);
             return 0;
         }
         if (message == WM_GETMINMAXINFO) {
             auto *limits = reinterpret_cast<MINMAXINFO *>(lp);
-            limits->ptMinTrackSize = {650, 410};
+            limits->ptMinTrackSize = {dip(650), dip(410)};
             return 0;
         }
         if (message == WM_ACTIVATE && window)
@@ -408,6 +447,7 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (message == WM_NCDESTROY) {
+            if (uiFont) { ::DeleteObject(uiFont); uiFont = nullptr; }
             window = nullptr;
             sourceEdit = resultEdit = packEdit = directionChoice = statusLabel = providerChoice = nullptr;
             return DefWindowProcW(hwnd, message, wp, lp);
@@ -429,7 +469,7 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
                 else {
                     SendMessageW(GetDlgItem(hwnd, 22), BM_SETCHECK,
                                  useOcrPlugin ? BST_CHECKED : BST_UNCHECKED, 0);
-                    SetWindowTextW(statusLabel, L"Could not save recognition preference.");
+                    SetWindowTextW(statusLabel, nskry::plugin_ui::Text(L"Could not save recognition preference.", L"无法保存识别偏好。"));
                 }
             }
             if (LOWORD(wp) == 10 && HIWORD(wp) == EN_CHANGE && !task) {
@@ -475,23 +515,23 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
                 const auto root = Text(packEdit);
                 if (RegSetKeyValueW(HKEY_CURRENT_USER, Key, L"ModelRoot", REG_SZ, root.c_str(),
                                     DWORD((root.size() + 1) * sizeof(wchar_t))) != ERROR_SUCCESS)
-                    SetWindowTextW(statusLabel, L"Could not save language-pack path.");
+                    SetWindowTextW(statusLabel, nskry::plugin_ui::Text(L"Could not save language-pack path.", L"无法保存语言包路径。"));
                 else
                     SetWindowTextW(statusLabel,
-                                   L"Language-pack path saved. No download or model loading was started.");
+                                   nskry::plugin_ui::Text(L"Language-pack path saved. No download or model loading was started.", L"已保存语言包路径。"));
             }
             return 0;
         }
     } catch (const std::wstring &error) {
         SetWindowTextW(statusLabel, error.c_str());
     } catch (...) {
-        SetWindowTextW(statusLabel, L"Operation failed; no online fallback was used.");
+        SetWindowTextW(statusLabel, nskry::plugin_ui::Text(L"Operation failed; no online fallback was used.", L"操作失败。请求未切换至在线引擎。"));
     }
     return DefWindowProcW(hwnd, message, wp, lp);
 }
 void Show(HWND owner) {
     if (!window && task)
-        throw TranslationFailure{L"The previous task is still canceling. Try again shortly."};
+        throw TranslationFailure{nskry::plugin_ui::Text(L"The previous task is still canceling. Try again shortly.", L"上一项任务正在取消，请稍后重试。")};
     if (window) {
         if (IsIconic(window))
             ShowWindow(window, SW_RESTORE);
@@ -505,7 +545,7 @@ void Show(HWND owner) {
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
     RegisterClassW(&wc);
-    window = CreateWindowExW(0, wc.lpszClassName, L"Nskry — Translation (experimental)", WS_OVERLAPPEDWINDOW,
+    window = CreateWindowExW(0, wc.lpszClassName, nskry::plugin_ui::Text(L"Nskry — Translation (experimental)", L"Nskry — 翻译（实验版）"), WS_OVERLAPPEDWINDOW,
                              CW_USEDEFAULT, CW_USEDEFAULT, 900, 560, owner, nullptr, module, nullptr);
     if (!window)
         winrt::throw_last_error();
@@ -513,7 +553,9 @@ void Show(HWND owner) {
         return CreateWindowExW(0, type, text, WS_CHILD | WS_VISIBLE | style, 0, 0, 1, 1, window,
                                reinterpret_cast<HMENU>(INT_PTR(id)), module, nullptr);
     };
+    child(L"STATIC", nskry::plugin_ui::Text(L"Source text", L"原文"), SS_LEFT, 24);
     sourceEdit = child(L"EDIT", L"", WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP, 10);
+    child(L"STATIC", nskry::plugin_ui::Text(L"Translation", L"译文"), SS_LEFT, 25);
     resultEdit = child(L"EDIT", L"", WS_BORDER | ES_MULTILINE | ES_READONLY | WS_VSCROLL | WS_TABSTOP, 11);
     // Allow over-limit paste so validation rejects it explicitly, rather than
     // silently turning a truncated paste into a successful translation.
@@ -521,18 +563,18 @@ void Show(HWND owner) {
     SendMessageW(resultEdit, EM_SETLIMITTEXT, MaxReplyBytes, 0);
     packEdit = child(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, 12);
     directionChoice = child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP, 13);
-    SendMessageW(directionChoice, CB_ADDSTRING, 0, LPARAM(L"Auto (中/En)"));
-    SendMessageW(directionChoice, CB_ADDSTRING, 0, LPARAM(L"English → 中文"));
-    SendMessageW(directionChoice, CB_ADDSTRING, 0, LPARAM(L"中文 → English"));
+    SendMessageW(directionChoice, CB_ADDSTRING, 0, LPARAM(nskry::plugin_ui::Text(L"Auto (中/En)", L"自动识别（中／英）")));
+    SendMessageW(directionChoice, CB_ADDSTRING, 0, LPARAM(nskry::plugin_ui::Text(L"English → 中文", L"英文 → 中文")));
+    SendMessageW(directionChoice, CB_ADDSTRING, 0, LPARAM(nskry::plugin_ui::Text(L"中文 → English", L"中文 → 英文")));
     SendMessageW(directionChoice, CB_SETCURSEL, 0, 0);
-    child(L"BUTTON", L"Translate", WS_TABSTOP, 1);
-    child(L"BUTTON", L"Cancel", WS_TABSTOP, 2);
-    child(L"BUTTON", L"Copy result", WS_TABSTOP, 3);
-    child(L"BUTTON", L"Save pack path", WS_TABSTOP, 4);
-    child(L"BUTTON", L"Save text", WS_TABSTOP, 5);
+    child(L"BUTTON", nskry::plugin_ui::Text(L"Translate", L"翻译"), WS_TABSTOP, 1);
+    child(L"BUTTON", nskry::plugin_ui::Text(L"Cancel", L"取消"), WS_TABSTOP, 2);
+    child(L"BUTTON", nskry::plugin_ui::Text(L"Copy translation", L"复制译文"), WS_TABSTOP, 3);
+    child(L"BUTTON", nskry::plugin_ui::Text(L"Save pack path", L"保存语言包路径"), WS_TABSTOP, 4);
+    child(L"BUTTON", nskry::plugin_ui::Text(L"Save text", L"保存译文"), WS_TABSTOP, 5);
     providerChoice = child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP, 20);
-    for (const auto *label : {L"Offline · English/Chinese", L"Online · OpenAI-compatible",
-                              L"Online · LibreTranslate", L"Free online · MyMemory (quotas)"})
+    for (const auto *label : {nskry::plugin_ui::Text(L"Offline · English/Chinese", L"离线 · 英文／中文"), nskry::plugin_ui::Text(L"Online · OpenAI-compatible", L"在线 · OpenAI 兼容"),
+                              nskry::plugin_ui::Text(L"Online · LibreTranslate", L"在线 · LibreTranslate"), nskry::plugin_ui::Text(L"Free online · MyMemory (quotas)", L"免费在线 · MyMemory（有额度）")})
         SendMessageW(providerChoice, CB_ADDSTRING, 0, LPARAM(label));
     DWORD preferred{}, preferredSize = sizeof(preferred);
     if (RegGetValueW(HKEY_CURRENT_USER, Key, L"PreferredProviderV1", RRF_RT_REG_DWORD, nullptr, &preferred,
@@ -542,8 +584,8 @@ void Show(HWND owner) {
     // First run is offline. An explicit engine selection may be remembered;
     // every online translation still requires a new upload confirmation.
     SendMessageW(providerChoice, CB_SETCURSEL, preferred, 0);
-    child(L"BUTTON", L"Configure engine", WS_TABSTOP, 21);
-    child(L"BUTTON", L"Use installed OCR plugin for screenshot translation (optional)",
+    child(L"BUTTON", nskry::plugin_ui::Text(L"Configure engine", L"配置引擎"), WS_TABSTOP, 21);
+    child(L"BUTTON", nskry::plugin_ui::Text(L"Use installed OCR plugin for screenshot translation (optional)", L"使用已安装的文字识别插件处理截图（可选）"),
           BS_AUTOCHECKBOX | WS_TABSTOP, 22);
     child(L"STATIC", L"", 0, 23);
     DWORD useProvider{}, preferenceBytes = sizeof(useProvider);
@@ -571,6 +613,8 @@ void Show(HWND owner) {
     }
     closing = false;
     RefreshProviderControls();
+    RefreshFont(window);
+    nskry::plugin_ui::AttachTabNavigation(window);
     SendMessageW(window, WM_SIZE, 0, 0);
     ShowWindow(window, SW_SHOW);
 }
@@ -706,7 +750,7 @@ NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext *context) 
         });
     } catch (...) {
         if (statusLabel)
-            SetWindowTextW(statusLabel, L"Could not recognize the image. Enter source text manually.");
+            SetWindowTextW(statusLabel, nskry::plugin_ui::Text(L"Could not recognize the image. Enter source text manually.", L"无法识别图片。可以手动输入原文。"));
     }
 }
 NSKRY_API void NSKRY_CALL nskry_plugin_shutdown() {
@@ -720,4 +764,8 @@ NSKRY_API void NSKRY_CALL nskry_plugin_shutdown() {
     UnregisterClassW(L"NskryTranslateV1", module);
     UnregisterClassW(L"NskryTranslateTaskV1", module);
     recognitionService = {};
+}
+
+extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_set_ui_preferences_v1(const NskryUiPreferencesV1* ui) {
+    nskry::plugin_ui::SetPreferences(ui);
 }

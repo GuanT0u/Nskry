@@ -3,7 +3,11 @@
 #include "ui/precision_loupe.h"
 #include "ui/interaction_visuals.h"
 #include "ui/toolbar_layout.h"
+#include "ui/ui_preferences.h"
 #include <windowsx.h>
+#include <oleacc.h>
+#include <shellscalingapi.h>
+#pragma comment(lib, "shcore.lib")
 #pragma comment(lib, "msimg32.lib")
 
 namespace nskry {
@@ -26,14 +30,9 @@ SelectionWindow::SelectionWindow(CompletionCallback onComplete, std::vector<Plug
     TakeSnapshot();
 
     m_font = ::CreateFontW(
-        -13, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+        -14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-
-    m_fontIcon = ::CreateFontW(
-        -15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Symbol");
 
     std::call_once(s_classOnce, [] {
         WNDCLASSEXW wc{};
@@ -60,7 +59,6 @@ SelectionWindow::~SelectionWindow() {
     Close();
     CleanupGdi();
     if (m_font)     { ::DeleteObject(m_font); m_font = nullptr; }
-    if (m_fontIcon) { ::DeleteObject(m_fontIcon); m_fontIcon = nullptr; }
 }
 
 void SelectionWindow::TakeSnapshot() {
@@ -128,6 +126,34 @@ LRESULT CALLBACK SelectionWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM
 
 LRESULT SelectionWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+    case WM_GETOBJECT:
+        if (static_cast<LONG>(lp) == OBJID_CLIENT)
+            return m_accessibleToolbar.GetObject(hwnd, wp, lp);
+        break;
+    case ToolbarAccessibility::InvokeMessage:
+    case ToolbarAccessibility::FocusMessage: {
+        if (m_state != State::Selected || !m_accessibleToolbar.Current(static_cast<UINT>(wp)))
+            return 0;
+        LONG child = 0;
+        for (size_t i = 0; i < m_toolbarItems.size(); ++i) {
+            if (m_toolbarItems[i].isSeparator || ++child != lp)
+                continue;
+            if (msg == ToolbarAccessibility::InvokeMessage)
+                ActivateToolbarItem(m_toolbarItems[i]);
+            else {
+                ::SetFocus(hwnd);
+                m_toolbarFocus = static_cast<int>(i);
+                NotifyToolbarFocus();
+                ::InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            break;
+        }
+        return 0;
+    }
+    case WM_NCDESTROY:
+        m_accessibleToolbar.Detach();
+        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        break;
     case WM_MOUSEMOVE:   OnMouseMove(GET_X_LPARAM(lp), GET_Y_LPARAM(lp)); return 0;
     case WM_LBUTTONDOWN: OnLButtonDown(GET_X_LPARAM(lp), GET_Y_LPARAM(lp)); return 0;
     case WM_LBUTTONUP:   OnLButtonUp(GET_X_LPARAM(lp), GET_Y_LPARAM(lp)); return 0;
@@ -185,6 +211,8 @@ LRESULT SelectionWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
                 return 0;
             }
         }
+        if (msg == WM_KEYDOWN && m_state == State::Selected && !m_hTextEdit && HandleToolbarKey(wp))
+            return 0;
         break;
 
     case WM_SETCURSOR:
@@ -385,7 +413,6 @@ void SelectionWindow::OnMouseMove(int x, int y) {
             ::SetCursorPos(screenPoint.x, screenPoint.y);
             m_adjustLastPt = snapped;
         }
-        BuildToolbar(m_finalRect);
         ::InvalidateRect(m_hwnd, nullptr, FALSE);
     }
     else if (m_state == State::Annotating) {
@@ -412,51 +439,12 @@ void SelectionWindow::OnLButtonDown(int x, int y) {
         for (const auto& item : m_toolbarItems) {
             if (item.isSeparator) continue;
             if (::PtInRect(&item.rect, pt)) {
-                CommitTextEdit();
-
-                switch (item.type) {
-                case ToolbarItemType::Action:
-                    FinishWithAction(item.action);
-                    return;
-
-                case ToolbarItemType::PluginAction:
-                    FinishWithAction(SelectionAction::Plugin, item.pluginId, item.pluginActionId);
-                    return;
-
-                case ToolbarItemType::ToolToggle:
-                    if (m_annotationEngine.GetTool() == item.tool) {
-                        m_annotationEngine.SetTool(ToolType::None);
-                    } else {
-                        m_annotationEngine.SetTool(item.tool);
-                    }
-                    BuildToolbar(m_finalRect);
-                    ::InvalidateRect(m_hwnd, nullptr, FALSE);
-                    return;
-
-                case ToolbarItemType::Undo:
-                    m_annotationEngine.Undo();
-                    ::InvalidateRect(m_hwnd, nullptr, FALSE);
-                    return;
-
-                case ToolbarItemType::Redo:
-                    m_annotationEngine.Redo();
-                    ::InvalidateRect(m_hwnd, nullptr, FALSE);
-                    return;
-
-                case ToolbarItemType::WidthChoice:
-                    m_annotationEngine.SetStrokeWidth(item.widthVal);
-                    BuildToolbar(m_finalRect);
-                    ::InvalidateRect(m_hwnd, nullptr, FALSE);
-                    return;
-
-                case ToolbarItemType::ColorChoice:
-                    m_annotationEngine.SetColor(item.color);
-                    BuildToolbar(m_finalRect);
-                    ::InvalidateRect(m_hwnd, nullptr, FALSE);
-                    return;
-                }
+                ActivateToolbarItem(item);
+                return;
             }
         }
+        if (m_toolbarFocus >= 0) { m_toolbarFocus = -1; NotifyToolbarFocus(); }
+        ::InvalidateRect(m_hwnd, nullptr, FALSE);
 
         // 2. Check canvas annotation or adjustment
         if (m_annotationEngine.GetTool() != ToolType::None && ::PtInRect(&m_finalRect, pt)) {
@@ -490,6 +478,7 @@ void SelectionWindow::OnLButtonDown(int x, int y) {
         if (zone != HitZone::None && zone != HitZone::Toolbar) {
             CommitTextEdit();
             m_state = State::Adjusting;
+            UpdateAccessibleToolbar();
             m_activeZone = zone;
             m_adjustStartPt = { x, y };
             m_adjustStartRect = m_finalRect;
@@ -504,6 +493,8 @@ void SelectionWindow::OnLButtonDown(int x, int y) {
             m_annotationEngine.SetTool(ToolType::None);
             m_state = State::Hovering;
             m_toolbarItems.clear();
+            m_overflowItems.clear();
+            UpdateAccessibleToolbar();
             ::InvalidateRect(m_hwnd, nullptr, FALSE);
         }
     }
@@ -565,136 +556,248 @@ void SelectionWindow::CommitTextEdit() {
 // Toolbar Construction & Painting
 // ============================================================================
 
-void SelectionWindow::BuildToolbar(RECT selRect) {
-    m_toolbarItems.clear();
+void SelectionWindow::ActivateToolbarItem(ToolbarItem item) {
+    CommitTextEdit();
+    switch (item.type) {
+    case ToolbarItemType::Action:
+        FinishWithAction(item.action);
+        return;
 
-    const bool hasSub = (m_annotationEngine.GetTool() != ToolType::None);
+    case ToolbarItemType::PluginAction:
+        FinishWithAction(SelectionAction::Plugin, item.pluginId, item.pluginActionId);
+        return;
 
-    // Button definitions for the main bar
-    struct MainBtnDef {
-        ToolbarItemType type;
-        const wchar_t*  label;
-        ToolType        tool;
-        SelectionAction action;
-        int             width;
-        bool            isSep;
-    };
-
-    MainBtnDef mainDefs[] = {
-        // Annotation Tools
-        { ToolbarItemType::ToolToggle, L"矩形",   ToolType::Rect,    SelectionAction::Cancel, 38, false },
-        { ToolbarItemType::ToolToggle, L"圆形",   ToolType::Ellipse, SelectionAction::Cancel, 38, false },
-        { ToolbarItemType::ToolToggle, L"箭头",   ToolType::Arrow,   SelectionAction::Cancel, 38, false },
-        { ToolbarItemType::ToolToggle, L"画笔",   ToolType::Pen,     SelectionAction::Cancel, 38, false },
-        { ToolbarItemType::ToolToggle, L"马赛克", ToolType::Mosaic,  SelectionAction::Cancel, 48, false },
-        { ToolbarItemType::ToolToggle, L"文本",   ToolType::Text,    SelectionAction::Cancel, 38, false },
-
-        // Separator
-        { ToolbarItemType::Action,     nullptr,   ToolType::None,    SelectionAction::Cancel, 6,  true  },
-
-        // Edit History
-        { ToolbarItemType::Undo,       L"撤销",   ToolType::None,    SelectionAction::Cancel, 38, false },
-        { ToolbarItemType::Redo,       L"重做",   ToolType::None,    SelectionAction::Cancel, 38, false },
-
-        // Separator
-        { ToolbarItemType::Action,     nullptr,   ToolType::None,    SelectionAction::Cancel, 6,  true  },
-
-        // Actions
-        { ToolbarItemType::Action,     L"⎘ 复制", ToolType::None,    SelectionAction::Copy, 56, false },
-        { ToolbarItemType::Action,     L"↓ 保存", ToolType::None,    SelectionAction::Save, 56, false },
-        { ToolbarItemType::Action,     L"✂ 编辑", ToolType::None,    SelectionAction::Edit, 56, false },
-        { ToolbarItemType::Action,     L"↗ 固定", ToolType::None,    SelectionAction::Pin,  56, false },
-        { ToolbarItemType::Action,     L"▶ 监控", ToolType::None,    SelectionAction::PiP,  56, false },
-    };
-
-    constexpr int gap = 3;
-    constexpr int barH = 32;
-
-    int totalMainW = 0;
-    for (const auto& def : mainDefs) totalMainW += def.width + gap;
-    totalMainW -= gap;
-    if (!m_pluginActions.empty()) totalMainW += static_cast<int>(m_pluginActions.size()) * (76 + gap);
-
-    // Center horizontally relative to selection
-    int centerX = (selRect.left + selRect.right) / 2;
-    int startX  = centerX - totalMainW / 2;
-    if (startX < 4) startX = 4;
-    if (startX + totalMainW > m_vW - 4) startX = m_vW - 4 - totalMainW;
-
-    // Y positioning: default below selection
-    int mainY = selRect.bottom + 8;
-    int subY  = mainY + barH + 4;
-
-    if (mainY + barH + (hasSub ? 34 : 0) > m_vH - 4) {
-        // Not enough room below: place above
-        if (hasSub) {
-            subY  = selRect.top - 28 - 8;
-            mainY = subY - barH - 4;
+    case ToolbarItemType::ToolToggle:
+        if (m_annotationEngine.GetTool() == item.tool) {
+            m_annotationEngine.SetTool(ToolType::None);
         } else {
-            mainY = selRect.top - barH - 8;
+            m_annotationEngine.SetTool(item.tool);
+        }
+        BuildToolbar(m_finalRect);
+        ::InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+
+    case ToolbarItemType::Undo:
+        m_annotationEngine.Undo();
+        ::InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+
+    case ToolbarItemType::Redo:
+        m_annotationEngine.Redo();
+        ::InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+
+    case ToolbarItemType::WidthChoice:
+        m_annotationEngine.SetStrokeWidth(item.widthVal);
+        BuildToolbar(m_finalRect);
+        ::InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+
+    case ToolbarItemType::ColorChoice:
+        m_annotationEngine.SetColor(item.color);
+        BuildToolbar(m_finalRect);
+        ::InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    case ToolbarItemType::More: {
+        if (m_overflowItems.empty())
+            return;
+        HMENU menu = ::CreatePopupMenu();
+        if (!menu)
+            return;
+        int group = m_overflowItems.front().group;
+        for (size_t i = 0; i < m_overflowItems.size(); ++i) {
+            const auto &entry = m_overflowItems[i];
+            if (group != entry.group)
+                ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+            group = entry.group;
+            std::wstring label = entry.label;
+            for (size_t pos = 0; (pos = label.find(L'&', pos)) != std::wstring::npos; pos += 2)
+                label.insert(pos, 1, L'&');
+            ::AppendMenuW(menu, MF_STRING | (entry.selected ? MF_CHECKED : 0), i + 1, label.c_str());
+        }
+        POINT position{item.rect.left, item.rect.bottom};
+        ::ClientToScreen(m_hwnd, &position);
+        RECT exclude = item.rect;
+        ::OffsetRect(&exclude, position.x - item.rect.left, position.y - item.rect.bottom);
+        TPMPARAMS params{sizeof(params), exclude};
+        const UINT picked = ::TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_VERTICAL,
+                                               position.x, position.y, m_hwnd, &params);
+        ::DestroyMenu(menu);
+        if (picked && picked <= m_overflowItems.size())
+            ActivateToolbarItem(m_overflowItems[picked - 1]);
+        return;
+    }
+    }
+}
+
+bool SelectionWindow::HandleToolbarKey(WPARAM key) {
+    if (m_toolbarItems.empty() || ::GetKeyState(VK_CONTROL) < 0 || ::GetKeyState(VK_MENU) < 0)
+        return false;
+    if (key == VK_TAB || (m_toolbarFocus >= 0 && (key == VK_LEFT || key == VK_RIGHT))) {
+        const int step = (key == VK_LEFT || (key == VK_TAB && ::GetKeyState(VK_SHIFT) < 0)) ? -1 : 1;
+        const int count = static_cast<int>(m_toolbarItems.size());
+        if (m_toolbarFocus < 0)
+            m_toolbarFocus = step > 0 ? count - 1 : 0;
+        do {
+            m_toolbarFocus = (m_toolbarFocus + step + count) % count;
+        } while (m_toolbarItems[m_toolbarFocus].isSeparator);
+        NotifyToolbarFocus();
+        ::InvalidateRect(m_hwnd, nullptr, FALSE);
+        return true;
+    }
+    if (m_toolbarFocus >= 0 && (key == VK_RETURN || key == VK_SPACE)) {
+        ActivateToolbarItem(m_toolbarItems[m_toolbarFocus]);
+        return true;
+    }
+    return false;
+}
+
+void SelectionWindow::BuildToolbar(RECT selRect) {
+    const ToolbarItem focused = m_toolbarFocus >= 0 ? m_toolbarItems[m_toolbarFocus] : ToolbarItem{};
+    const bool restoreFocus = m_toolbarFocus >= 0;
+    m_toolbarFocus = -1;
+    m_toolbarItems.clear();
+    m_overflowItems.clear();
+
+    RECT physical = selRect;
+    ::OffsetRect(&physical, m_vX, m_vY);
+    const HMONITOR display = ::MonitorFromRect(&physical, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO monitor{sizeof(monitor)};
+    RECT viewport{0, 0, m_vW, m_vH};
+    if (::GetMonitorInfoW(display, &monitor)) {
+        viewport = monitor.rcWork;
+        ::OffsetRect(&viewport, -m_vX, -m_vY);
+    }
+    UINT dpi = 96, dpiY = 96;
+    if (FAILED(::GetDpiForMonitor(display, MDT_EFFECTIVE_DPI, &dpi, &dpiY)))
+        dpi = 96;
+    const auto dip = [dpi](int n) { return ::MulDiv(n, dpi, 96); };
+    if (dpi != m_toolbarDpi) {
+        HFONT font = ::CreateFontW(-dip(14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                   DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+        if (font) {
+            if (m_hTextEdit)
+                ::SendMessageW(m_hTextEdit, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+            ::DeleteObject(m_font);
+            m_font = font;
+            m_toolbarDpi = dpi;
         }
     }
-    if (mainY < 4) mainY = 4;
-
-    // Populate Main Bar
-    int curX = startX;
-    for (const auto& def : mainDefs) {
-        ToolbarItem item{};
-        item.rect        = { curX, mainY, curX + def.width, mainY + barH };
-        item.type        = def.type;
-        item.label       = def.label ? def.label : L"";
-        item.tool        = def.tool;
-        item.action      = def.action;
-        item.isSeparator = def.isSep;
-        item.selected    = (def.type == ToolbarItemType::ToolToggle && m_annotationEngine.GetTool() == def.tool);
-
-        m_toolbarItems.push_back(item);
-        curX += def.width + gap;
-    }
-
-    for (const PluginToolbarAction& action : m_pluginActions) {
-        ToolbarItem item{};
-        item.rect = { curX, mainY, curX + 76, mainY + barH };
+    const bool chinese = DesktopUiChinese();
+    m_toolbarPalette = GetDesktopPalette();
+    HDC dc = ::GetDC(m_hwnd);
+    HGDIOBJ oldFont = dc ? ::SelectObject(dc, m_font) : nullptr;
+    const auto measure = [&](const std::wstring &label) {
+        SIZE size{};
+        if (!dc || !::GetTextExtentPoint32W(dc, label.c_str(), static_cast<int>(label.size()), &size))
+            size.cx = static_cast<LONG>(label.size()) * dip(12);
+        return static_cast<int>(size.cx) + dip(24);
+    };
+    struct Candidate { ToolbarItem item; int width; int priority; bool visible = true; };
+    std::vector<Candidate> items;
+    const auto add = [&](ToolbarItem item, int priority) {
+        const int width = measure(item.label);
+        items.push_back({std::move(item), width, priority});
+    };
+    const auto tool = [&](ToolType type, const wchar_t *en, const wchar_t *zh) {
+        ToolbarItem item;
+        item.type = ToolbarItemType::ToolToggle;
+        item.tool = type;
+        item.label = chinese ? zh : en;
+        item.selected = m_annotationEngine.GetTool() == type;
+        const int priority = item.selected ? 0 : 2;
+        add(std::move(item), priority);
+    };
+    tool(ToolType::Rect, L"Rectangle", L"矩形");
+    tool(ToolType::Ellipse, L"Ellipse", L"椭圆");
+    tool(ToolType::Arrow, L"Arrow", L"箭头");
+    tool(ToolType::Pen, L"Pen", L"画笔");
+    tool(ToolType::Mosaic, L"Mosaic", L"马赛克");
+    tool(ToolType::Text, L"Text", L"文字");
+    const auto command = [&](ToolbarItemType type, SelectionAction action, int group, int priority,
+                             const wchar_t *en, const wchar_t *zh) {
+        ToolbarItem item;
+        item.type = type;
+        item.action = action;
+        item.group = group;
+        item.label = chinese ? zh : en;
+        add(std::move(item), priority);
+    };
+    command(ToolbarItemType::Undo, SelectionAction::Cancel, 1, 3, L"Undo", L"撤销");
+    command(ToolbarItemType::Redo, SelectionAction::Cancel, 1, 3, L"Redo", L"重做");
+    command(ToolbarItemType::Action, SelectionAction::Copy, 2, 0, L"Copy", L"复制");
+    command(ToolbarItemType::Action, SelectionAction::Save, 2, 1, L"Save", L"保存");
+    command(ToolbarItemType::Action, SelectionAction::Edit, 2, 1, L"Edit", L"编辑");
+    command(ToolbarItemType::Action, SelectionAction::Pin, 2, 3, L"Pin", L"固定");
+    command(ToolbarItemType::Action, SelectionAction::PiP, 2, 3, L"Picture in picture", L"画中画");
+    for (const auto &action : m_pluginActions) {
+        ToolbarItem item;
+        item.group = 3;
         item.type = ToolbarItemType::PluginAction;
         item.label = action.label;
         item.pluginId = action.id;
         item.pluginActionId = action.actionId;
-        m_toolbarItems.push_back(std::move(item));
-        curX += 76 + gap;
+        add(std::move(item), 4);
     }
 
-    // Populate Secondary Sub-bar (if tool is active)
-    if (hasSub) {
-        const int subItemH = 26;
-        const int subBarW = 320;
-        int subStartX = centerX - subBarW / 2;
-        if (subStartX < 4) subStartX = 4;
-        if (subStartX + subBarW > m_vW - 4) subStartX = m_vW - 4 - subBarW;
-
-        int sx = subStartX;
-
-        // 3 stroke widths
-        int widths[] = { 2, 4, 8 };
-        const wchar_t* wLabels[] = { L"\x25CF 2", L"\x25CF 4", L"\x25CF 8" };
-        for (int i = 0; i < 3; i++) {
-            ToolbarItem item{};
-            item.rect     = { sx, subY, sx + 34, subY + subItemH };
-            item.type     = ToolbarItemType::WidthChoice;
-            item.widthVal = widths[i];
-            item.label    = wLabels[i];
-            item.selected = (m_annotationEngine.GetStrokeWidth() == widths[i]);
-            m_toolbarItems.push_back(item);
-            sx += 34 + gap;
+    ToolbarItem more;
+    more.type = ToolbarItemType::More;
+    more.label = chinese ? L"更多" : L"More";
+    const int gap = dip(4), moreWidth = measure(more.label);
+    const int available = viewport.right - viewport.left - 2 * gap;
+    if (dc) {
+        ::SelectObject(dc, oldFont);
+        ::ReleaseDC(m_hwnd, dc);
+    }
+    const auto total = [&] {
+        int width = -gap, group = -1;
+        for (const auto &entry : items) {
+            if (!entry.visible)
+                continue;
+            if (group >= 0 && group != entry.item.group)
+                width += 2 * gap;
+            width += entry.width + gap;
+            group = entry.item.group;
         }
-
-        // Separator
-        ToolbarItem sep{};
-        sep.rect        = { sx, subY, sx + 6, subY + subItemH };
-        sep.isSeparator = true;
-        m_toolbarItems.push_back(sep);
-        sx += 6 + gap;
-
-        // 8 Palette Colors
+        return width;
+    };
+    if (total() > available) {
+        for (int priority = 4; priority >= 1 && total() + gap + moreWidth > available; --priority)
+            for (auto it = items.rbegin(); it != items.rend() && total() + gap + moreWidth > available; ++it)
+                if (it->priority == priority)
+                    it->visible = false;
+    }
+    std::vector<int> widths;
+    const auto place = [&](ToolbarItem item, int width) {
+        m_toolbarItems.push_back(std::move(item));
+        widths.push_back(width);
+    };
+    int group = -1;
+    for (auto &entry : items) {
+        if (!entry.visible) {
+            m_overflowItems.push_back(std::move(entry.item));
+            continue;
+        }
+        if (group >= 0 && group != entry.item.group) {
+            ToolbarItem divider;
+            divider.isSeparator = true;
+            place(divider, gap);
+        }
+        group = entry.item.group;
+        place(std::move(entry.item), entry.width);
+    }
+    if (!m_overflowItems.empty())
+        place(std::move(more), moreWidth);
+    const auto mainCount = widths.size();
+    if (m_annotationEngine.GetTool() != ToolType::None) {
+        for (int width : {2, 4, 8}) {
+            ToolbarItem item;
+            item.type = ToolbarItemType::WidthChoice;
+            item.widthVal = width;
+            item.label = std::to_wstring(width);
+            item.selected = m_annotationEngine.GetStrokeWidth() == width;
+            place(std::move(item), dip(32));
+        }
         COLORREF colors[] = {
             RGB(255, 59, 48),   // Red
             RGB(255, 149, 0),  // Orange
@@ -706,39 +809,78 @@ void SelectionWindow::BuildToolbar(RECT selRect) {
             RGB(30, 30, 35)    // Dark
         };
 
-        for (int i = 0; i < 8; i++) {
-            ToolbarItem item{};
-            item.rect     = { sx, subY, sx + 22, subY + subItemH };
-            item.type     = ToolbarItemType::ColorChoice;
-            item.color    = colors[i];
-            item.selected = (m_annotationEngine.GetColor() == colors[i]);
-            m_toolbarItems.push_back(item);
-            sx += 22 + gap;
+        for (COLORREF color : colors) {
+            ToolbarItem item;
+            item.type = ToolbarItemType::ColorChoice;
+            item.color = color;
+            item.selected = m_annotationEngine.GetColor() == color;
+            place(std::move(item), dip(32));
         }
     }
-    RECT physical = selRect;
-    OffsetRect(&physical, m_vX, m_vY);
-    MONITORINFO monitor{sizeof(monitor)};
-    RECT viewport{0, 0, m_vW, m_vH};
-    if (GetMonitorInfoW(MonitorFromRect(&physical, MONITOR_DEFAULTTONEAREST), &monitor)) {
-        viewport = monitor.rcMonitor;
-        OffsetRect(&viewport, -m_vX, -m_vY);
+    const auto layout = LayoutSelectionToolbar(widths, selRect, viewport, mainCount, dpi);
+    for (size_t i = 0; i < layout.size(); ++i)
+        m_toolbarItems[i].rect = layout[i];
+    if (restoreFocus) {
+        const auto match = std::find_if(m_toolbarItems.begin(), m_toolbarItems.end(), [&](const ToolbarItem &item) {
+            return !item.isSeparator && item.type == focused.type && item.action == focused.action &&
+                   item.tool == focused.tool && item.pluginId == focused.pluginId &&
+                   item.pluginActionId == focused.pluginActionId && item.widthVal == focused.widthVal &&
+                   item.color == focused.color;
+        });
+        if (match != m_toolbarItems.end())
+            m_toolbarFocus = static_cast<int>(match - m_toolbarItems.begin());
     }
-    std::vector<int> widths;
-    widths.reserve(m_toolbarItems.size());
-    for (const auto &item : m_toolbarItems) widths.push_back(item.rect.right - item.rect.left);
-    const auto layout = LayoutSelectionToolbar(widths, selRect, viewport, std::size(mainDefs) + m_pluginActions.size());
-    for (size_t i = 0; i < layout.size(); ++i) m_toolbarItems[i].rect = layout[i];
+    UpdateAccessibleToolbar();
+}
+
+void SelectionWindow::UpdateAccessibleToolbar() {
+    std::vector<ToolbarAccessibility::Item> items;
+    if (m_state == State::Selected) {
+        for (const auto &item : m_toolbarItems) {
+            if (item.isSeparator) continue;
+            std::wstring name = item.label;
+            if (item.type == ToolbarItemType::WidthChoice)
+                name = UiText(L"Stroke width · ", L"线宽 · ") + name + L" px";
+            if (item.type == ToolbarItemType::ColorChoice)
+                name = UiText(L"Color · ", L"颜色 · ") +
+                    std::to_wstring(GetRValue(item.color)) + L", " +
+                    std::to_wstring(GetGValue(item.color)) + L", " + std::to_wstring(GetBValue(item.color));
+            if (item.type == ToolbarItemType::Action && item.action == SelectionAction::Copy)
+                name = UiText(L"Copy image", L"复制图片");
+            RECT bounds = item.rect;
+            ::OffsetRect(&bounds, m_vX, m_vY);
+            items.push_back({std::move(name), bounds, item.selected});
+        }
+    }
+    m_accessibleToolbar.Update(m_hwnd, std::move(items), UiText(L"Capture toolbar", L"截图工具栏"),
+                               UiText(L"Activate", L"执行"));
+    if (m_toolbarFocus >= 0)
+        NotifyToolbarFocus();
+}
+
+void SelectionWindow::NotifyToolbarFocus() {
+    LONG child = 0;
+    for (int i = 0; i <= m_toolbarFocus; ++i)
+        if (!m_toolbarItems[i].isSeparator) ++child;
+    m_accessibleToolbar.Focus(m_hwnd, child);
 }
 
 void SelectionWindow::DrawToolbar(HDC hdc) {
     ::SetBkMode(hdc, TRANSPARENT);
 
+    const auto &palette = m_toolbarPalette;
     for (const auto& item : m_toolbarItems) {
+        const auto drawFocus = [&] {
+            if (m_toolbarFocus >= 0 && &item == &m_toolbarItems[m_toolbarFocus]) {
+                RECT focus = item.rect;
+                ::InflateRect(&focus, -2, -2);
+                ::DrawFocusRect(hdc, &focus);
+            }
+        };
         if (item.isSeparator) {
             // Separator vertical line
             int midX = (item.rect.left + item.rect.right) / 2;
-            HPEN sepPen = ::CreatePen(PS_SOLID, 1, RGB(70, 70, 80));
+            HPEN sepPen = ::CreatePen(PS_SOLID, 1, palette.border);
             HGDIOBJ oldPen = ::SelectObject(hdc, sepPen);
             ::MoveToEx(hdc, midX, item.rect.top + 4, nullptr);
             ::LineTo(hdc, midX, item.rect.bottom - 4);
@@ -749,7 +891,7 @@ void SelectionWindow::DrawToolbar(HDC hdc) {
 
         if (item.type == ToolbarItemType::ColorChoice) {
             // Palette color circle/swatch
-            COLORREF bg = item.hovered ? RGB(60, 60, 70) : RGB(45, 45, 52);
+            COLORREF bg = item.hovered ? palette.hover : palette.panel;
             HBRUSH bgBrush = ::CreateSolidBrush(bg);
             ::FillRect(hdc, &item.rect, bgBrush);
             ::DeleteObject(bgBrush);
@@ -760,7 +902,7 @@ void SelectionWindow::DrawToolbar(HDC hdc) {
             int r  = 7;
 
             HBRUSH colBrush = ::CreateSolidBrush(item.color);
-            HPEN borderPen  = ::CreatePen(PS_SOLID, 1, item.selected ? RGB(255, 255, 255) : RGB(80, 80, 90));
+            HPEN borderPen  = ::CreatePen(PS_SOLID, 1, palette.border);
             HGDIOBJ oldBrush = ::SelectObject(hdc, colBrush);
             HGDIOBJ oldPen   = ::SelectObject(hdc, borderPen);
 
@@ -768,10 +910,11 @@ void SelectionWindow::DrawToolbar(HDC hdc) {
 
             // Selected outline ring
             if (item.selected) {
-                HPEN ringPen = ::CreatePen(PS_SOLID, 2, RGB(0, 150, 255));
+                HPEN ringPen = ::CreatePen(PS_SOLID, 2, palette.accent);
                 ::SelectObject(hdc, ringPen);
                 ::SelectObject(hdc, ::GetStockObject(NULL_BRUSH));
                 ::Ellipse(hdc, cx - r - 2, cy - r - 2, cx + r + 3, cy + r + 3);
+                ::SelectObject(hdc, borderPen);
                 ::DeleteObject(ringPen);
             }
 
@@ -779,35 +922,30 @@ void SelectionWindow::DrawToolbar(HDC hdc) {
             ::SelectObject(hdc, oldPen);
             ::DeleteObject(colBrush);
             ::DeleteObject(borderPen);
+            drawFocus();
             continue;
         }
 
-        // Standard Button
-        COLORREF bgColor;
-        if (item.selected) {
-            bgColor = RGB(25, 118, 210); // Active blue
-        } else if (item.hovered) {
-            bgColor = RGB(65, 65, 75);
-        } else {
-            bgColor = RGB(45, 45, 52);
-        }
+        const bool primary = item.type == ToolbarItemType::Action && item.action == SelectionAction::Copy;
+        const COLORREF bgColor = primary ? palette.accent : (item.hovered ? palette.hover : palette.panel);
 
         HBRUSH bgBrush = ::CreateSolidBrush(bgColor);
         ::FillRect(hdc, &item.rect, bgBrush);
         ::DeleteObject(bgBrush);
 
-        HBRUSH borderBrush = ::CreateSolidBrush(item.selected ? RGB(70, 160, 245) : (item.hovered ? RGB(85, 85, 95) : RGB(65, 65, 75)));
+        HBRUSH borderBrush = ::CreateSolidBrush(item.selected || item.hovered ? palette.accent : palette.border);
         ::FrameRect(hdc, &item.rect, borderBrush);
         ::DeleteObject(borderBrush);
 
         if (!item.label.empty()) {
             HFONT oldFont = static_cast<HFONT>(::SelectObject(hdc, m_font));
 
-            ::SetTextColor(hdc, item.selected ? RGB(255, 255, 255) : RGB(235, 235, 240));
+            ::SetTextColor(hdc, primary ? palette.onAccent : palette.text);
             RECT textRect = item.rect;
-            ::DrawTextW(hdc, item.label.c_str(), -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            ::DrawTextW(hdc, item.label.c_str(), -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
             ::SelectObject(hdc, oldFont);
         }
+        drawFocus();
     }
 }
 
@@ -983,8 +1121,8 @@ void SelectionWindow::OnPaint(HWND hwnd) {
         }
     }
 
-    // 5. Draw toolbar if in Selected, Adjusting, or Annotating state
-    if (m_state == State::Selected || m_state == State::Adjusting || m_state == State::Annotating) {
+    // Hide controls while the selection bounds are being dragged.
+    if (m_state == State::Selected || m_state == State::Annotating) {
         DrawToolbar(hdcBack);
     }
 

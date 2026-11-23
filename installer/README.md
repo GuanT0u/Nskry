@@ -1,6 +1,10 @@
 # Nskry Setup
 
-`NskrySetup.iss` creates a per-user installer with Inno Setup 6. It installs
+`NskrySetup.iss` creates a per-user installer with Inno Setup 6.5 or later and its bundled
+Simplified Chinese messages. The wizard offers English and Simplified Chinese.
+If the compiler installation does not include the language file, pass its absolute path as
+`/DChineseMessagesFile=...`.
+[Inno Setup language files](https://jrsoftware.org/inno-setup/translations). It installs
 the executable under `%LOCALAPPDATA%\\Programs\\Nskry`; runtime data remains in
 `%LOCALAPPDATA%\\Nskry` and is not removed by uninstall.
 
@@ -18,7 +22,7 @@ the executable under `%LOCALAPPDATA%\\Programs\\Nskry`; runtime data remains in
 The optional packages are not copied directly into the plugin directory.
 Setup invokes `Nskry.exe --install-plugin ... --silent --source official`, so
 Setup, Settings, drag/drop, and updates share exactly one package-validation
-and staging pipeline.
+and staging pipeline. Setup offers a retry if an optional plugin fails. Silent setup logs the failure and continues with the core installation.
 
 The installer now ships LICENSE, the full GPLv3 COPYING, PLUGIN_EXCEPTION and the third-party
 plugin policy. This does not by itself satisfy all corresponding-source or

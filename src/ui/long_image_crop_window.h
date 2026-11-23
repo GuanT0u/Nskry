@@ -1,4 +1,6 @@
 #pragma once
+#include "ui/ui_preferences.h"
+
 
 #include <functional>
 #include <mutex>
@@ -29,8 +31,14 @@ public:
     LongImageCropWindow& operator=(const LongImageCropWindow&) = delete;
 
     [[nodiscard]] bool Show(HWND owner);
+    bool HandleTab(const MSG &message) const;
+    HWND Hwnd() const { return m_hwnd; }
 
 private:
+    DesktopPalette m_palette = GetDesktopPalette();
+    HFONT m_uiFont{};
+    int Dip(int value) const;
+    void RefreshFont();
     friend struct ImageEditorTestAccess;
     enum class DragHandle { None, Top, Bottom, Left, Right, Pan, OcrArea, Cut };
 
@@ -38,6 +46,7 @@ private:
     LRESULT HandleMessage(HWND, UINT, WPARAM, LPARAM);
     void Paint(HWND);
     void LayoutControls();
+    void RefreshLabels();
     RECT ImageRect() const;
     void CenterViewOn(int sourceY);
     void ScrollView(int wheelDelta);

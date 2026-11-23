@@ -1,3 +1,4 @@
+#include "ui/ui_preferences.h"
 #include "ui/settings/interaction_page.h"
 #include "pch.h"
 #include <commctrl.h>
@@ -14,7 +15,7 @@ InteractionPage::InteractionPage(HWND parent) {
         c.lpszClassName = L"NskryInteractionPage";
         RegisterClassW(&c);
     });
-    m_hwnd = CreateWindowExW(0, L"NskryInteractionPage", L"", WS_CHILD | WS_VSCROLL | WS_CLIPCHILDREN, 0, 0, 10, 10,
+    m_hwnd = CreateWindowExW(WS_EX_CONTROLPARENT, L"NskryInteractionPage", L"", WS_CHILD | WS_VSCROLL | WS_CLIPCHILDREN, 0, 0, 10, 10,
                              parent, nullptr, nullptr, this);
     auto control = [&](const wchar_t *cls, const wchar_t *text, int id, int x, int y, int w, int h, DWORD flags = 0) {
         HWND c = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | flags, x, y, w, h, m_hwnd, HMENU(INT_PTR(id)),
@@ -34,35 +35,35 @@ InteractionPage::InteractionPage(HWND parent) {
         SendMessageW(c, TBM_SETRANGE, TRUE, MAKELPARAM(min, max));
         control(L"STATIC", L"", id + 100, 544, y, 55, 25);
     };
-    control(L"STATIC", L"Selection border (display only)", 0, 8, 8, 580, 24);
-    control(L"STATIC", L"Line style", 0, 16, 40, 220, 24);
-    combo(1, 36, {L"Solid", L"Dashed"});
-    control(L"STATIC", L"Width (1-6 px)", 0, 16, 80, 220, 24);
+    control(L"STATIC", UiText(L"Selection border (display only)", L"选区边线（仅界面显示）"), 0, 8, 8, 580, 24);
+    control(L"STATIC", UiText(L"Line style", L"线型"), 0, 16, 40, 220, 24);
+    combo(1, 36, {UiText(L"Solid", L"实线"), UiText(L"Dashed", L"虚线")});
+    control(L"STATIC", UiText(L"Width (1-6 px)", L"宽度（1–6 px）"), 0, 16, 80, 220, 24);
     slider(2, 76, 1, 6);
-    control(L"STATIC", L"Opacity (%)", 0, 16, 120, 220, 24);
+    control(L"STATIC", UiText(L"Opacity (%)", L"不透明度（%）"), 0, 16, 120, 220, 24);
     slider(3, 116, 0, 100);
-    control(L"BUTTON", L"Border color...", 4, 16, 156, 230, 30, BS_PUSHBUTTON | WS_TABSTOP);
-    combo(5, 156, {L"Blue", L"Amber", L"Red", L"White", L"Black", L"Custom"});
-    control(L"STATIC", L"Cut preview (never exported)", 0, 8, 206, 580, 24);
-    control(L"STATIC", L"Preview style", 0, 16, 240, 220, 24);
-    combo(6, 236, {L"Translucent mask", L"Mask + grid", L"Cut edges only", L"Legacy hatch"});
-    control(L"STATIC", L"Mask opacity (%)", 0, 16, 280, 220, 24);
+    control(L"BUTTON", UiText(L"Border color...", L"边线颜色…"), 4, 16, 156, 230, 30, BS_PUSHBUTTON | WS_TABSTOP);
+    combo(5, 156, {UiText(L"Blue", L"蓝色"), UiText(L"Amber", L"琥珀色"), UiText(L"Red", L"红色"), UiText(L"White", L"白色"), UiText(L"Black", L"黑色"), UiText(L"Custom", L"自定义")});
+    control(L"STATIC", UiText(L"Cut preview (never exported)", L"切除预览（仅界面显示）"), 0, 8, 206, 580, 24);
+    control(L"STATIC", UiText(L"Preview style", L"预览样式"), 0, 16, 240, 220, 24);
+    combo(6, 236, {UiText(L"Translucent mask", L"半透明蒙层"), UiText(L"Mask + grid", L"蒙层和网格"), UiText(L"Cut edges only", L"仅显示切除边线"), UiText(L"Legacy hatch", L"交叉纹理")});
+    control(L"STATIC", UiText(L"Mask opacity (%)", L"蒙层不透明度（%）"), 0, 16, 280, 220, 24);
     slider(7, 276, 0, 100);
-    control(L"BUTTON", L"Mask color...", 8, 16, 316, 230, 30, BS_PUSHBUTTON | WS_TABSTOP);
-    combo(9, 316, {L"Red", L"Black", L"Custom"});
-    control(L"BUTTON", L"Also show cut edges", 10, 16, 354, 400, 24, BS_AUTOCHECKBOX | WS_TABSTOP);
-    control(L"STATIC", L"Cursor by interaction state", 0, 8, 398, 580, 24);
-    const wchar_t *names[] = {L"Selection / dragging", L"Selection move", L"Cut rows", L"Cut columns", L"Image pan"};
+    control(L"BUTTON", UiText(L"Mask color...", L"蒙层颜色…"), 8, 16, 316, 230, 30, BS_PUSHBUTTON | WS_TABSTOP);
+    combo(9, 316, {UiText(L"Red", L"红色"), UiText(L"Black", L"黑色"), UiText(L"Custom", L"自定义")});
+    control(L"BUTTON", UiText(L"Also show cut edges", L"同时显示切除边线"), 10, 16, 354, 400, 24, BS_AUTOCHECKBOX | WS_TABSTOP);
+    control(L"STATIC", UiText(L"Cursor by interaction state", L"各操作的光标"), 0, 8, 398, 580, 24);
+    const wchar_t *names[] = {UiText(L"Selection / dragging", L"框选／拖动"), UiText(L"Selection move", L"移动选区"), UiText(L"Cut rows", L"切除行"), UiText(L"Cut columns", L"切除列"), UiText(L"Image pan", L"平移图片")};
     for (int i = 0; i < 5; ++i) {
         int y = 434 + i * 84;
         control(L"STATIC", names[i], 0, 16, y, 220, 24);
         m_cursor[i] = combo(
             20 + i, y,
-            {L"Arrow", L"Cross", L"Hand", L"Move", L"Horizontal resize", L"Vertical resize", L"Custom .cur / .ani"});
-        control(L"BUTTON", L"Choose cursor...", 30 + i, 16, y + 34, 220, 30, BS_PUSHBUTTON | WS_TABSTOP);
+            {UiText(L"Arrow", L"箭头"), UiText(L"Cross", L"十字"), UiText(L"Hand", L"手形"), UiText(L"Move", L"移动"), UiText(L"Horizontal resize", L"横向调整大小"), UiText(L"Vertical resize", L"竖向调整大小"), UiText(L"Custom .cur / .ani", L"自定义 .cur／.ani")});
+        control(L"BUTTON", UiText(L"Choose cursor...", L"选择光标…"), 30 + i, 16, y + 34, 220, 30, BS_PUSHBUTTON | WS_TABSTOP);
         m_files[i] = control(L"STATIC", L"", 0, 260, y + 38, 330, 30);
     }
-    control(L"BUTTON", L"Reset input appearance", 50, 16, 846, 260, 30, BS_PUSHBUTTON | WS_TABSTOP);
+    control(L"BUTTON", UiText(L"Reset input appearance", L"重置输入外观"), 50, 16, 846, 260, 30, BS_PUSHBUTTON | WS_TABSTOP);
     Load({});
 }
 InteractionPage::~InteractionPage() {
@@ -110,14 +111,26 @@ InteractionStyle InteractionPage::Value() {
 void InteractionPage::Layout() {
     RECT r{};
     GetClientRect(m_hwnd, &r);
+    const UINT dpi = ::GetDpiForWindow(m_hwnd);
+    const int units = dpi ? dpi : 96;
+    const auto move = [units](HWND control, HWND, int x, int y, int w, int h, UINT flags) {
+        const auto scale = [units](int n) { return ::MulDiv(n, units, 96); };
+        ::SetWindowPos(control, nullptr, scale(x), scale(y), scale(w), scale(h), flags);
+    };
+    r.right = ::MulDiv(r.right, 96, units);
+    r.bottom = ::MulDiv(r.bottom, 96, units);
     SCROLLINFO s{sizeof(s), SIF_RANGE | SIF_PAGE | SIF_POS, 0, 879, UINT(r.bottom), m_scroll};
     SetScrollInfo(m_hwnd, SB_VERT, &s, TRUE);
     for (auto i : m_items)
-        SetWindowPos(i.hwnd, nullptr, i.x, i.y - m_scroll, i.w, i.h, SWP_NOZORDER | SWP_NOACTIVATE);
+        move(i.hwnd, nullptr, i.x, i.y - m_scroll, i.w, i.h, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 void InteractionPage::Scroll(int pos) {
     RECT r{};
     GetClientRect(m_hwnd, &r);
+    const UINT dpi = ::GetDpiForWindow(m_hwnd);
+    const int units = dpi ? dpi : 96;
+    r.right = ::MulDiv(r.right, 96, units);
+    r.bottom = ::MulDiv(r.bottom, 96, units);
     m_scroll = std::clamp(pos, 0, (std::max)(0, 880 - int(r.bottom)));
     Layout();
 }
@@ -167,11 +180,13 @@ LRESULT InteractionPage::Handle(UINT m, WPARAM p, LPARAM l) {
         return 0;
     }
     case WM_HSCROLL: {
+        ::PostMessageW(::GetParent(m_hwnd), WM_NSKRY_SETTINGS_DIRTY, 0, 0);
         int id = GetDlgCtrlID(HWND(l));
         SetDlgItemTextW(m_hwnd, id + 100, std::to_wstring(SendMessageW(HWND(l), TBM_GETPOS, 0, 0)).c_str());
         return 0;
     }
     case WM_COMMAND: {
+        ::PostMessageW(::GetParent(m_hwnd), WM_NSKRY_SETTINGS_DIRTY, 0, 0);
         int id = LOWORD(p);
         if (id == 50) {
             Load({});
@@ -224,7 +239,7 @@ LRESULT InteractionPage::Handle(UINT m, WPARAM p, LPARAM l) {
             if (GetOpenFileNameW(&f)) {
                 HCURSOR cursor = LoadCursorFromFileW(path);
                 if (!cursor) {
-                    MessageBoxW(m_hwnd, L"This cursor could not be loaded.", L"Nskry", MB_ICONERROR);
+                    MessageBoxW(m_hwnd, UiText(L"This cursor could not be loaded.", L"无法加载该光标。"), L"Nskry", MB_ICONERROR);
                     return 0;
                 }
                 DestroyCursor(cursor);

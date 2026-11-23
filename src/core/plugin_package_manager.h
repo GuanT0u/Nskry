@@ -14,6 +14,8 @@ struct PluginPackageResult {
     std::wstring pluginId;
     std::wstring message;
 };
+enum class PluginRestartAction { Update, Remove };
+
 struct PreparedPluginPackage {
     PluginManifest manifest;
     std::wstring path, parent;
@@ -28,6 +30,7 @@ class PluginPackageManager {
 
     bool Initialize();
     bool ApplyPendingOperations(std::wstring *error = nullptr);
+    std::vector<std::pair<std::wstring, PluginRestartAction>> PendingRestartActions() const;
 
     /// Verifies and reads package metadata without installing or loading its DLL.
     bool InspectPackage(const std::wstring &packagePath, PluginManifest &manifest, std::wstring *error = nullptr);

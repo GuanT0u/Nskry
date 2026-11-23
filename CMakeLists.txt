@@ -38,12 +38,26 @@ add_executable(Nskry WIN32
     src/ui/long_image_crop_window.cpp
     src/ui/precision_loupe.cpp
     src/ui/selection_window.cpp
+    src/ui/toolbar_accessibility.cpp
     src/ui/settings/settings_window.cpp
     src/ui/settings/plugin_update_flow.cpp
     src/ui/settings/input_page.cpp src/ui/settings/interaction_page.cpp
     src/update/package_verifier.cpp
     src/update/downloader.cpp
 )
+
+set(NSKRY_RESOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/ui/resources")
+if(MSVC AND CMAKE_GENERATOR MATCHES "Ninja")
+    # Track the icon explicitly without Ninja's MSVC header dependency scanner.
+    set(NSKRY_ICON_RES "${CMAKE_CURRENT_BINARY_DIR}/nskry-icon.res")
+    add_custom_command(OUTPUT "${NSKRY_ICON_RES}"
+        COMMAND "${CMAKE_RC_COMPILER}" /nologo /fo "${NSKRY_ICON_RES}" "${NSKRY_RESOURCES}/nskry.rc"
+        DEPENDS "${NSKRY_RESOURCES}/nskry.rc" "${NSKRY_RESOURCES}/resource.h" "${NSKRY_RESOURCES}/nskry.ico"
+        VERBATIM)
+    target_sources(Nskry PRIVATE "${NSKRY_ICON_RES}")
+else()
+    target_sources(Nskry PRIVATE "${NSKRY_RESOURCES}/nskry.rc")
+endif()
 
 target_include_directories(Nskry PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} src sdk)
 
@@ -68,6 +82,8 @@ target_link_libraries(Nskry PRIVATE
     shcore
     msimg32
     gdiplus
+    oleacc
+    oleaut32
     shlwapi
     d3dcompiler
     comctl32
@@ -216,14 +232,15 @@ if (BUILD_TESTING)
         src/core/image_edit_model.cpp
         src/ui/window_visual_style.cpp src/core/monitor_visibility_controller.cpp src/core/settings_manager.cpp
         src/ui/precision_loupe.cpp src/ui/image_action.cpp src/core/plugin_update_policy.cpp
-        src/ui/selection_window.cpp src/ui/annotation/annotation_engine.cpp src/interop/window_enumerator.cpp)
+        src/ui/selection_window.cpp src/ui/pin_window.cpp
+        src/ui/toolbar_accessibility.cpp src/ui/annotation/annotation_engine.cpp src/interop/window_enumerator.cpp)
     target_link_libraries(NskryHostPluginUiTests PRIVATE nskry_plugin_metadata)
     target_include_directories(NskryHostPluginUiTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} src sdk)
     target_compile_definitions(NskryHostPluginUiTests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX WINRT_LEAN_AND_MEAN)
     if (MSVC)
         target_compile_options(NskryHostPluginUiTests PRIVATE /utf-8)
     endif()
-    target_link_libraries(NskryHostPluginUiTests PRIVATE user32 gdi32 msimg32 comctl32 comdlg32 shell32 winhttp gdiplus dwmapi)
+    target_link_libraries(NskryHostPluginUiTests PRIVATE oleacc oleaut32 user32 gdi32 msimg32 comctl32 comdlg32 shell32 winhttp gdiplus dwmapi)
     add_test(NAME NskryHostPluginUiTests COMMAND NskryHostPluginUiTests)
     set_tests_properties(NskryHostPluginUiTests PROPERTIES TIMEOUT 15)
     add_library(NskryPluginRuntimeFixture SHARED tests/plugin_runtime_fixture.cpp)

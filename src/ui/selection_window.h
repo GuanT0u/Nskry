@@ -4,6 +4,8 @@
 #include "capture/capture_session.h"
 #include "ui/annotation/annotation_engine.h"
 #include "core/plugin_manager.h"
+#include "ui/toolbar_accessibility.h"
+#include "ui/ui_preferences.h"
 #include <functional>
 #include <vector>
 #include <mutex>
@@ -110,7 +112,8 @@ private:
         Redo,
         WidthChoice,   // Stroke width
         ColorChoice,   // Palette color
-        PluginAction
+        PluginAction,
+        More
     };
 
     struct ToolbarItem {
@@ -125,11 +128,16 @@ private:
         std::wstring    pluginActionId;
         bool            hovered  = false;
         bool            selected = false;
+        int             group = 0;
         bool            isSeparator = false;
     };
 
     void BuildToolbar(RECT selectionRect);
+    void ActivateToolbarItem(ToolbarItem item);
+    bool HandleToolbarKey(WPARAM key);
     void DrawToolbar(HDC hdc);
+    void UpdateAccessibleToolbar();
+    void NotifyToolbarFocus();
     void DrawInfoBox(HDC hdc, RECT selectionRect);
     HBITMAP CaptureSelectedRegion(RECT localRect);
     void FinishWithAction(SelectionAction action, std::wstring pluginId = {}, std::wstring actionId = {});
@@ -149,7 +157,6 @@ private:
     HDC     m_hdcBack{};          // Persistent full-screen paint buffer; avoids allocating per mouse move.
     HBITMAP m_bmpBack{};
     HFONT   m_font{};
-    HFONT   m_fontIcon{};
 
     // Virtual screen metrics (spans all monitors)
     int m_vX = 0, m_vY = 0, m_vW = 0, m_vH = 0;
@@ -180,6 +187,11 @@ private:
     // Selected state
     RECT                     m_finalRect{};       // confirmed selection, local coords
     std::vector<ToolbarItem> m_toolbarItems;
+    std::vector<ToolbarItem> m_overflowItems;
+    ToolbarAccessibility m_accessibleToolbar;
+    int m_toolbarFocus = -1;
+    UINT m_toolbarDpi = 96;
+    DesktopPalette m_toolbarPalette;
     HBITMAP                  m_capturedBitmap{};
 
     // Annotation Engine & In-place Text Editing

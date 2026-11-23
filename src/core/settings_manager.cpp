@@ -60,6 +60,7 @@ void SettingsManager::SetDefaults() {
     m_visuals = {};
     m_interaction = {};
     m_theme = L"system";
+    m_language = L"system";
     m_officialPluginCatalogUrl.clear();
     m_officialPluginsPageUrl.clear();
 }
@@ -100,7 +101,8 @@ bool SettingsManager::Load() {
         !ReadOptionalBool(generalObject, L"notifications", m_notifications) ||
         !ReadOptionalBool(generalObject, L"show_startup_hint", m_showStartupHint) ||
         !ReadOptionalBool(generalObject, L"hide_monitor_on_source_focus", m_hideMonitorOnSourceFocus) ||
-        !ReadOptionalString(generalObject, L"theme", m_theme)) return false;
+        !ReadOptionalString(generalObject, L"theme", m_theme) ||
+        !ReadOptionalString(generalObject, L"language", m_language)) return false;
 
     const json::Value* updates = root.Find(L"updates");
     if (updates && !updates->IsObject()) return false;
@@ -155,7 +157,8 @@ bool SettingsManager::Save() const {
            << L"    \"notifications\": " << (m_notifications ? L"true" : L"false") << L",\n"
            << L"    \"show_startup_hint\": " << (m_showStartupHint ? L"true" : L"false") << L",\n"
            << L"    \"hide_monitor_on_source_focus\": " << (m_hideMonitorOnSourceFocus ? L"true" : L"false") << L",\n"
-           << L"    \"theme\": \"" << json::EscapeString(m_theme) << L"\"\n"
+           << L"    \"theme\": \"" << json::EscapeString(m_theme) << L"\",\n"
+           << L"    \"language\": \"" << json::EscapeString(m_language) << L"\"\n"
            << L"  },\n"
            << L"  \"updates\": {\n"
            << L"    \"official_plugin_catalog_url\": \"" << json::EscapeString(m_officialPluginCatalogUrl) << L"\",\n"
@@ -247,6 +250,7 @@ UserSettings SettingsManager::GetUserSettings() const {
     result.visuals = m_visuals;
     result.interaction=m_interaction; result.shortcuts=m_hotkeys;
     result.theme = m_theme;
+    result.language = m_language;
     result.captureShortcut = GetHotkey(L"core.capture");
     result.exitShortcut = GetHotkey(L"core.exit");
     return result;
@@ -261,6 +265,7 @@ void SettingsManager::SetUserSettings(const UserSettings& settings) {
     m_interaction=NormalizeInteractionStyle(settings.interaction);
     m_hotkeys=settings.shortcuts;
     m_theme = settings.theme;
+    m_language = settings.language;
     SetHotkey(L"core.capture", settings.captureShortcut);
     SetHotkey(L"core.exit", settings.exitShortcut);
 }

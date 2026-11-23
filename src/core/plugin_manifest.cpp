@@ -37,6 +37,8 @@ bool PluginManifest::LoadFromFile(const std::wstring& path, PluginManifest& mani
         return false;
     }
     result.manifestVersion = static_cast<int>(manifestVersion);
+    // Optional display metadata can fall back to the manifest name.
+    root.GetString(L"toolbar_label_zh_cn", result.toolbarLabelZhCn);
     if (const auto *extensions = root.Find(L"extensions")) {
         if (!extensions->IsObject() ||
             (extensions->Find(L"image_recognition") &&

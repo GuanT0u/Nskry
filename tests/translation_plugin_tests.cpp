@@ -1,4 +1,5 @@
 #include "nskry_actions.h"
+#include "nskry_ui_preferences.h"
 #include "nskry_plugin.h"
 #include "nskry_text_translation.h"
 #include "nskry_image_recognition.h"
@@ -66,7 +67,7 @@ void CALLBACK RejectUpload(HWND, UINT, UINT_PTR, DWORD) {
         [](HWND hwnd, LPARAM) -> BOOL {
             wchar_t title[100]{};
             GetWindowTextW(hwnd, title, 100);
-            if (!wcscmp(title, L"Confirm online text upload")) {
+            if (!wcscmp(title, L"Confirm online text upload") || !wcscmp(title, L"确认在线上传")) {
                 ++uploadDialogs;
                 if (reentrantProvider) {
                     const wchar_t value[] = L"Public synthetic text";
@@ -122,7 +123,11 @@ int wmain(int argc, wchar_t **argv) {
         reinterpret_cast<NskryTranslateTextV1>(GetProcAddress(dll, "nskry_plugin_translate_text_v1"));
     if (!settings || !shutdown || !execute || !init || !translateText || !init(nullptr))
         return 4;
-    bool ok = settings && shutdown && settings(nullptr);
+    const auto setUi = reinterpret_cast<NskrySetUiPreferencesV1>(GetProcAddress(dll, kNskrySetUiPreferencesV1));
+    const NskryUiPreferencesV1 preferences{sizeof(NskryUiPreferencesV1),
+        MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), NSKRY_UI_THEME_LIGHT};
+    if (setUi) setUi(&preferences);
+    bool ok = setUi && settings && shutdown && settings(nullptr);
     auto checkpoint = [&](const char *name) {
         if (!ok)
             std::cerr << "Failed checkpoint: " << name << '\n';

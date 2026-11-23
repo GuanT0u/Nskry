@@ -1,0 +1,2 @@
+#include "resource.h"
+IDI_NSKRY ICON "nskry.ico"

@@ -1,4 +1,7 @@
 #include "pch.h"
+#include "ui/floating_actions.h"
+#include <oleacc.h>
+#include "ui/ui_preferences.h"
 #include "ui/interaction_visuals.h"
 #include "ui/pip_window.h"
 #include <algorithm>
@@ -99,7 +102,7 @@ PipWindow::PipWindow(
 
     // --- Create the main window --------------------------------------------
     m_hwnd = ::CreateWindowExW(
-        exStyle, kClassName, L"Nskry PiP",
+        exStyle, kClassName, UiText(L"Nskry — Picture in picture", L"Nskry — 画中画"),
         style,
         useScreenRect ? initialScreenRect.left : CW_USEDEFAULT,
         useScreenRect ? initialScreenRect.top : CW_USEDEFAULT,
@@ -463,9 +466,33 @@ LRESULT CALLBACK PipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+    case WM_GETOBJECT:
+        if (m_isEditing && static_cast<LONG>(lp) == OBJID_CLIENT)
+            return m_toolbarInput.GetObject(hwnd, wp, lp);
+        break;
+    case ToolbarAccessibility::InvokeMessage:
+    case ToolbarAccessibility::FocusMessage:
+        if (m_isEditing) m_toolbarInput.HandleObjectAction(hwnd, m_hwndToolbar, msg, wp, lp);
+        return 0;
+
+    case WM_NSKRY_REFRESH_UI:
+    case WM_SETTINGCHANGE:
+    case WM_SYSCOLORCHANGE:
+        m_palette = GetDesktopPalette();
+        ::SetWindowTextW(hwnd, UiText(L"Nskry — Picture in picture", L"Nskry — 画中画"));
+        if (m_isEditing && m_hwndToolbar) {
+            RECT bounds{}; ::GetClientRect(hwnd, &bounds);
+            BuildToolbar(bounds.right, bounds.bottom);
+            ::InvalidateRect(m_hwndToolbar, nullptr, FALSE);
+        }
+        ::InvalidateRect(hwnd, nullptr, TRUE);
+        return 0;
     case WM_ENTERSIZEMOVE: if (m_visualStyle) m_visualStyle->BeginSizeMove(); break;
     case WM_EXITSIZEMOVE: if (m_visualStyle) m_visualStyle->EndSizeMove(); break;
-    case WM_DPICHANGED: if (m_visualStyle) m_visualStyle->Sync(); break;
+    case WM_DPICHANGED:
+        LayoutQuickActions();
+        if (m_visualStyle) m_visualStyle->Sync();
+        break;
     case kFreshFrameMessage:
         if (!m_waitingFrame.load() && m_captureStatus) ::ShowWindow(m_captureStatus, SW_HIDE);
         return 0;
@@ -687,6 +714,8 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_KEYDOWN:case WM_SYSKEYDOWN:
+        if (!m_isEditing && IsFloatingContextKey(wp))
+            return ::SendMessageW(hwnd, WM_CONTEXTMENU, reinterpret_cast<WPARAM>(hwnd), -1);
         if (m_isEditing) {
             if (Shortcut(L"core.cancel",UINT(wp))) {
                 if (m_annotationEngine.GetTool() != ToolType::None) {
@@ -713,6 +742,8 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     return 0;
                 }
             }
+            if (msg == WM_KEYDOWN && !m_hTextEdit && m_toolbarInput.Press(hwnd, m_hwndToolbar, wp))
+                return 0;
         }
         break;
 
@@ -756,6 +787,7 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_DESTROY:
+        m_toolbarInput.Clear();
         m_visualStyle.reset();
         m_hwnd = nullptr;
         return 0;
@@ -771,23 +803,24 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 void PipWindow::ShowContextMenu(int screenX, int screenY) {
     m_menuActive = true; if (m_visibilityRefresh) m_visibilityRefresh();
     HMENU hMenu = ::CreatePopupMenu();
-    ::InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, 301, L"\x270E \x6807\x6CE8\x7F16\x8F91 (Edit)");     // ✎ 标注编辑
+    ::InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, 301, UiText(L"Edit annotations", L"编辑标注"));     // ✎ 标注编辑
     ::InsertMenuW(hMenu, 1, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
     int position = 2;
     if (m_getHideOverride && m_setHideOverride) {
         const auto selected = m_getHideOverride();
-        const wchar_t* labels[] = {L"Auto-hide: follow global setting", L"Auto-hide: enabled for this monitor", L"Auto-hide: disabled for this monitor"};
+        const wchar_t* labels[] = {UiText(L"Auto-hide · Follow settings", L"自动隐藏 · 跟随设置"), UiText(L"Auto-hide · On for this window", L"自动隐藏 · 此窗口开启"), UiText(L"Auto-hide · Off for this window", L"自动隐藏 · 此窗口关闭")};
         for (int i = 0; i < 3; ++i) ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING |
             (static_cast<int>(selected) == i ? MF_CHECKED : 0), 310 + i, labels[i]);
         ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
     }
-    if (m_editor) ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING, 303, L"Crop / cut strips (current frame)");
+    if (m_editor) ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING, 303, UiText(L"Crop or cut strips in current frame", L"裁剪或切除当前帧的区段"));
     for (size_t index = 0; index < m_imageActions.size() && index < 100; ++index) {
-        const std::wstring item = L"T  " + m_imageActions[index].label;
+        const std::wstring item = m_imageActions[index].label;
         ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING, 320 + static_cast<UINT>(index), item.c_str());
     }
     if (!m_imageActions.empty()) ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
-    ::InsertMenuW(hMenu, position, MF_BYPOSITION | MF_STRING, 302, L"\x2715 \x5173\x95ED (Close)");            // ✕ 关闭
+    ::InsertMenuW(hMenu, position++, MF_BYPOSITION | MF_STRING, 308, UiText(L"Minimize", L"最小化"));
+    ::InsertMenuW(hMenu, position, MF_BYPOSITION | MF_STRING, 302, UiText(L"Close", L"关闭"));            // ✕ 关闭
 
     ::SetForegroundWindow(m_hwnd);
     int cmd = ::TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, screenX, screenY, 0, m_hwnd, nullptr);
@@ -798,6 +831,7 @@ void PipWindow::ShowContextMenu(int screenX, int screenY) {
 
     switch (cmd) {
     case 301: EnterEditMode(); break;
+    case 308: ShowQuickActions(false); ::ShowWindow(m_hwnd, SW_MINIMIZE); break;
     case 302: if (m_onClose) m_onClose(); break;
     case 303: OpenStructureEditor(); break;
     default:
@@ -861,7 +895,7 @@ void PipWindow::EnterEditMode() {
 }
 
 void PipWindow::CreateQuickActions(HWND parent) {
-    m_quickFont = ::CreateFontW(-9, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+    m_quickFont = ::CreateFontW(-::MulDiv(16, ::GetDpiForWindow(parent), 96), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
     const wchar_t* labels[] = { L"\x270E", L"\x2026", L"\x2212", L"\x00D7" };
@@ -876,7 +910,7 @@ void PipWindow::CreateQuickActions(HWND parent) {
                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(ids[index])), ::GetModuleHandleW(nullptr), nullptr);
         if (m_quickButtons[index]) {
             if ((::GetWindowLongPtrW(m_quickButtons[index], GWL_EXSTYLE) & WS_EX_LAYERED) != 0 &&
-                !::SetLayeredWindowAttributes(m_quickButtons[index], 0, 109, LWA_ALPHA))
+                !::SetLayeredWindowAttributes(m_quickButtons[index], 0, DesktopHighContrast() ? 255 : 235, LWA_ALPHA))
                 ::SetWindowLongPtrW(m_quickButtons[index], GWL_EXSTYLE, 0);
             if (m_quickFont) ::SendMessageW(m_quickButtons[index], WM_SETFONT, reinterpret_cast<WPARAM>(m_quickFont), TRUE);
         }
@@ -885,15 +919,8 @@ void PipWindow::CreateQuickActions(HWND parent) {
 }
 
 void PipWindow::LayoutQuickActions() {
-    if (!m_hwnd) return;
-    RECT client{};
-    ::GetClientRect(m_hwnd, &client);
-    constexpr int width = 16, height = 14, gap = 3, margin = 8;
-    int x = (std::max)(margin, static_cast<int>(client.right) - margin - 4 * width - 3 * gap);
-    for (HWND button : m_quickButtons) {
-        if (button) ::SetWindowPos(button, HWND_TOP, x, margin, width, height, SWP_NOACTIVATE);
-        x += width + gap;
-    }
+    if (m_hwnd && !LayoutFloatingActions(m_hwnd, m_quickButtons, !m_imageActions.empty()))
+        ShowQuickActions(false);
 }
 
 bool PipWindow::IsQuickActionPoint(POINT clientPoint) const {
@@ -907,7 +934,8 @@ bool PipWindow::IsQuickActionPoint(POINT clientPoint) const {
 }
 
 void PipWindow::ShowQuickActions(bool show) {
-    if (m_isEditing) show = false;
+    if (m_isEditing || (show && !LayoutFloatingActions(m_hwnd, m_quickButtons, !m_imageActions.empty())))
+        show = false;
     bool visibilityMatches = m_quickActionsVisible == show;
     for (size_t i = 0; i < std::size(m_quickButtons); ++i)
         if (m_quickButtons[i] && (::IsWindowVisible(m_quickButtons[i]) != FALSE) !=
@@ -930,7 +958,7 @@ void PipWindow::RunImageAction(size_t index) {
     const auto& action = m_imageActions[index];
     FrameHdcGuard frame = GetLastFrameHdc();
     if (!frame.hbmp) {
-        ::MessageBoxW(m_hwnd, L"The monitor has no captured frame yet. Please try again shortly.",
+        ::MessageBoxW(m_hwnd, UiText(L"Waiting for the first frame. Try again shortly.", L"正在等待首帧，请稍后重试。"),
                       L"Nskry — Image action", MB_OK | MB_ICONINFORMATION);
         return;
     }
@@ -954,6 +982,7 @@ void PipWindow::FinishEdit(bool apply) {
 
     m_annotationEngine.SetTool(ToolType::None);
     m_isEditing = false;
+    m_toolbarInput.Clear();
     if (m_visibilityRefresh) m_visibilityRefresh();
     if (m_hwndToolbar) {
         ::ShowWindow(m_hwndToolbar, SW_HIDE);
@@ -1240,18 +1269,18 @@ void PipWindow::BuildToolbar(int clientW, int clientH) {
     };
 
     Def defs[] = {
-        { ToolType::Rect,    0, L"矩形",   36, false },
-        { ToolType::Ellipse, 0, L"圆形",   36, false },
-        { ToolType::Arrow,   0, L"箭头",   36, false },
-        { ToolType::Pen,     0, L"画笔",   36, false },
-        { ToolType::Mosaic,  0, L"马赛克", 46, false },
-        { ToolType::Text,    0, L"文本",   36, false },
+        { ToolType::Rect,    0, UiText(L"Rect", L"矩形"),   36, false },
+        { ToolType::Ellipse, 0, UiText(L"Oval", L"椭圆"),   36, false },
+        { ToolType::Arrow,   0, UiText(L"Arrow", L"箭头"),   36, false },
+        { ToolType::Pen,     0, UiText(L"Pen", L"画笔"),   36, false },
+        { ToolType::Mosaic,  0, UiText(L"Mosaic", L"马赛克"), 46, false },
+        { ToolType::Text,    0, UiText(L"Text", L"文本"),   36, false },
         { ToolType::None,    0, nullptr,    4, true  },
-        { ToolType::None,    3, L"撤销",   36, false },
-        { ToolType::None,    4, L"重做",   36, false },
+        { ToolType::None,    3, UiText(L"Undo", L"撤销"),   36, false },
+        { ToolType::None,    4, UiText(L"Redo", L"重做"),   36, false },
         { ToolType::None,    0, nullptr,    4, true  },
-        { ToolType::None,    1, L"✓ 完成", 46, false },
-        { ToolType::None,    2, L"✕ 取消", 46, false },
+        { ToolType::None,    1, UiText(L"Done", L"完成"), 46, false },
+        { ToolType::None,    2, UiText(L"Cancel", L"取消"), 46, false },
     };
 
     constexpr int gap = 2;
@@ -1364,16 +1393,18 @@ void PipWindow::BuildToolbar(int clientW, int clientH) {
         ::InvalidateRect(m_hwndToolbar, nullptr, FALSE);
         ::UpdateWindow(m_hwndToolbar);
     }
+    if (m_isEditing && m_hwndToolbar) m_toolbarInput.Update(m_hwnd, m_hwndToolbar, m_toolbarItems);
 }
 
 void PipWindow::DrawToolbar(HDC hdc, int clientW, int clientH) {
+    const auto &palette = m_palette;
     // 1. Draw Toolbar background container
     RECT bgRect = { 0, 0, clientW, clientH };
-    HBRUSH bgBrush = ::CreateSolidBrush(RGB(32, 32, 38));
+    HBRUSH bgBrush = ::CreateSolidBrush(palette.window);
     ::FillRect(hdc, &bgRect, bgBrush);
     ::DeleteObject(bgBrush);
 
-    HBRUSH borderBrush = ::CreateSolidBrush(RGB(65, 65, 75));
+    HBRUSH borderBrush = ::CreateSolidBrush(palette.hover);
     ::FrameRect(hdc, &bgRect, borderBrush);
     ::DeleteObject(borderBrush);
 
@@ -1383,7 +1414,7 @@ void PipWindow::DrawToolbar(HDC hdc, int clientW, int clientH) {
     for (const auto& item : m_toolbarItems) {
         if (item.isSeparator) {
             int midX = (item.rect.left + item.rect.right) / 2;
-            HPEN sepPen = ::CreatePen(PS_SOLID, 1, RGB(70, 70, 80));
+            HPEN sepPen = ::CreatePen(PS_SOLID, 1, palette.border);
             HGDIOBJ oldPen = ::SelectObject(hdc, sepPen);
             ::MoveToEx(hdc, midX, item.rect.top + 3, nullptr);
             ::LineTo(hdc, midX, item.rect.bottom - 3);
@@ -1393,7 +1424,7 @@ void PipWindow::DrawToolbar(HDC hdc, int clientW, int clientH) {
         }
 
         if (item.isColorChoice) {
-            COLORREF cbg = item.hovered ? RGB(60, 60, 70) : RGB(40, 40, 48);
+            COLORREF cbg = item.hovered ? palette.hover : palette.panel;
             HBRUSH cbgBrush = ::CreateSolidBrush(cbg);
             ::FillRect(hdc, &item.rect, cbgBrush);
             ::DeleteObject(cbgBrush);
@@ -1403,17 +1434,18 @@ void PipWindow::DrawToolbar(HDC hdc, int clientW, int clientH) {
             int r = 6;
 
             HBRUSH colBrush = ::CreateSolidBrush(item.color);
-            HPEN borderPen = ::CreatePen(PS_SOLID, 1, item.selected ? RGB(255, 255, 255) : RGB(80, 80, 90));
+            HPEN borderPen = ::CreatePen(PS_SOLID, 1, item.selected ? palette.accent : palette.border);
             HGDIOBJ oldBrush = ::SelectObject(hdc, colBrush);
             HGDIOBJ oldPen   = ::SelectObject(hdc, borderPen);
 
             ::Ellipse(hdc, cx - r, cy - r, cx + r, cy + r);
 
             if (item.selected) {
-                HPEN ringPen = ::CreatePen(PS_SOLID, 2, RGB(0, 150, 255));
+                HPEN ringPen = ::CreatePen(PS_SOLID, 2, palette.accent);
                 ::SelectObject(hdc, ringPen);
                 ::SelectObject(hdc, ::GetStockObject(NULL_BRUSH));
                 ::Ellipse(hdc, cx - r - 2, cy - r - 2, cx + r + 3, cy + r + 3);
+                ::SelectObject(hdc, borderPen);
                 ::DeleteObject(ringPen);
             }
 
@@ -1424,35 +1456,26 @@ void PipWindow::DrawToolbar(HDC hdc, int clientW, int clientH) {
             continue;
         }
 
-        COLORREF btnBg;
-        if (item.selected) {
-            btnBg = RGB(25, 118, 210);
-        } else if (item.action == 1 && item.hovered) { // Done
-            btnBg = RGB(46, 125, 50);
-        } else if (item.action == 2 && item.hovered) { // Cancel
-            btnBg = RGB(198, 40, 40);
-        } else if (item.hovered) {
-            btnBg = RGB(65, 65, 75);
-        } else {
-            btnBg = RGB(45, 45, 54);
-        }
+        const bool primary = item.action == 1;
+        const auto btnBg = item.selected || primary ? palette.accent : (item.hovered ? palette.hover : palette.panel);
 
         HBRUSH itemBgBrush = ::CreateSolidBrush(btnBg);
         ::FillRect(hdc, &item.rect, itemBgBrush);
         ::DeleteObject(itemBgBrush);
 
-        HBRUSH itemBorderBrush = ::CreateSolidBrush(item.selected ? RGB(70, 160, 245) : (item.hovered ? RGB(90, 90, 100) : RGB(60, 60, 70)));
+        HBRUSH itemBorderBrush = ::CreateSolidBrush(item.selected ? palette.accent : palette.border);
         ::FrameRect(hdc, &item.rect, itemBorderBrush);
         ::DeleteObject(itemBorderBrush);
 
         if (item.label) {
             HFONT oldFont = static_cast<HFONT>(::SelectObject(hdc, m_font));
-            ::SetTextColor(hdc, RGB(240, 240, 245));
+            ::SetTextColor(hdc, (item.selected || item.action == 1) ? palette.onAccent : palette.text);
             RECT textRect = item.rect;
             ::DrawTextW(hdc, item.label, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             ::SelectObject(hdc, oldFont);
         }
     }
+    m_toolbarInput.DrawFocus(hdc);
 }
 
 } // namespace nskry

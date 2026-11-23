@@ -1,3 +1,4 @@
+#include "../../common/native_ui.h"
 #include "nskry_plugin.h"
 #include "nskry_input.h"
 #include "nskry_text_translation.h"
@@ -68,6 +69,7 @@ constexpr int kCancelOcrId = 1100;
 constexpr int kTextModeId = 1001;
 constexpr int kVisualModeId = 1002;
 constexpr int kCopyAllId = 1003;
+constexpr int kCopyTextId = 1013;
 constexpr int kZoomOutId = 1004;
 constexpr int kZoomInId = 1005;
 constexpr int kHighlightId = 1006;
@@ -314,6 +316,8 @@ OcrEngineKind PreferredEngine() {
     return s_preferredEngine.load();
 }
 
+enum class OcrFailure { Unknown, LanguageMissing, ImagePreparation, ModelsUnavailable };
+
 struct OcrJobResult {
     HBITMAP bitmap{};
     uint64_t generation{};
@@ -322,6 +326,7 @@ struct OcrJobResult {
     RECT anchor{};
     std::wstring text;
     std::wstring error;
+    OcrFailure failure = OcrFailure::Unknown;
     std::vector<WordBox> words;
     std::vector<RECT> lineHighlights;
     OcrEngineKind engine{OcrEngineKind::Fast};
@@ -619,6 +624,7 @@ std::unique_ptr<OcrJobResult> RunWindowsOcr(HBITMAP displayBitmap, int displayWi
         struct Apartment { ~Apartment() { winrt::clear_factory_cache(); winrt::uninit_apartment(); } } apartment;
         const auto engine = CreatePreferredOcrEngine();
         if (!engine) {
+            result->failure = OcrFailure::LanguageMissing;
             result->error = L"Windows OCR has no language pack for your profile. Install an OCR language in Windows Settings, then try again.";
             return result;
         }
@@ -631,6 +637,7 @@ std::unique_ptr<OcrJobResult> RunWindowsOcr(HBITMAP displayBitmap, int displayWi
         guard.value = ResizeForOcr(displayBitmap, displayWidth, displayHeight, ocrWidth, ocrHeight,
                                    benchmarkFast1x ? 1.0 : 4.0);
         if (!guard.value) {
+            result->failure = OcrFailure::ImagePreparation;
             result->error = L"Could not prepare the image for text recognition.";
             return result;
         }
@@ -719,7 +726,6 @@ std::unique_ptr<OcrJobResult> RunWindowsOcr(HBITMAP displayBitmap, int displayWi
         try { DumpOcrTrace(generation, passes, lines, ElapsedMs(requestStart), groups, decisions); }
         catch (...) { /* Optional diagnostics must not turn successful OCR into an error. */ }
         ApplyTextLayout(*result, lines);
-        if (result->text.empty() && !externalCancel) result->text = L"No text was found in this image.";
     } catch (const winrt::hresult_error& error) {
         result->error = L"Windows OCR could not recognize this image: " + std::wstring(error.message().c_str());
     } catch (const std::exception& error) {
@@ -797,7 +803,12 @@ std::unique_ptr<OcrJobResult> RunOcr(HBITMAP bitmap, int width, int height, RECT
         }
         if (model.status == nskry::ocr::ModelStatus::Canceled || canceled()) return nullptr;
         try { DumpModelTrace(generation, model); } catch (...) {}
-        if (model.status != nskry::ocr::ModelStatus::Success) { result->error = model.reply.error; return result; }
+        if (model.status != nskry::ocr::ModelStatus::Success) {
+            if (model.status == nskry::ocr::ModelStatus::Unavailable)
+                result->failure = OcrFailure::ModelsUnavailable;
+            result->error = model.reply.error.empty() ? L"Offline recognition failed." : model.reply.error;
+            return result;
+        }
         if (!model.workerExited) { result->error = L"The OCR worker did not finish cleanly. No partial result was used."; return result; }
         std::vector<RecognizedLine> displayLines;
         for (size_t index = 0; index < model.reply.lines.size(); ++index) {
@@ -813,7 +824,6 @@ std::unique_ptr<OcrJobResult> RunOcr(HBITMAP bitmap, int width, int height, RECT
             displayLines.push_back(std::move(display));
         }
         ApplyTextLayout(*result, displayLines);
-        if (result->text.empty() && !externalCancel) result->text = L"No text was found in this image.";
     } catch (...) { result->error = L"Could not complete offline OCR. Try a smaller area or select Fast OCR."; }
     return result;
 }
@@ -860,9 +870,9 @@ LRESULT CALLBACK ProgressProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
     }
     if (message == WM_CREATE) {
-        HWND label = ::CreateWindowExW(0, L"STATIC", L"Recognizing text…", WS_CHILD | WS_VISIBLE | SS_CENTER,
+        HWND label = ::CreateWindowExW(0, L"STATIC", nskry::plugin_ui::Text(L"Recognizing text…", L"正在识别文字…"), WS_CHILD | WS_VISIBLE | SS_CENTER,
             12, 12, 300, 24, hwnd, nullptr, nullptr, nullptr);
-        HWND button = ::CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        HWND button = ::CreateWindowExW(0, L"BUTTON", nskry::plugin_ui::Text(L"Cancel", L"取消"), WS_CHILD | WS_VISIBLE | WS_TABSTOP,
             122, 46, 80, 28, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelOcrId)), nullptr, nullptr);
         for (HWND child : {label, button}) if (child)
             ::SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(::GetStockObject(DEFAULT_GUI_FONT)), TRUE);
@@ -897,7 +907,7 @@ void ShowProgress(const ProgressInfo& info) {
     const int x = (std::clamp)((info.anchor.left + info.anchor.right) / 2 - 170, work.left, (std::max)(work.left, work.right - 340));
     const int y = (std::clamp)((info.anchor.top + info.anchor.bottom) / 2 - 60, work.top, (std::max)(work.top, work.bottom - 120));
     if (!s_progressWindow) s_progressWindow = ::CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, name,
-        L"Nskry — Text recognition", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
+        nskry::plugin_ui::Text(L"Nskry — Text recognition", L"Nskry — 文字识别"), WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
         x, y, 340, 120, nullptr, nullptr, wc.hInstance, reinterpret_cast<void*>(static_cast<uintptr_t>(info.generation)));
     else {
         ::SetWindowLongPtrW(s_progressWindow, GWLP_USERDATA, static_cast<LONG_PTR>(info.generation));
@@ -963,7 +973,6 @@ public:
     explicit OcrResultWindow(std::unique_ptr<OcrJobResult> result) : m_result(std::move(result)) {}
     ~OcrResultWindow() {
         if (m_font) ::DeleteObject(m_font);
-        if (m_boldFont) ::DeleteObject(m_boldFont);
     }
 
     bool Show() {
@@ -977,7 +986,7 @@ public:
         const int x = work.left + (monitorWidth - width) / 2;
         const int y = work.top + (monitorHeight - height) / 2;
         m_hwnd = ::CreateWindowExW(WS_EX_TOPMOST | WS_EX_APPWINDOW, kClassName,
-            m_result->engine == OcrEngineKind::Accurate ? L"Nskry — Text recognition (Accurate)" : L"Nskry — Text recognition (Fast)",
+            m_result->engine == OcrEngineKind::Accurate ? nskry::plugin_ui::Text(L"Nskry — Text recognition (Accurate)", L"Nskry — 文字识别（精确）") : nskry::plugin_ui::Text(L"Nskry — Text recognition (Fast)", L"Nskry — 文字识别（快速）"),
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME |
                 WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_CLIPCHILDREN,
             x, y, width, height, nullptr, nullptr, ::GetModuleHandleW(nullptr), this);
@@ -1027,32 +1036,67 @@ private:
         return { 0, 0, 1280, 720 };
     }
 
+    const wchar_t* FailureHint() const {
+        using nskry::plugin_ui::Text;
+        switch (m_result->failure) {
+        case OcrFailure::LanguageMissing:
+            return Text(L"Install an OCR language in Windows Settings, then retry.", L"请在 Windows 设置中安装 OCR 语言后重试。");
+        case OcrFailure::ImagePreparation:
+            return Text(L"Could not prepare the image. Try a different region.", L"无法准备图片，请尝试重新框选。");
+        case OcrFailure::ModelsUnavailable:
+            return Text(L"Offline OCR is unavailable. Reinstall the plugin or switch to Fast OCR.",
+                        L"离线识别不可用。请重新安装插件，或切换为快速识别。");
+        default:
+            return Text(L"Recognition failed. Try a smaller region or switch engines.", L"识别失败。请缩小选区或切换识别引擎。");
+        }
+    }
+
+    int Dip(int value) const { return ::MulDiv(value, m_dpi, 96); }
+
+    void SetDpi(UINT dpi) {
+        m_dpi = dpi ? dpi : 96;
+        HFONT font = nskry::plugin_ui::CreateMessageFont(m_hwnd);
+        if (font) {
+            ::EnumChildWindows(m_hwnd, [](HWND child, LPARAM fontValue) -> BOOL {
+                ::SendMessageW(child, WM_SETFONT, fontValue, TRUE);
+                return TRUE;
+            }, reinterpret_cast<LPARAM>(font));
+            if (m_font) ::DeleteObject(m_font);
+            m_font = font;
+        }
+    }
+
     void CreateControls() {
-        m_font = ::CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-        m_boldFont = ::CreateFontW(-15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        SetDpi(::GetDpiForWindow(m_hwnd));
         m_zoomOutButton = Button(L"−", kZoomOutId);
         m_zoomInButton = Button(L"+", kZoomInId);
         m_scaleLabel = ::CreateWindowExW(0, L"STATIC", L"100%", WS_CHILD | WS_VISIBLE | SS_CENTER,
             0, 0, 58, 40, m_hwnd, nullptr, nullptr, nullptr);
-        m_highlightButton = Button(L"Highlight", kHighlightId);
-        m_editButton = Button(L"Edit", kEditId);
-        m_copyButton = Button(L"Copy", kCopyAllId);
-        m_saveButton = Button(L"Save", kSaveId);
-        m_rotateButton = Button(L"Rotate 90°", kRotateId);
-        m_translateButton = Button(L"Translate", kTranslateId);
+        m_highlightButton = Button(nskry::plugin_ui::Text(L"Highlight", L"高亮"), kHighlightId);
+        m_editButton = Button(nskry::plugin_ui::Text(L"Edit", L"编辑"), kEditId);
+        m_copyButton = Button(nskry::plugin_ui::Text(L"Copy image", L"复制图片"), kCopyAllId);
+        m_copyTextButton = Button(nskry::plugin_ui::Text(L"Copy text", L"复制原文"), kCopyTextId);
+        ::EnableWindow(m_copyTextButton, m_result->error.empty() && !m_result->text.empty());
+        m_textLabel = ::CreateWindowExW(0, L"STATIC",
+            m_result->error.empty() ? nskry::plugin_ui::Text(L"Recognized text", L"识别原文") :
+                nskry::plugin_ui::Text(L"Error details", L"错误详情"), WS_CHILD | WS_VISIBLE | SS_LEFT,
+            0, 0, 1, 1, m_hwnd, nullptr, nullptr, nullptr);
+        m_saveButton = Button(nskry::plugin_ui::Text(L"Save", L"保存"), kSaveId);
+        m_rotateButton = Button(nskry::plugin_ui::Text(L"Rotate 90°", L"旋转 90°"), kRotateId);
+        m_translateButton = Button(nskry::plugin_ui::Text(L"Translate", L"翻译"), kTranslateId);
         if (NSKRY_OCR_MODEL_ENGINE)
-            m_engineButton = Button(m_result->engine == OcrEngineKind::Accurate ? L"Fast OCR" : L"Accurate OCR", kEngineId);
-        m_textEdit = ::CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", m_result->error.empty() ? m_result->text.c_str() : m_result->error.c_str(),
-            WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
+            m_engineButton = Button(m_result->engine == OcrEngineKind::Accurate ? nskry::plugin_ui::Text(L"Fast OCR", L"快速识别") : nskry::plugin_ui::Text(L"Accurate OCR", L"精确识别"), kEngineId);
+        m_textEdit = ::CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", !m_result->error.empty() ? m_result->error.c_str() : !m_result->text.empty() ? m_result->text.c_str() :
+            nskry::plugin_ui::Text(L"No text found. Try a different region.", L"未找到文字，请尝试重新框选。"),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
             0, 0, 1, 1, m_hwnd, nullptr, nullptr, nullptr);
         for (HWND child : { m_zoomOutButton, m_zoomInButton, m_scaleLabel, m_highlightButton, m_editButton,
-                            m_copyButton, m_saveButton, m_rotateButton, m_engineButton, m_translateButton, m_textEdit })
+                            m_copyButton, m_saveButton, m_rotateButton, m_engineButton, m_translateButton, m_textEdit, m_copyTextButton, m_textLabel })
             if (child) ::SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
-        for(HWND child:{m_zoomOutButton,m_zoomInButton,m_highlightButton,m_editButton,m_copyButton,m_saveButton,m_rotateButton,m_engineButton,m_translateButton})
+        for(HWND child:{m_zoomOutButton,m_zoomInButton,m_highlightButton,m_editButton,m_copyButton,m_saveButton,m_rotateButton,m_engineButton,m_translateButton,m_copyTextButton})
             if(child)::SetWindowSubclass(child,OcrInputRelay,1,DWORD_PTR(m_hwnd));
         if(m_textEdit)::SetWindowSubclass(m_textEdit,OcrInputRelay,2,DWORD_PTR(m_hwnd));
+        nskry::plugin_ui::AttachTabNavigation(m_hwnd);
         LayoutControls();
         UpdateTranslationButton();
     }
@@ -1061,49 +1105,53 @@ private:
         const bool available = s_translationService.available && s_translationService.translate &&
             s_translationService.available() != 0 && m_result->error.empty() && !m_result->lineHighlights.empty();
         ::EnableWindow(m_translateButton, available);
-        ::SetWindowTextW(m_translateButton, available ? L"Translate" : L"Translation unavailable");
+
     }
 
     HWND Button(const wchar_t* label, int id) {
-        return ::CreateWindowExW(0, L"BUTTON", label, WS_CHILD | WS_VISIBLE,
+        return ::CreateWindowExW(0, L"BUTTON", label, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_MULTILINE,
             0, 0, 1, 1, m_hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), nullptr, nullptr);
     }
 
     RECT CanvasRect() const {
         RECT client{}; ::GetClientRect(m_hwnd, &client);
-        const int textWidth = (std::clamp)(m_textPaneWidth, 180, (std::max)(180, static_cast<int>(client.right) - 400));
-        const int leftWidth = (std::max)(400, static_cast<int>(client.right) - textWidth);
-        return { 0, 0, leftWidth, (std::max)(0, static_cast<int>(client.bottom) - 40) };
+        const int minimumText = (std::min)(Dip(180), static_cast<int>(client.right) / 3);
+        const int textWidth = (std::clamp)(m_textPaneWidth, minimumText, (std::max)(minimumText, static_cast<int>(client.right) / 2));
+        return {0, 0, client.right - textWidth, (std::max)(0, static_cast<int>(client.bottom) - Dip(44))};
     }
 
     void LayoutControls() {
         RECT client{}; ::GetClientRect(m_hwnd, &client);
-        if (m_textPaneWidth == 0) m_textPaneWidth = (std::max)(180, static_cast<int>(client.right * 0.235));
+        if (m_textPaneWidth == 0) m_textPaneWidth = (std::max)(Dip(180), static_cast<int>(client.right * 0.25));
         const RECT canvas = CanvasRect();
         if (m_scale == 0.0 && m_result->width > 0 && m_result->height > 0) {
             m_scale = (std::min)(1.0, (std::min)(static_cast<double>(canvas.right - canvas.left) / m_result->width,
                                                  static_cast<double>(canvas.bottom - canvas.top) / m_result->height));
         }
         const int textLeft = canvas.right;
-        if (m_textEdit) ::SetWindowPos(m_textEdit, nullptr, textLeft + 8, 8,
-            (std::max)(1, static_cast<int>(client.right) - textLeft - 16),
-            (std::max)(1, static_cast<int>(client.bottom) - 56), SWP_NOZORDER | SWP_NOACTIVATE);
-        if (m_translateButton) ::SetWindowPos(m_translateButton, nullptr, textLeft + 8,
-            (std::max)(8, static_cast<int>(client.bottom) - 40),
-            (std::max)(1, static_cast<int>(client.right) - textLeft - 16), 32, SWP_NOZORDER | SWP_NOACTIVATE);
-        int x = 8;
+        const int paneWidth = (std::max)(1, static_cast<int>(client.right) - textLeft - Dip(16));
+        const int actionWidth = (std::max)(1, (paneWidth - Dip(6)) / 2);
+        const int footer = (std::max)(Dip(8), static_cast<int>(client.bottom) - Dip(40));
+        const auto move = [&](HWND control, int x, int y, int width, int height) {
+            if (control) ::SetWindowPos(control, nullptr, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+        };
+        move(m_textLabel, textLeft + Dip(8), Dip(8), paneWidth, Dip(24));
+        move(m_textEdit, textLeft + Dip(8), Dip(34), paneWidth, (std::max)(1, footer - Dip(42)));
+        move(m_copyTextButton, textLeft + Dip(8), footer, actionWidth, Dip(32));
+        move(m_translateButton, textLeft + Dip(14) + actionWidth, footer, (std::max)(1, paneWidth - actionWidth - Dip(6)), Dip(32));
+        int x = Dip(8);
         const int y = canvas.bottom;
-        const auto place = [&](HWND control, int width) { if (control) ::SetWindowPos(control, nullptr, x, y, width, 40, SWP_NOZORDER | SWP_NOACTIVATE); x += width + 4; };
-        const bool narrow = canvas.right < 620;
+        const auto place = [&](HWND control, int width) { if (control) ::SetWindowPos(control, nullptr, x, y, Dip(width), Dip(40), SWP_NOZORDER | SWP_NOACTIVATE); x += Dip(width + 4); };
+        const bool narrow = canvas.right < Dip(620);
         place(m_zoomOutButton, narrow ? 30 : 34); place(m_scaleLabel, narrow ? 52 : 58); place(m_zoomInButton, narrow ? 30 : 34);
-        ::SetWindowTextW(m_highlightButton, narrow ? (m_highlights ? L"HL: on" : L"HL: off") :
-            (m_highlights ? L"Highlight" : L"Highlight: off"));
-        place(m_highlightButton, narrow ? 64 : 78); place(m_editButton, narrow ? 44 : 52); place(m_copyButton, narrow ? 44 : 54);
+        ::SetWindowTextW(m_highlightButton, narrow ? (m_highlights ? nskry::plugin_ui::Text(L"HL: on", L"高亮开") : nskry::plugin_ui::Text(L"HL: off", L"高亮关")) :
+            (m_highlights ? nskry::plugin_ui::Text(L"Highlight", L"高亮") : nskry::plugin_ui::Text(L"Highlight: off", L"高亮关闭")));
+        place(m_highlightButton, narrow ? 64 : 78); place(m_editButton, narrow ? 44 : 52); place(m_copyButton, narrow ? 65 : 78);
         place(m_saveButton, narrow ? 44 : 54);
-        ::SetWindowTextW(m_rotateButton, narrow ? L"↻ 90°" : L"Rotate 90°");
+        ::SetWindowTextW(m_rotateButton, narrow ? L"↻ 90°" : nskry::plugin_ui::Text(L"Rotate 90°", L"旋转 90°"));
         place(m_rotateButton, narrow ? 52 : 88);
-        m_engineAtTop = m_engineButton && x + 106 > canvas.right;
-        if (m_engineAtTop) ::SetWindowPos(m_engineButton, nullptr, canvas.right - 112, 4, 106, 28, SWP_NOZORDER | SWP_NOACTIVATE);
+        m_engineAtTop = m_engineButton && x + Dip(106) > canvas.right;
+        if (m_engineAtTop) ::SetWindowPos(m_engineButton, nullptr, canvas.right - Dip(112), Dip(4), Dip(106), Dip(28), SWP_NOZORDER | SWP_NOACTIVATE);
         else place(m_engineButton, 106);
         UpdateScaleLabel();
     }
@@ -1132,13 +1180,12 @@ private:
 
     void DrawVisual(HDC dc) {
         const RECT canvas = CanvasRect();
-        HBRUSH background = ::CreateSolidBrush(RGB(30, 31, 36));
-        ::FillRect(dc, &canvas, background);
-        ::DeleteObject(background);
+        const auto colors = nskry::plugin_ui::Colors(nskry::plugin_ui::preferences.theme);
+        ::FillRect(dc, &canvas, nskry::plugin_ui::Brush(dc, colors.panel));
         if (!m_result->error.empty()) {
-            ::SetBkMode(dc, TRANSPARENT); ::SetTextColor(dc, RGB(240, 240, 240));
+            ::SetBkMode(dc, TRANSPARENT); ::SetTextColor(dc, colors.text);
             RECT messageArea = canvas;
-            ::DrawTextW(dc, m_result->error.c_str(), -1, &messageArea, DT_CENTER | DT_VCENTER | DT_WORDBREAK);
+            ::DrawTextW(dc, FailureHint(), -1, &messageArea, DT_CENTER | DT_VCENTER | DT_WORDBREAK);
             return;
         }
         const RECT preview = PreviewRect();
@@ -1179,8 +1226,8 @@ private:
         if (pixelBitmap) ::DeleteObject(pixelBitmap);
         if (overlay) ::DeleteDC(overlay);
         if (saved) ::RestoreDC(dc, saved);
-        ::SetBkMode(dc, TRANSPARENT); ::SetTextColor(dc, RGB(190, 190, 190));
-        const wchar_t* hint = L"Zoom / pan shortcuts: Settings → Hotkeys → Text recognition";
+        ::SetBkMode(dc, TRANSPARENT); ::SetTextColor(dc, colors.text);
+        const wchar_t* hint = nskry::plugin_ui::Text(L"Zoom / pan shortcuts: Settings → Hotkeys → Text recognition", L"缩放和平移快捷键可在「设置 → 快捷键 → 文字识别」中修改");
         RECT hintArea{canvas.left + 10, canvas.top + 8, canvas.right - (m_engineAtTop ? 120 : 10), canvas.top + 30};
         ::DrawTextW(dc, hint, -1, &hintArea, DT_SINGLELINE | DT_END_ELLIPSIS | DT_VCENTER);
     }
@@ -1263,13 +1310,18 @@ private:
                 const auto status = translate ? translate(&request, &result) : NSKRY_TRANSLATION_UNAVAILABLE;
                 error[511] = 0;
                 if (status != NSKRY_TRANSLATION_ACCEPTED && status != NSKRY_TRANSLATION_CANCELED && ::IsWindow(owner))
-                    ::MessageBoxW(owner, error[0] ? error : L"Enable/install a text translation plugin and use a matching Core build.",
-                        L"Nskry — Translation", MB_OK | MB_ICONINFORMATION);
+                    ::MessageBoxW(owner, error[0] ? error : nskry::plugin_ui::Text(L"Enable/install a text translation plugin and use a matching Core build.", L"请启用或安装翻译插件，并使用兼容的 Nskry 版本。"),
+                        nskry::plugin_ui::Text(L"Nskry — Translation", L"Nskry — 翻译"), MB_OK | MB_ICONINFORMATION);
                 return 0;
             }
             if (LOWORD(wp) == kZoomOutId) { RECT canvas = CanvasRect(); ZoomAt({ (canvas.left + canvas.right) / 2, (canvas.top + canvas.bottom) / 2 }, 1.0 / 1.2); return 0; }
             if (LOWORD(wp) == kZoomInId) { RECT canvas = CanvasRect(); ZoomAt({ (canvas.left + canvas.right) / 2, (canvas.top + canvas.bottom) / 2 }, 1.2); return 0; }
             if (LOWORD(wp) == kHighlightId) { m_highlights = !m_highlights; LayoutControls(); ::InvalidateRect(m_hwnd, nullptr, FALSE); return 0; }
+            if (LOWORD(wp) == kCopyTextId) {
+                if (m_result->error.empty() && !m_result->text.empty())
+                    CopyTextToClipboard(m_hwnd, m_result->text);
+                return 0;
+            }
             if (LOWORD(wp) == kCopyAllId) { if (m_result->copyBitmapToClipboard) m_result->copyBitmapToClipboard(m_result->bitmap); return 0; }
             if (LOWORD(wp) == kEditId) {
                 if (m_result->openBitmapEditor) {
@@ -1294,6 +1346,16 @@ private:
                 return 0;
             }
             break;
+        case WM_DPICHANGED: {
+            const auto &bounds = *reinterpret_cast<const RECT*>(lp);
+            const UINT next = LOWORD(wp) ? LOWORD(wp) : 96;
+            m_textPaneWidth = ::MulDiv(m_textPaneWidth, next, m_dpi);
+            SetDpi(next);
+            ::SetWindowPos(m_hwnd, nullptr, bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
+                           SWP_NOZORDER | SWP_NOACTIVATE);
+            LayoutControls();
+            return 0;
+        }
         case WM_SIZE:
             LayoutControls();
             ::InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -1301,11 +1363,15 @@ private:
         case WM_GETMINMAXINFO: {
             auto* limits = reinterpret_cast<MINMAXINFO*>(lp);
             if (limits) {
-                limits->ptMinTrackSize.x = (std::max)(limits->ptMinTrackSize.x, 640L);
-                limits->ptMinTrackSize.y = (std::max)(limits->ptMinTrackSize.y, 360L);
+                limits->ptMinTrackSize.x = (std::max)(limits->ptMinTrackSize.x, static_cast<LONG>(Dip(640)));
+                limits->ptMinTrackSize.y = (std::max)(limits->ptMinTrackSize.y, static_cast<LONG>(Dip(360)));
             }
             return 0;
         }
+        case WM_CTLCOLOREDIT:
+        case WM_CTLCOLORSTATIC:
+            return nskry::plugin_ui::ControlColors(wp, nskry::plugin_ui::preferences.theme,
+                                                  reinterpret_cast<HWND>(lp) == m_textEdit);
         case WM_PAINT: {
             PAINTSTRUCT paint{}; HDC target = ::BeginPaint(m_hwnd, &paint);
             RECT client{}; ::GetClientRect(m_hwnd, &client);
@@ -1313,9 +1379,8 @@ private:
             HBITMAP bitmap = buffer ? ::CreateCompatibleBitmap(target, client.right, client.bottom) : nullptr;
             HGDIOBJ previous = bitmap ? ::SelectObject(buffer, bitmap) : nullptr;
             if (previous && previous != HGDI_ERROR) {
-                HBRUSH background = ::CreateSolidBrush(RGB(24, 24, 27));
-                ::FillRect(buffer, &client, background);
-                ::DeleteObject(background);
+                const auto colors = nskry::plugin_ui::Colors(nskry::plugin_ui::preferences.theme);
+                ::FillRect(buffer, &client, nskry::plugin_ui::Brush(buffer, colors.window));
                 DrawVisual(buffer);
                 ::BitBlt(target, 0, 0, client.right, client.bottom, buffer, 0, 0, SRCCOPY);
                 ::SelectObject(buffer, previous);
@@ -1401,10 +1466,9 @@ private:
     HWND m_saveButton{};
     HWND m_rotateButton{};
     HWND m_engineButton{};
-    HWND m_textEdit{};
+    HWND m_textEdit{}, m_textLabel{}, m_copyTextButton{};
     HWND m_translateButton{};
     HFONT m_font{};
-    HFONT m_boldFont{};
     std::unique_ptr<OcrJobResult> m_result;
     bool m_highlights{ true };
     bool m_engineAtTop{};
@@ -1416,6 +1480,7 @@ private:
     double m_scale{};
     double m_panX{};
     double m_panY{};
+    UINT m_dpi = 96;
     int m_textPaneWidth{};
 };
 
@@ -1522,7 +1587,7 @@ extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext
     if (!context || context->structSize < sizeof(NskryHostContext) || !context->capturedBitmap || !s_dispatchWindow) return;
     int width{}, height{};
     if (!GetBitmapSize(context->capturedBitmap, width, height)) {
-        if (context->showNotification) context->showNotification(L"The selected image is not available for text recognition.", 2500);
+        if (context->showNotification) context->showNotification(nskry::plugin_ui::Text(L"The selected image is not available for text recognition.", L"所选图片不可用于文字识别。"), 2500);
         return;
     }
     auto request = std::make_unique<OcrRequest>();
@@ -1533,14 +1598,14 @@ extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext
     request->copyBitmapToClipboard = context->copyBitmapToClipboard;
     request->openBitmapEditor = context->openBitmapEditor;
     if (!request->bitmap) {
-        if (context->showNotification) context->showNotification(L"Could not prepare this image for text recognition.", 2500);
+        if (context->showNotification) context->showNotification(nskry::plugin_ui::Text(L"Could not prepare this image for text recognition.", L"无法准备要识别的图片。"), 2500);
         return;
     }
     if (!QueueOcr(std::move(request))) {
-        if (context->showNotification) context->showNotification(L"Could not start the text recognition worker.", 2500);
+        if (context->showNotification) context->showNotification(nskry::plugin_ui::Text(L"Could not start the text recognition worker.", L"无法启动文字识别。"), 2500);
         return;
     }
-    if (context->showNotification) context->showNotification(L"Recognizing text…", 2200);
+    if (context->showNotification) context->showNotification(nskry::plugin_ui::Text(L"Recognizing text…", L"正在识别文字…"), 2200);
 }
 
 extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_shutdown() {
@@ -1576,4 +1641,8 @@ extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_shutdown() {
     // after their windows/worker have gone, before the host can FreeLibrary.
     for (const auto* name : {L"NskryOcrResult", L"NskryOcrProgress", L"NskryOcrDispatch"})
         ::UnregisterClassW(name, ::GetModuleHandleW(nullptr));
+}
+
+extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_set_ui_preferences_v1(const NskryUiPreferencesV1* ui) {
+    nskry::plugin_ui::SetPreferences(ui);
 }

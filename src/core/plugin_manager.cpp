@@ -226,8 +226,13 @@ bool PluginManager::Unload(const std::wstring &pluginId) {
     return true;
 }
 
+static void NotifyUiPreferences(HMODULE module, const NskryUiPreferencesV1* ui) {
+    if (const auto set = reinterpret_cast<NskrySetUiPreferencesV1>(::GetProcAddress(module, kNskrySetUiPreferencesV1)))
+        set(ui);
+}
+
 bool PluginManager::ExecutePlugin(const std::wstring &pluginId, const NskryHostContext &hostContext,
-                                  const std::wstring &actionId) {
+                                  const std::wstring &actionId, const NskryUiPreferencesV1 *ui) {
     if (!actionId.empty()) {
         const auto *record = m_registry ? m_registry->Find(pluginId) : nullptr;
         if (!record || std::none_of(record->manifest.captureActions.begin(), record->manifest.captureActions.end(),
@@ -240,6 +245,7 @@ bool PluginManager::ExecutePlugin(const std::wstring &pluginId, const NskryHostC
     if (it == m_plugins.end() || !it->second.fnExecute)
         return false;
     try {
+        NotifyUiPreferences(it->second.hModule, ui);
         auto context = hostContext;
         if (m_graphicsProvider)
             m_graphicsProvider(context);
@@ -254,14 +260,14 @@ bool PluginManager::ExecutePlugin(const std::wstring &pluginId, const NskryHostC
     }
 }
 
-bool PluginManager::ShowPluginSettings(const std::wstring &id, HWND owner) {
+bool PluginManager::ShowPluginSettings(const std::wstring &id, HWND owner, const NskryUiPreferencesV1* ui) {
     const auto *record = m_registry ? m_registry->Find(id) : nullptr;
     if (!record || !record->enabled || record->manifest.settingsUiApi != 1 || !EnsureLoaded(id))
         return false;
     const auto it = m_plugins.find(id);
     if (it == m_plugins.end() || !it->second.fnShowSettings)
         return false;
-    try { return it->second.fnShowSettings(owner) != 0; }
+    try { NotifyUiPreferences(it->second.hModule, ui); return it->second.fnShowSettings(owner) != 0; }
     catch (...) { return false; }
 }
 bool PluginManager::IsLoaded(const std::wstring &pluginId) const {
@@ -456,13 +462,15 @@ PluginEntry::InputReport PluginManager::GetInputReport(const std::wstring &id) c
                                     : entry->second.inputReport;
 }
 
-std::vector<PluginToolbarAction> PluginManager::GetEnabledToolbarActions() const {
+std::vector<PluginToolbarAction> PluginManager::GetEnabledToolbarActions(LANGID language) const {
     std::vector<PluginToolbarAction> actions;
     if (!m_registry)
         return actions;
     for (const PluginRecord *record : m_registry->GetAll()) {
         if (record->enabled && record->manifest.toolbarAction && record->manifest.IsCompatibleWithHost()) {
-            actions.push_back({record->manifest.id, record->manifest.name});
+            const auto &manifest = record->manifest;
+            const bool useChinese = PRIMARYLANGID(language) == LANG_CHINESE && !manifest.toolbarLabelZhCn.empty();
+            actions.push_back({manifest.id, useChinese ? manifest.toolbarLabelZhCn : manifest.name});
             for (const auto &a : record->manifest.captureActions)
                 actions.push_back({record->manifest.id, a.label, a.id});
         }

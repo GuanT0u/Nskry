@@ -2,9 +2,10 @@
   "manifest_version": 1,
   "id": "nskry-scroll",
   "name": "Long Screenshot",
-  "version": "0.5.9",
+  "toolbar_label_zh_cn": "长截图",
+  "version": "0.6.0",
   "author": "Nskry Team",
-  "description": "Interactive scrolling capture with manual/automatic modes and live preview.",
+  "description": "Vertical and horizontal scrolling capture with manual/automatic modes and live preview.",
   "runtime": {
     "entry": "nskry-scroll.dll",
     "architecture": "x64",

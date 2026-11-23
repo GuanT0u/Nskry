@@ -8,7 +8,7 @@ if (MSVC)
 endif()
 target_compile_definitions(nskry_scroll PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX NSKRY_PLUGIN_EXPORTS)
 target_include_directories(nskry_scroll PRIVATE ${CMAKE_SOURCE_DIR}/sdk)
-target_link_libraries(nskry_scroll PRIVATE gdi32 user32)
+target_link_libraries(nskry_scroll PRIVATE gdi32 user32 shcore)
 set_target_properties(nskry_scroll PROPERTIES OUTPUT_NAME "nskry-scroll" RUNTIME_OUTPUT_DIRECTORY "${NSKRY_SCROLL_STAGE}")
 
 add_custom_command(OUTPUT "${NSKRY_SCROLL_BUNDLE}"

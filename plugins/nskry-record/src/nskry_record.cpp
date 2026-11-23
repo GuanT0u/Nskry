@@ -1,3 +1,4 @@
+#include "../../common/native_ui.h"
 #include "nskry_actions.h"
 #include "nskry_commands.h"
 #include "nskry_plugin.h"
@@ -63,12 +64,12 @@ void AddAudioApplication(DWORD pid, std::wstring label = {}) {
         if (QueryFullProcessImageNameW(process.get(), 0, executable, &length))
             label = std::filesystem::path(executable).filename().wstring();
         else
-            label = L"Audio session";
+            label = nskry::plugin_ui::Text(L"Audio session", L"音频会话");
     }
     ULARGE_INTEGER time{};
     time.LowPart = created.dwLowDateTime;
     time.HighPart = created.dwHighDateTime;
-    audioSources.push_back({L"App: " + label + L" (PID " + std::to_wstring(pid) + L")",
+    audioSources.push_back({nskry::plugin_ui::Text(L"App: ", L"应用 · ") + label + L" (PID " + std::to_wstring(pid) + L")",
                             {{}, pid, time.QuadPart}});
 }
 
@@ -93,7 +94,7 @@ void AddEndpointSessions(IMMDevice &device) {
 }
 
 void PopulateAudioChoices() {
-    audioSources = {{L"No audio", {}}};
+    audioSources = {{nskry::plugin_ui::Text(L"No audio", L"不录音频"), {}}};
     EnumWindows([](HWND candidate, LPARAM) -> BOOL {
         if (!IsWindowVisible(candidate) || GetWindow(candidate, GW_OWNER) || candidate == window)
             return TRUE;
@@ -124,7 +125,7 @@ void PopulateAudioChoices() {
                 continue;
             const std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> owned(id, CoTaskMemFree);
             winrt::com_ptr<IPropertyStore> properties;
-            std::wstring name = L"Device " + std::to_wstring(i + 1);
+            std::wstring name = nskry::plugin_ui::Text(L"Device ", L"设备 ") + std::to_wstring(i + 1);
             if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, properties.put()))) {
                 PROPVARIANT value{};
                 struct Clear {
@@ -135,7 +136,7 @@ void PopulateAudioChoices() {
                     value.vt == VT_LPWSTR && value.pwszVal)
                     name = value.pwszVal;
             }
-            audioSources.push_back({L"Output: " + name, {id}});
+            audioSources.push_back({nskry::plugin_ui::Text(L"Output: ", L"输出 · ") + name, {id}});
             AddEndpointSessions(*device);
         }
     } catch (const winrt::hresult_error &) {
@@ -416,7 +417,7 @@ void Area(RECT region, bool visible) {
         RegisterClassW(&wc);
         areaWindow = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED, wc.lpszClassName,
-            L"Recording region", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, module, nullptr);
+            nskry::plugin_ui::Text(L"Recording region", L"录制区域"), WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, module, nullptr);
         if (!areaWindow || !SetWindowDisplayAffinity(areaWindow, WDA_EXCLUDEFROMCAPTURE)) {
             if (areaWindow)
                 DestroyWindow(areaWindow);
@@ -454,10 +455,13 @@ void LayoutControl() {
     MONITORINFO mi{sizeof(mi)};
     if (!GetMonitorInfoW(MonitorFromRect(&setupRegion, MONITOR_DEFAULTTONEAREST), &mi))
         return;
+    const UINT windowDpi = ::GetDpiForWindow(window);
+    const UINT dpi = windowDpi ? windowDpi : 96;
+    const auto dip = [dpi](int value) { return ::MulDiv(value, dpi, 96); };
     const bool showTrim = trimMode && !exportTask;
     const int mode = setup ? (preferencesOnly ? 4 : 0) : completed ? (showTrim ? 3 : 2) : 1;
     const auto bounds =
-        RecordingBarBounds(setupRegion, mi.rcWork, mode == 0 || mode == 4 ? 900 : 800, mode == 3 ? 370 : mode == 0 && !gifMode ? 88 : 52);
+        RecordingBarBounds(setupRegion, mi.rcWork, dip(mode == 0 || mode == 4 ? 900 : 800), dip(mode == 3 ? 386 : mode == 0 && !gifMode ? 88 : mode == 1 || mode == 2 ? 116 : 52));
     if (mode == layoutMode && EqualRect(&bounds, &layoutBounds))
         return;
     layoutMode = mode;
@@ -466,11 +470,11 @@ void LayoutControl() {
                  SWP_NOACTIVATE);
     RECT client{};
     GetClientRect(window, &client);
-    const auto place = [](HWND h, bool visible, int x, int y, int w, int height = 30) {
-        if (!h)
-            return;
-        SetWindowPos(h, nullptr, x, y, w, height, SWP_NOZORDER | SWP_NOACTIVATE);
-        ShowWindow(h, visible ? SW_SHOW : SW_HIDE);
+    client.right = ::MulDiv(client.right, 96, dpi);
+    const auto place = [&](HWND h, bool visible, int x, int y, int w, int height = 32) {
+        if (!h) return;
+        ::SetWindowPos(h, nullptr, dip(x), dip(y), dip(w), dip(height), SWP_NOZORDER | SWP_NOACTIVATE);
+        ::ShowWindow(h, visible ? SW_SHOWNOACTIVATE : SW_HIDE);
     };
     const bool pre = mode == 0 || mode == 4;
     const bool chooseAudio = mode == 0 && !gifMode;
@@ -479,7 +483,7 @@ void LayoutControl() {
     const auto setupWidths = SetupWidths(client.right);
     const bool compact = pre && setupWidths.compact;
     const int statusWidth = compact ? 0 : (std::max)(45L, client.right - (pre ? 570 : 420));
-    place(statusLabel, !compact, 8, 10, compact ? 0 : statusWidth, 28);
+    place(statusLabel, !compact, 8, 8, pre ? statusWidth : client.right - 16, pre ? 34 : 60);
     int x = compact ? setupWidths.left : setupWidths.left + statusWidth;
     if (pre) {
         place(fpsChoice, true, x, 8, setupWidths.fps, 180);
@@ -491,9 +495,9 @@ void LayoutControl() {
             SendMessageW(qualityChoice, CB_SETDROPPEDWIDTH, 100, 0);
         x += setupWidths.quality + setupWidths.gap;
         if (compact)
-            SetWindowTextW(followChoice, L"Follow");
+            SetWindowTextW(followChoice, nskry::plugin_ui::Text(L"Follow", L"跟随"));
         else
-            SetWindowTextW(followChoice, L"Follow selected window");
+            SetWindowTextW(followChoice, nskry::plugin_ui::Text(L"Follow selected window", L"跟随所选窗口"));
         place(followChoice, mode == 0, x, 8, setupWidths.follow);
         place(cacheButton, mode == 4, x, 8, setupWidths.follow);
         x += setupWidths.follow + setupWidths.gap;
@@ -502,23 +506,24 @@ void LayoutControl() {
             x += setupWidths.defaults + setupWidths.gap;
         place(pauseButton, mode == 0, x, 8, setupWidths.start);
         if (compact)
-            SetWindowTextW(pauseButton, L"Start");
+            SetWindowTextW(pauseButton, nskry::plugin_ui::Text(L"Start", L"开始"));
         x += setupWidths.start + setupWidths.gap;
         if (compact)
-            SetWindowTextW(discardButton, L"Cancel");
+            SetWindowTextW(discardButton, nskry::plugin_ui::Text(L"Cancel", L"取消"));
         place(discardButton, true, x, 8, setupWidths.cancel);
         place(stopButton, false, 0, 0, 1);
         place(trimButton, false, 0, 0, 1);
     } else {
         for (HWND h : {fpsChoice, qualityChoice, followChoice, defaultsButton, cacheButton})
             ShowWindow(h, SW_HIDE);
-        place(pauseButton, true, x, 8, 100);
-        x += 106;
-        place(stopButton, true, x, 8, 100);
-        x += 106;
-        place(discardButton, true, x, 8, 110);
-        x += 116;
-        place(trimButton, completed, x, 8, 72);
+        const int count = completed ? 4 : 3;
+        const int width = (std::max)(1, static_cast<int>(client.right - 16 - 6 * (count - 1)) / count);
+        int actionX = 8;
+        for (HWND button : {pauseButton, stopButton, discardButton, trimButton}) {
+            const bool visible = button != trimButton || completed;
+            place(button, visible, actionX, 70, width, 32);
+            actionX += width + 6;
+        }
     }
     place(rangeWindow, showTrim, 12, 282, client.right - 24, 36);
     place(trimStart, showTrim, 12, 328, 100);
@@ -528,9 +533,9 @@ void LayoutControl() {
     InvalidateRect(window, nullptr, FALSE);
 }
 void ResultControls() {
-    SetWindowTextW(pauseButton, L"Save...");
-    SetWindowTextW(stopButton, L"Copy file");
-    SetWindowTextW(discardButton, delivered || copied ? L"Close" : L"Discard");
+    SetWindowTextW(pauseButton, nskry::plugin_ui::Text(L"Save...", L"保存…"));
+    SetWindowTextW(stopButton, nskry::plugin_ui::Text(L"Copy file", L"复制文件"));
+    SetWindowTextW(discardButton, delivered || copied ? nskry::plugin_ui::Text(L"Close", L"关闭") : nskry::plugin_ui::Text(L"Discard", L"丢弃"));
     for (HWND h : {pauseButton, stopButton, discardButton, trimButton})
         EnableWindow(h, !exportTask);
     ShowWindow(trimButton, SW_SHOW);
@@ -562,7 +567,7 @@ void BeginExport(bool trim) {
     if (trim) {
         if (!ReadSeconds(trimStart, exportStart) || !ReadSeconds(trimEnd, exportEnd) || exportStart < 0 ||
             exportEnd <= exportStart || exportEnd > resultSnapshot.encodedDuration) {
-            Error(L"Enter start/end seconds inside the recording (start < end).");
+            Error(nskry::plugin_ui::Text(L"Enter start/end seconds inside the recording (start < end).", L"请输入录制范围内的起止秒数，开始时间须早于结束时间。"));
             return;
         }
         exportPath = NewRecordingPath(gifMode);
@@ -581,7 +586,7 @@ void BeginExport(bool trim) {
         path.resize(wcslen(path.c_str()));
         if (_wcsicmp(std::filesystem::path(path).extension().c_str(), gifMode ? L".gif" : L".mp4") ||
             GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            Error(L"Choose a new file with the correct extension. Existing files are never overwritten.");
+            Error(nskry::plugin_ui::Text(L"Choose a new file with the correct extension. Existing files are never overwritten.", L"请选择扩展名正确的新文件名。已有文件会保留。"));
             return;
         }
         exportPath = path;
@@ -591,10 +596,10 @@ void BeginExport(bool trim) {
     exportTask = std::move(task);
     exportingTrim = trim;
     ResultControls();
-    SetWindowTextW(statusLabel, trim ? L"Trimming / re-encoding... Cancel export leaves the original unchanged."
-                                     : L"Saving... Cancel export leaves the original unchanged.");
+    SetWindowTextW(statusLabel, trim ? nskry::plugin_ui::Text(L"Trimming / re-encoding... Cancel export leaves the original unchanged.", L"正在裁剪和重新编码… 取消导出会保留原始录制。")
+                                     : nskry::plugin_ui::Text(L"Saving... Cancel export leaves the original unchanged.", L"正在保存… 取消导出会保留原始录制。"));
     EnableWindow(discardButton, TRUE);
-    SetWindowTextW(discardButton, L"Cancel export");
+    SetWindowTextW(discardButton, nskry::plugin_ui::Text(L"Cancel export", L"取消导出"));
     SetTrimVisible(false);
     SetTimer(window, Poll, 250, nullptr);
 }
@@ -630,39 +635,44 @@ void Update() {
         LayoutControl();
     }
     Area(s.region, !finished && (s.state == State::Recording || s.state == State::Starting));
-    const wchar_t *state = s.state == State::Starting     ? L"Starting"
-                           : s.state == State::Recording  ? L"Recording"
-                           : s.state == State::Paused     ? L"Paused"
-                           : s.state == State::Stopping   ? L"Finalizing"
-                           : s.state == State::Discarding ? L"Discarding"
-                           : s.state == State::Publishing ? L"Publishing (cannot discard)"
-                           : s.state == State::Recovering ? L"Recovering captured portion"
-                                                          : L"Finished";
+    const wchar_t *state = s.state == State::Starting     ? nskry::plugin_ui::Text(L"Starting", L"正在准备")
+                           : s.state == State::Recording  ? nskry::plugin_ui::Text(L"● Recording", L"● 录制中")
+                           : s.state == State::Paused     ? nskry::plugin_ui::Text(L"Ⅱ Paused", L"Ⅱ 已暂停")
+                           : s.state == State::Stopping   ? nskry::plugin_ui::Text(L"Finalizing", L"正在完成录制")
+                           : s.state == State::Discarding ? nskry::plugin_ui::Text(L"Discarding", L"正在丢弃")
+                           : s.state == State::Publishing ? nskry::plugin_ui::Text(L"Publishing (cannot discard)", L"正在写入文件")
+                           : s.state == State::Recovering ? nskry::plugin_ui::Text(L"Recovering captured portion", L"正在恢复已有录制")
+                                                          : nskry::plugin_ui::Text(L"Finished", L"已完成");
     const auto seconds = s.duration / 10000000;
     const auto rate = s.duration > 0 ? s.frames * 10000000 / uint64_t(s.duration) : 0;
     const auto text =
-        (closePromptActive ? std::wstring(L"Close recording? Save, discard, or go back.\n") : std::wstring()) + state +
+        (closePromptActive ? std::wstring(nskry::plugin_ui::Text(L"Close recording? Save, discard, or go back.\n", L"要关闭录制吗？请选择保存、丢弃或返回。\n")) : std::wstring()) + state +
         L"  " + std::to_wstring(seconds / 60) + L":" + (seconds % 60 < 10 ? L"0" : L"") +
         std::to_wstring(seconds % 60) +
         (s.fps ? L"  (" + std::to_wstring(rate) + L" / " + std::to_wstring(s.fps) + L" fps)" : L"") + L"\n" +
         (finished ? s.message : s.backend);
-    SetWindowTextW(statusLabel, text.c_str());
+    const int length = GetWindowTextLengthW(statusLabel);
+    std::wstring previous(static_cast<size_t>(length) + 1, L'\0');
+    GetWindowTextW(statusLabel, previous.data(), length + 1);
+    previous.resize(length);
+    if (previous != text)
+        SetWindowTextW(statusLabel, text.c_str());
     if (closePromptActive) {
         // Confirmation stays INSIDE the capture-excluded control window. No
         // new top-level MessageBox which could leak into a full-screen recording.
-        SetWindowTextW(pauseButton, finished ? L"Close" : L"Save / close");
-        SetWindowTextW(stopButton, L"Discard / close");
-        SetWindowTextW(discardButton, L"Back");
+        SetWindowTextW(pauseButton, finished ? nskry::plugin_ui::Text(L"Close", L"关闭") : nskry::plugin_ui::Text(L"Save / close", L"保存并关闭"));
+        SetWindowTextW(stopButton, nskry::plugin_ui::Text(L"Discard / close", L"丢弃并关闭"));
+        SetWindowTextW(discardButton, nskry::plugin_ui::Text(L"Back", L"返回"));
         EnableWindow(pauseButton, s.state != State::Recovering && s.state != State::Discarding);
         EnableWindow(stopButton, !finished && s.state != State::Publishing && s.state != State::Discarding);
         EnableWindow(discardButton, TRUE);
         return; // Keep the session alive while its inline confirmation is shown.
     }
-    SetWindowTextW(pauseButton, s.state == State::Paused ? L"Resume" : L"Pause");
-    SetWindowTextW(stopButton, L"Stop / save");
+    SetWindowTextW(pauseButton, s.state == State::Paused ? nskry::plugin_ui::Text(L"Resume", L"继续") : nskry::plugin_ui::Text(L"Pause", L"暂停"));
+    SetWindowTextW(stopButton, nskry::plugin_ui::Text(L"Stop / save", L"结束录制"));
     EnableWindow(pauseButton, s.state == State::Recording || s.state == State::Paused);
     EnableWindow(stopButton, s.state == State::Starting || s.state == State::Recording || s.state == State::Paused);
-    SetWindowTextW(discardButton, finished ? L"Close" : L"Cancel / discard");
+    SetWindowTextW(discardButton, finished ? nskry::plugin_ui::Text(L"Close", L"关闭") : nskry::plugin_ui::Text(L"Cancel / discard", L"取消或丢弃"));
     EnableWindow(discardButton, s.state != State::Publishing);
     if (finished) {
         KillTimer(window, Poll);
@@ -680,7 +690,7 @@ void Update() {
         if (s.state == State::Failed) {
             closing = false;
             failurePromptActive = true;
-            MessageBoxW(window, s.message.c_str(), L"Recording failed", MB_OK | MB_ICONWARNING);
+            MessageBoxW(window, s.message.c_str(), nskry::plugin_ui::Text(L"Recording failed", L"录制失败"), MB_OK | MB_ICONWARNING);
             failurePromptActive = false;
         }
         if (closing)
@@ -689,6 +699,13 @@ void Update() {
 }
 LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+    case WM_DPICHANGED:
+        layoutMode = -1;
+        if (window) ::PostMessageW(hwnd, WM_APP + 42, 0, 0);
+        return 0;
+    case WM_APP + 42:
+        LayoutControl();
+        return 0;
     case WM_ERASEBKGND:
         return 1;
     case WM_PAINT: {
@@ -699,12 +716,13 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         auto memory = CreateCompatibleDC(dc);
         auto bitmap = CreateCompatibleBitmap(dc, r.right, r.bottom);
         auto old = SelectObject(memory, bitmap);
-        FillRect(memory, &r, HBRUSH(COLOR_WINDOW + 1));
+        const auto colors = nskry::plugin_ui::Colors(nskry::plugin_ui::preferences.theme);
+        FillRect(memory, &r, nskry::plugin_ui::Brush(memory, colors.window));
         if (trimMode) {
-            RECT view{12, 48, r.right - 12, 272};
-            auto dark = CreateSolidBrush(RGB(32, 33, 36));
-            FillRect(memory, &view, dark);
-            DeleteObject(dark);
+            const UINT dpi = ::GetDpiForWindow(hwnd);
+            const auto dip = [dpi](int value) { return ::MulDiv(value, dpi ? dpi : 96, 96); };
+            RECT view{dip(12), dip(112), r.right - dip(12), dip(272)};
+            FillRect(memory, &view, nskry::plugin_ui::Brush(memory, colors.panel));
             if (!previewFrame.pixels.empty()) {
                 const double scale = (std::min)(double(view.right - view.left) / previewFrame.width,
                                                 double(view.bottom - view.top) / previewFrame.height);
@@ -721,9 +739,9 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                               previewFrame.height, previewFrame.pixels.data(), &info, DIB_RGB_COLORS, SRCCOPY);
             } else {
                 SetBkMode(memory, TRANSPARENT);
-                SetTextColor(memory, RGB(230, 230, 230));
-                const auto *hint = previewFrame.error.empty() ? L"Drag the start/end handle to preview a frame"
-                                                              : L"Preview unavailable; you can still trim by time";
+                SetTextColor(memory, colors.text);
+                const auto *hint = previewFrame.error.empty() ? nskry::plugin_ui::Text(L"Drag the start/end handle to preview a frame", L"拖动起止手柄可预览该帧")
+                                                              : nskry::plugin_ui::Text(L"Preview unavailable; you can still trim by time", L"无法预览画面，仍可按时间裁剪");
                 DrawTextW(memory, hint, -1, &view, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
         }
@@ -745,6 +763,9 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         Update();
         return 0;
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLOREDIT:
+        return nskry::plugin_ui::ControlColors(wp, nskry::plugin_ui::preferences.theme, msg == WM_CTLCOLOREDIT);
     case WM_COMMAND:
         try {
             if (setup) {
@@ -753,9 +774,9 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                             L"Copied recordings remain here so clipboard paste and history can use them.\n"
                             L"Deleting a file may break later paste. Save anything you need before deleting it.\n\n"
                             L"Open the cache folder to manage files yourself?",
-                            L"Recording cache", MB_OKCANCEL | MB_ICONINFORMATION) == IDOK &&
+                            nskry::plugin_ui::Text(L"Recording cache", L"录制缓存"), MB_OKCANCEL | MB_ICONINFORMATION) == IDOK &&
                         !OpenRecordingCache(hwnd))
-                        Error(L"Could not open the recording cache folder.");
+                        Error(nskry::plugin_ui::Text(L"Could not open the recording cache folder.", L"无法打开录制缓存文件夹。"));
                     return 0;
                 }
                 if (LOWORD(wp) == 3) {
@@ -767,9 +788,9 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                 Quality(SendMessageW(qualityChoice, CB_GETCURSEL, 0, 0))};
                 if (LOWORD(wp) == 11) {
                     if (!SaveDefaults(o))
-                        Error(L"Could not save recording defaults.");
+                        Error(nskry::plugin_ui::Text(L"Could not save recording defaults.", L"无法保存默认录制设置。"));
                     else
-                        SetWindowTextW(statusLabel, L"Default quality and frame rate saved.");
+                        SetWindowTextW(statusLabel, nskry::plugin_ui::Text(L"Default quality and frame rate saved.", L"已保存默认画质和帧率。"));
                     return 0;
                 }
                 if (LOWORD(wp) != 1)
@@ -777,7 +798,7 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (preferencesOnly)
                     return 0;
                 if (serviceV2.version != 2) {
-                    Error(L"This version requires capture service v2.");
+                    Error(nskry::plugin_ui::Text(L"This version requires capture service v2.", L"此版本需要支持采集服务 v2 的 Nskry。"));
                     return 0;
                 }
                 SessionOptions options;
@@ -788,7 +809,7 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     const auto item = SendMessageW(audioChoice, CB_GETCURSEL, 0, 0);
                     const auto index = SendMessageW(audioChoice, CB_GETITEMDATA, item, 0);
                     if (index < 0 || size_t(index) >= audioSources.size()) {
-                        Error(L"Select an audio source or No audio.");
+                        Error(nskry::plugin_ui::Text(L"Select an audio source or No audio.", L"请选择音频来源，或选择「不录音频」。"));
                         return 0;
                     }
                     options.audio = audioSources[size_t(index)].source;
@@ -801,7 +822,7 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 auto recording = std::make_unique<RecordSession>(service, setupRegion, resultPath, true, options);
                 if (!recording->Start()) {
                     ClearResult();
-                    Error(L"Could not start recording.");
+                    Error(nskry::plugin_ui::Text(L"Could not start recording.", L"无法开始录制。"));
                     return 0;
                 }
                 session = std::move(recording);
@@ -835,7 +856,7 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     break;
                 case 2:
                     if (!CopyRecordingFile(hwnd, resultPath))
-                        Error(L"The file could not be copied. Try again.");
+                        Error(nskry::plugin_ui::Text(L"The file could not be copied. Try again.", L"无法复制文件，请重试。"));
                     else {
                         copied = true;
                         ResultControls();
@@ -910,7 +931,7 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             Error(e.message().c_str());
             return 0;
         } catch (...) {
-            Error(L"Recording operation failed. The original file is unchanged.");
+            Error(nskry::plugin_ui::Text(L"Recording operation failed. The original file is unchanged.", L"录制操作失败，原始文件已保留。"));
             return 0;
         }
     case WM_POWERBROADCAST:
@@ -938,7 +959,7 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         if (completed) {
             if (!copied && !delivered &&
-                MessageBoxW(hwnd, L"Discard this unsaved recording?", L"Recording", MB_YESNO | MB_ICONQUESTION) !=
+                MessageBoxW(hwnd, nskry::plugin_ui::Text(L"Discard this unsaved recording?", L"要丢弃这段尚未保存的录制吗？"), nskry::plugin_ui::Text(L"Recording", L"录制中"), MB_YESNO | MB_ICONQUESTION) !=
                     IDYES)
                 return 0;
             ClearResult();
@@ -1018,7 +1039,7 @@ bool ShowControl(RECT region) {
     layoutMode = -1;
     const auto initial = RecordingBarBounds(region, mi.rcWork, 800, 52);
     window =
-        CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, ClassName, L"Nskry — Recording / settings",
+        CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, ClassName, nskry::plugin_ui::Text(L"Nskry — Recording / settings", L"Nskry — 录屏"),
                         WS_POPUP | WS_BORDER | WS_CLIPCHILDREN, initial.left, initial.top, initial.right - initial.left,
                         initial.bottom - initial.top, nullptr, nullptr, module, nullptr);
     if (!window)
@@ -1032,34 +1053,34 @@ bool ShowControl(RECT region) {
         DestroyWindow(window);
         return false;
     }
-    statusLabel = CreateWindowExW(0, L"STATIC", L"Starting...", WS_CHILD | WS_VISIBLE | SS_ENDELLIPSIS, 12, 10, 510, 60,
+    statusLabel = CreateWindowExW(0, L"STATIC", nskry::plugin_ui::Text(L"Starting...", L"正在准备…"), WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX, 12, 10, 510, 60,
                                   window, nullptr, module, nullptr);
-    pauseButton = CreateWindowExW(0, L"BUTTON", L"Pause", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 12, 78, 100, 28, window,
+    pauseButton = CreateWindowExW(0, L"BUTTON", nskry::plugin_ui::Text(L"Pause", L"暂停"), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_MULTILINE, 12, 78, 100, 28, window,
                                   HMENU(1), module, nullptr);
-    stopButton = CreateWindowExW(0, L"BUTTON", L"Stop / save", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 124, 78, 115, 28,
+    stopButton = CreateWindowExW(0, L"BUTTON", nskry::plugin_ui::Text(L"Stop / save", L"结束录制"), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_MULTILINE, 124, 78, 115, 28,
                                  window, HMENU(2), module, nullptr);
-    discardButton = CreateWindowExW(0, L"BUTTON", L"Cancel / discard", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 252, 78, 140,
+    discardButton = CreateWindowExW(0, L"BUTTON", nskry::plugin_ui::Text(L"Cancel / discard", L"取消或丢弃"), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_MULTILINE, 252, 78, 140,
                                     28, window, HMENU(3), module, nullptr);
     const auto child = [&](const wchar_t *type, const wchar_t *text, DWORD style, int x, int y, int w, int h, int id) {
         return CreateWindowExW(0, type, text, WS_CHILD | style, x, y, w, h, window, HMENU(INT_PTR(id)), module,
                                nullptr);
     };
-    audioLabel = child(L"STATIC", L"Audio", 0, 12, 45, 65, 28, 0);
+    audioLabel = child(L"STATIC", nskry::plugin_ui::Text(L"Audio", L"音频"), 0, 12, 45, 65, 28, 0);
     audioChoice = child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP, 80, 42, 400, 240, 16);
     fpsChoice = child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP, 12, 122, 100, 160, 7);
     qualityChoice = child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP, 124, 122, 120, 160, 8);
-    followChoice = child(L"BUTTON", L"Follow window", BS_AUTOCHECKBOX, 12, 168, 225, 28, 9);
-    defaultsButton = child(L"BUTTON", L"Save defaults", WS_TABSTOP, 252, 122, 140, 28, 11);
-    cacheButton = child(L"BUTTON", L"Cache folder...", WS_TABSTOP, 12, 168, 225, 28, 15);
+    followChoice = child(L"BUTTON", nskry::plugin_ui::Text(L"Follow window", L"跟随窗口"), BS_AUTOCHECKBOX | WS_TABSTOP, 12, 168, 225, 28, 9);
+    defaultsButton = child(L"BUTTON", nskry::plugin_ui::Text(L"Save defaults", L"保存为默认"), WS_TABSTOP, 252, 122, 140, 28, 11);
+    cacheButton = child(L"BUTTON", nskry::plugin_ui::Text(L"Cache folder...", L"缓存文件夹…"), WS_TABSTOP, 12, 168, 225, 28, 15);
     for (const auto *text : {L"30 fps", L"60 fps"})
         SendMessageW(fpsChoice, CB_ADDSTRING, 0, LPARAM(text));
-    for (const auto *text : {L"中 / Medium", L"高 / High", L"高清 / HD"})
+    for (const auto *text : {nskry::plugin_ui::Text(L"中 / Medium", L"中等"), nskry::plugin_ui::Text(L"高 / High", L"高画质"), nskry::plugin_ui::Text(L"高清 / HD", L"高清")})
         SendMessageW(qualityChoice, CB_ADDSTRING, 0, LPARAM(text));
-    trimButton = child(L"BUTTON", L"Trim...", WS_TABSTOP, 404, 78, 100, 28, 4);
+    trimButton = child(L"BUTTON", nskry::plugin_ui::Text(L"Trim...", L"裁剪…"), WS_TABSTOP, 404, 78, 100, 28, 4);
     trimStart = child(L"EDIT", L"0", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, 12, 130, 100, 28, 12);
     trimEnd = child(L"EDIT", L"0", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, 124, 130, 120, 28, 13);
-    trimApply = child(L"BUTTON", L"Apply trim", WS_TABSTOP, 252, 130, 100, 28, 5);
-    trimCancel = child(L"BUTTON", L"Cancel trim", WS_TABSTOP, 364, 130, 100, 28, 6);
+    trimApply = child(L"BUTTON", nskry::plugin_ui::Text(L"Apply trim", L"应用裁剪"), WS_TABSTOP, 252, 130, 100, 28, 5);
+    trimCancel = child(L"BUTTON", nskry::plugin_ui::Text(L"Cancel trim", L"取消裁剪"), WS_TABSTOP, 364, 130, 100, 28, 6);
     WNDCLASSW rangeClass{};
     rangeClass.lpfnWndProc = RangeProcedure;
     rangeClass.hInstance = module;
@@ -1077,6 +1098,7 @@ bool ShowControl(RECT region) {
     pendingExport = -1;
     LayoutControl();
     closePromptActive = false;
+    nskry::plugin_ui::AttachTabNavigation(window);
     ShowWindow(window, SW_SHOWNOACTIVATE);
     if (!SetTimer(window, Poll, 250, nullptr)) {
         DestroyWindow(window);
@@ -1085,7 +1107,7 @@ bool ShowControl(RECT region) {
     return true;
 }
 void Error(const wchar_t *text) {
-    MessageBoxW(window, text, L"Screen recording", MB_OK | MB_ICONWARNING);
+    MessageBoxW(window, text, nskry::plugin_ui::Text(L"Screen recording", L"录屏"), MB_OK | MB_ICONWARNING);
 }
 } // namespace
 extern "C" {
@@ -1119,7 +1141,7 @@ NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext *ctx) {
         }
         gifMode = requestingGif;
         if (!ctx || ctx->structSize < sizeof(*ctx) || ctx->apiVersion != 2 || serviceV2.version != 2) {
-            Error(L"This host does not provide region capture v2. Update the host and recording package together.");
+            Error(nskry::plugin_ui::Text(L"This host does not provide region capture v2. Update the host and recording package together.", L"当前版本缺少区域采集 v2。请一起更新 Nskry 和录屏插件。"));
             return;
         }
         selectingOutput = true;
@@ -1134,13 +1156,13 @@ NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext *ctx) {
         if (!monitor || !GetMonitorInfoW(monitor, &mi) || r.left < mi.rcMonitor.left || r.top < mi.rcMonitor.top ||
             r.right > mi.rcMonitor.right || r.bottom > mi.rcMonitor.bottom || r.right - r.left < 2 ||
             r.bottom - r.top < 2) {
-            Error(L"Select a region inside one monitor. Cross-monitor recording is not supported.");
+            Error(nskry::plugin_ui::Text(L"Select a region inside one monitor. Cross-monitor recording is not supported.", L"请在同一台显示器上框选录制区域。"));
             return;
         }
         if (window)
             DestroyWindow(window);
         if (!ShowControl(r)) {
-            Error(L"Cannot create a capture-excluded recording control window.");
+            Error(nskry::plugin_ui::Text(L"Cannot create a capture-excluded recording control window.", L"无法建立可排除在录制画面外的控制窗口。"));
             return;
         }
         KillTimer(window, Poll);
@@ -1160,17 +1182,17 @@ NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext *ctx) {
         EnableWindow(fpsChoice, !gifMode);
         EnableWindow(qualityChoice, !gifMode);
         EnableWindow(defaultsButton, !gifMode);
-        SetWindowTextW(pauseButton, L"Start");
-        SetWindowTextW(stopButton, L"Stop");
+        SetWindowTextW(pauseButton, nskry::plugin_ui::Text(L"Start", L"开始"));
+        SetWindowTextW(stopButton, nskry::plugin_ui::Text(L"Stop", L"结束"));
         EnableWindow(stopButton, FALSE);
-        SetWindowTextW(discardButton, L"Cancel");
-        SetWindowTextW(statusLabel, (std::wstring(gifMode ? L"GIF " : L"Video ") + std::to_wstring(r.right - r.left) +
+        SetWindowTextW(discardButton, nskry::plugin_ui::Text(L"Cancel", L"取消"));
+        SetWindowTextW(statusLabel, (std::wstring(gifMode ? L"GIF " : nskry::plugin_ui::Text(L"Video ", L"视频 ")) + std::to_wstring(r.right - r.left) +
                                      L" x " + std::to_wstring(r.bottom - r.top))
                                         .c_str());
         LayoutControl();
         Area(r, true);
     } catch (...) {
-        Error(L"Could not start recording.");
+        Error(nskry::plugin_ui::Text(L"Could not start recording.", L"无法开始录制。"));
         if (window && !session)
             DestroyWindow(window);
     }
@@ -1214,7 +1236,7 @@ NSKRY_API int32_t NSKRY_CALL nskry_plugin_show_settings_v1(HWND owner) {
             ShowWindow(h, SW_SHOW);
         ShowWindow(pauseButton, SW_HIDE);
         ShowWindow(stopButton, SW_HIDE);
-        SetWindowTextW(discardButton, L"Close");
+        SetWindowTextW(discardButton, nskry::plugin_ui::Text(L"Close", L"关闭"));
         SetWindowTextW(statusLabel, L"Default video frame rate (left) and bitrate quality (right).\nThese defaults do "
                                     L"not change GIF's fixed settings. Save defaults to apply.");
         LayoutControl();
@@ -1326,3 +1348,7 @@ void RecordControlTestExportCopy(const std::wstring &input, const std::wstring &
     exportTask->Start(input, output, {}, false, 0, 0, false);
 }
 #endif
+
+extern "C" NSKRY_API void NSKRY_CALL nskry_plugin_set_ui_preferences_v1(const NskryUiPreferencesV1* ui) {
+    nskry::plugin_ui::SetPreferences(ui);
+}

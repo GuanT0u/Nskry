@@ -444,6 +444,18 @@ bool PluginPackageManager::WritePending(const std::vector<PendingOperation> &ope
     return file && static_cast<bool>(file.write(bytes.data(), static_cast<std::streamsize>(bytes.size())));
 }
 
+std::vector<std::pair<std::wstring, PluginRestartAction>> PluginPackageManager::PendingRestartActions() const {
+    std::vector<PendingOperation> operations;
+    std::vector<std::pair<std::wstring, PluginRestartAction>> actions;
+    if (ReadPending(operations)) {
+        actions.reserve(operations.size());
+        for (const auto &op : operations)
+            actions.emplace_back(op.pluginId, op.type == PendingType::Delete
+                ? PluginRestartAction::Remove : PluginRestartAction::Update);
+    }
+    return actions;
+}
+
 bool PluginPackageManager::ApplyPendingOperations(std::wstring *error) {
     std::vector<PendingOperation> operations;
     if (!ReadPending(operations))

@@ -12,6 +12,7 @@ class InputPage {
     }
     void Load(const UserSettings &settings);
     void Store(UserSettings &settings);
+    void Draft(UserSettings &settings) const;
     void Jump(const std::wstring &id);
     void StopRecording(bool accept = false);
 
