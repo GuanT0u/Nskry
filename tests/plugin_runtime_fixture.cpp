@@ -3,6 +3,7 @@
 #include "nskry_input.h"
 #include "nskry_commands.h"
 #include "nskry_text_translation.h"
+#include "nskry_ui_preferences.h"
 #include "nskry_image_recognition.h"
 #include <string>
 #include <stdexcept>
@@ -50,6 +51,9 @@ __declspec(dllexport) int NSKRY_CALL nskry_test_graphics_match() {
 }
 NSKRY_API void NSKRY_CALL nskry_plugin_shutdown() { ++shutdowns; }
 #ifndef NSKRY_TEST_NO_TEXT
+NSKRY_API void NSKRY_CALL nskry_plugin_set_ui_preferences_v1(const NskryUiPreferencesV1* ui) {
+    nskry::plugin_ui::SetPreferences(ui);
+}
 NSKRY_API int32_t NSKRY_CALL nskry_plugin_connect_image_recognition_v1(const NskryImageRecognitionServiceV1* service) {
     if (!service || service->version != 1 || service->structSize < sizeof(*service)) return 0;
     imageService = *service; return 1;
@@ -88,6 +92,10 @@ NSKRY_API int32_t NSKRY_CALL nskry_plugin_translate_text_v1(const NskryTextTrans
         return NSKRY_TRANSLATION_BUSY;
     }
     if (!wcscmp(mode, L"malformed")) return 99;
+    if (!wcscmp(mode, L"expect-ui") &&
+        (nskry::plugin_ui::preferences.language != MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED) ||
+         nskry::plugin_ui::preferences.theme != NSKRY_UI_THEME_DARK))
+        return NSKRY_TRANSLATION_FAILED;
     receivedText.assign(request->text, request->textLength);
     return NSKRY_TRANSLATION_ACCEPTED;
 }

@@ -75,7 +75,6 @@ private:
     HWND m_saveButton{};
     HBITMAP m_bitmap{};
     ImageEditModel m_model;
-    int m_originalWidth{}, m_originalHeight{};
     int m_cutMode{}, m_cutFirst{}, m_cutSecond{}; // 1 rows, 2 columns; pending only
     bool m_hasCut{};
     bool m_cutMovingFirst{};

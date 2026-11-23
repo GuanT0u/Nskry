@@ -1,34 +1,29 @@
 #pragma once
 #include "ui/toolbar_accessibility.h"
-#include "ui/ui_preferences.h"
+#include "ui/annotation_toolbar_items.h"
 #include <windowsx.h>
 
 namespace nskry {
 class AnnotationToolbarInput {
 public:
-    template<class Item>
-    void Update(HWND owner, HWND surface, const std::vector<Item>& controls) {
+    void Update(HWND owner, HWND surface, const std::vector<AnnotationToolbarItem>& controls) {
         m_targets.clear();
         std::vector<ToolbarAccessibility::Item> items;
-        POINT origin{};
-        ::ClientToScreen(surface, &origin);
         for (const auto& control : controls) {
-            if (control.isSeparator || ::IsRectEmpty(&control.rect)) continue;
-            RECT bounds = control.rect;
-            m_targets.push_back(bounds);
-            ::OffsetRect(&bounds, origin.x, origin.y);
+            if (control.IsSeparator() || ::IsRectEmpty(&control.rect)) continue;
+            m_targets.push_back(control.rect);
             std::wstring name;
-            if (control.action == 5)
+            if (control.action == AnnotationAction::Width)
                 name = UiText(L"Stroke width · ", L"线宽 · ") + std::to_wstring(control.widthVal) + L" px";
-            else if (control.action == 6)
+            else if (control.action == AnnotationAction::Color)
                 name = UiText(L"Color · ", L"颜色 · ") + std::to_wstring(GetRValue(control.color)) + L", " +
                        std::to_wstring(GetGValue(control.color)) + L", " + std::to_wstring(GetBValue(control.color));
             else if (control.label)
                 name = control.label;
-            items.push_back({std::move(name), bounds, control.selected});
+            items.push_back({std::move(name), control.rect, control.selected});
         }
         if (m_focus >= static_cast<int>(m_targets.size())) m_focus = -1;
-        m_accessibility.Update(owner, std::move(items), UiText(L"Annotation toolbar", L"标注工具栏"),
+        m_accessibility.Update(owner, surface, std::move(items), UiText(L"Annotation toolbar", L"标注工具栏"),
                                UiText(L"Activate", L"执行"));
         if (m_focus >= 0) m_accessibility.Focus(owner, m_focus + 1);
     }

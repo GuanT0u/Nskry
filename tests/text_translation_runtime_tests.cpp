@@ -32,6 +32,10 @@ int wmain(int argc, wchar_t **argv) {
         return 5;
     NskryHostContext context{sizeof(context), NSKRY_PLUGIN_API_VERSION};
     auto &runtime = nskry::PluginManager::Instance();
+    runtime.SetUiPreferencesProvider([] {
+        return NskryUiPreferencesV1{sizeof(NskryUiPreferencesV1),
+            MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED), NSKRY_UI_THEME_DARK};
+    });
     runtime.Initialize(registry, context);
     struct Stop {
         nskry::PluginManager &runtime;
@@ -63,6 +67,7 @@ int wmain(int argc, wchar_t **argv) {
     ok = service->translate(&request, &result) == NSKRY_TRANSLATION_INVALID &&
          !runtime.IsLoaded(provider.id) && ok;
     request.version = 1;
+    SetEnvironmentVariableW(L"NSKRY_TEST_TRANSLATION_RESULT", L"expect-ui");
     ok = service->translate(&request, &result) == NSKRY_TRANSLATION_ACCEPTED &&
          runtime.IsLoaded(provider.id) && ok;
     const auto received = reinterpret_cast<const wchar_t *(NSKRY_CALL *)()>(

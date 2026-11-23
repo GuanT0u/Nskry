@@ -10,11 +10,11 @@ class ToolbarAccessibility {
 public:
     struct Item {
         std::wstring name;
-        RECT screenBounds{};
+        RECT clientBounds{};
         bool selected{};
     };
 
-    void Update(HWND window, std::vector<Item> items, const wchar_t* name, const wchar_t* action);
+    void Update(HWND window, HWND surface, std::vector<Item> items, const wchar_t* name, const wchar_t* action);
     void Focus(HWND window, LONG child);
     void Detach();
     LRESULT GetObject(HWND window, WPARAM wp, LPARAM lp) const;
@@ -24,7 +24,7 @@ public:
 
     struct State {
         std::mutex mutex;
-        HWND window{};
+        HWND window{}, surface{};
         std::vector<Item> items;
         std::wstring name, action;
         LONG focused{};

@@ -253,6 +253,7 @@ int WINAPI wWinMain(
         if (!packageError.empty()) registryError += L"\n\n" + packageError;
         ::MessageBoxW(nullptr, registryError.c_str(), L"Nskry", MB_ICONWARNING);
     } else {
+        nskry::PluginManager::Instance().SetUiPreferencesProvider(nskry::DesktopUiPreferences);
         nskry::PluginManager::Instance().Initialize(pluginRegistry, hostCtx);
     }
 
@@ -355,8 +356,7 @@ int WINAPI wWinMain(
     };
     settingsServices.setPluginEnabled = [&pluginRegistry](const std::wstring& id, bool enabled) { return pluginRegistry.SetEnabled(id, enabled); };
     settingsServices.showPluginSettings = [](const std::wstring &id, HWND owner) {
-        const auto ui = nskry::DesktopUiPreferences();
-        return nskry::PluginManager::Instance().ShowPluginSettings(id, owner, &ui);
+        return nskry::PluginManager::Instance().ShowPluginSettings(id, owner);
     };
     settingsServices.uninstallPlugin = [&packageManager](const std::wstring& id, std::wstring& error) {
         const auto result = packageManager.Uninstall(id); error = result.message; return result.success;
@@ -687,8 +687,7 @@ static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionR
             context.showNotification = ShowPluginNotification;
             context.copyBitmapToClipboard = CopyBitmapToClipboard;
             context.openBitmapEditor = OpenBitmapEditor;
-            const auto ui = nskry::DesktopUiPreferences();
-            if (!nskry::PluginManager::Instance().ExecutePlugin(result.pluginId, context, result.pluginActionId, &ui))
+            if (!nskry::PluginManager::Instance().ExecutePlugin(result.pluginId, context, result.pluginActionId))
                 ShowPluginNotification(L"The plugin could not be loaded or did not complete successfully.", 3500);
             ::DeleteObject(result.bitmap);
         }
@@ -715,8 +714,7 @@ static void ExecuteImagePlugin(const std::wstring& pluginId, HBITMAP bitmap, int
     context.showNotification = ShowPluginNotification;
     context.copyBitmapToClipboard = CopyBitmapToClipboard;
     context.openBitmapEditor = OpenBitmapEditor;
-    const auto ui = nskry::DesktopUiPreferences();
-    if (!nskry::PluginManager::Instance().ExecutePlugin(pluginId, context, {}, &ui))
+    if (!nskry::PluginManager::Instance().ExecutePlugin(pluginId, context))
         ShowPluginNotification(L"The image action could not be loaded or did not complete successfully.", 3500);
 }
 

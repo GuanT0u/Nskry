@@ -65,13 +65,15 @@ class PluginManager {
         m_graphicsProvider = std::move(provider);
     }
 
+    void SetUiPreferencesProvider(NskryUiPreferencesV1 (*provider)()) { m_uiPreferencesProvider = provider; }
+
     bool EnsureLoaded(const std::wstring &pluginId);
     bool Unload(const std::wstring &pluginId);
     bool ExecutePlugin(const std::wstring &pluginId, const NskryHostContext &hostContext,
-                       const std::wstring &actionId = {}, const NskryUiPreferencesV1 *ui = nullptr);
+                       const std::wstring &actionId = {});
     // Does not load idle plugins. Cleanup commands remain usable after disable.
     bool ExecuteCommand(const std::wstring& pluginId, const std::wstring& localId, std::wstring& error);
-    bool ShowPluginSettings(const std::wstring &pluginId, HWND owner, const NskryUiPreferencesV1* ui = nullptr);
+    bool ShowPluginSettings(const std::wstring &pluginId, HWND owner);
     bool HasTextTranslation() const; // Metadata discovery only, UI thread.
     int32_t TranslateText(const NskryTextTranslationV1 *, NskryTranslationResultV1 *);
     bool HasImageRecognition(const wchar_t* providerId) const;
@@ -98,6 +100,7 @@ class PluginManager {
         Shutdown();
     }
 
+    void NotifyUiPreferences(HMODULE module) const;
     bool LoadPlugin(const PluginRecord &record);
     PluginEntry::InputReport ConfigureInput(PluginEntry &entry, const PluginRecord &record);
 
@@ -115,6 +118,7 @@ class PluginManager {
     std::wstring m_imageProvider;
     std::function<std::wstring(const ShortcutDefinition &)> m_shortcutProvider;
     std::function<void(NskryHostContext &)> m_graphicsProvider;
+    NskryUiPreferencesV1 (*m_uiPreferencesProvider)() = nullptr;
 };
 
 } // namespace nskry

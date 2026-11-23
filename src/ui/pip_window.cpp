@@ -4,6 +4,7 @@
 #include "ui/ui_preferences.h"
 #include "ui/interaction_visuals.h"
 #include "ui/pip_window.h"
+#include "ui/toolbar_layout.h"
 #include <algorithm>
 #include <d3dcompiler.h>
 #include <windowsx.h>
@@ -1168,7 +1169,7 @@ LRESULT PipWindow::HandleToolbarMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
         ::GetCursorPos(&pt);
         ::ScreenToClient(hwnd, &pt);
         for (const auto& item : m_toolbarItems) {
-            if (!item.isSeparator && ::PtInRect(&item.rect, pt)) {
+            if (!item.IsSeparator() && ::PtInRect(&item.rect, pt)) {
                 ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32649))); // IDC_HAND
                 return TRUE;
             }
@@ -1187,7 +1188,7 @@ LRESULT PipWindow::HandleToolbarMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 
         bool needRepaint = false;
         for (auto& item : m_toolbarItems) {
-            if (item.isSeparator) continue;
+            if (item.IsSeparator()) continue;
             bool inside = ::PtInRect(&item.rect, pt);
             if (inside != item.hovered) {
                 item.hovered = inside;
@@ -1213,16 +1214,16 @@ LRESULT PipWindow::HandleToolbarMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
     case WM_LBUTTONDOWN: {
         POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
         for (const auto& item : m_toolbarItems) {
-            if (item.isSeparator) continue;
+            if (item.IsSeparator()) continue;
             if (::PtInRect(&item.rect, pt)) {
                 CommitTextEdit();
 
-                if (item.action == 1) { FinishEdit(true);  return 0; } // Done
-                if (item.action == 2) { FinishEdit(false); return 0; } // Cancel
-                if (item.action == 3) { m_annotationEngine.Undo(); UpdateOverlayFromEngine(); return 0; }
-                if (item.action == 4) { m_annotationEngine.Redo(); UpdateOverlayFromEngine(); return 0; }
+                if (item.action == AnnotationAction::Done) { FinishEdit(true);  return 0; } // Done
+                if (item.action == AnnotationAction::Cancel) { FinishEdit(false); return 0; } // Cancel
+                if (item.action == AnnotationAction::Undo) { m_annotationEngine.Undo(); UpdateOverlayFromEngine(); return 0; }
+                if (item.action == AnnotationAction::Redo) { m_annotationEngine.Redo(); UpdateOverlayFromEngine(); return 0; }
 
-                if (item.action == 5) { // Width
+                if (item.action == AnnotationAction::Width) { // Width
                     m_annotationEngine.SetStrokeWidth(item.widthVal);
                     m_annotationEngine.SetFontSize(item.widthVal == 2 ? 14 : (item.widthVal == 4 ? 18 : 26));
                     RECT rc{}; ::GetClientRect(m_hwnd, &rc);
@@ -1230,7 +1231,7 @@ LRESULT PipWindow::HandleToolbarMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
                     return 0;
                 }
 
-                if (item.action == 6) { // Color
+                if (item.action == AnnotationAction::Color) { // Color
                     m_annotationEngine.SetColor(item.color);
                     RECT rc{}; ::GetClientRect(m_hwnd, &rc);
                     BuildToolbar(rc.right, rc.bottom);
@@ -1256,137 +1257,49 @@ LRESULT PipWindow::HandleToolbarMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 }
 
 void PipWindow::BuildToolbar(int clientW, int clientH) {
-    m_toolbarItems.clear();
+    size_t mainCount = 0;
+    m_toolbarItems = BuildAnnotationToolbarItems(m_annotationEngine, false, mainCount);
+    const UINT windowDpi = ::GetDpiForWindow(m_hwnd);
+    const UINT dpi = windowDpi ? windowDpi : 96;
+    const auto dip = [dpi](int value) { return ::MulDiv(value, dpi, 96); };
+    const auto widths = MeasureAnnotationToolbarItems(m_hwnd, m_font, m_toolbarItems, dpi);
+    const int margin = dip(4);
+    POINT origin{};
+    ::ClientToScreen(m_hwnd, &origin);
+    const HMONITOR monitor = ::MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info{sizeof(info)};
+    const bool hasWorkArea = ::GetMonitorInfoW(monitor, &info) != FALSE;
 
-    const bool hasSub = (m_annotationEngine.GetTool() != ToolType::None);
-
-    struct Def {
-        ToolType tool;
-        int      action;
-        const wchar_t* label;
-        int      width;
-        bool     isSep;
-    };
-
-    Def defs[] = {
-        { ToolType::Rect,    0, UiText(L"Rect", L"矩形"),   36, false },
-        { ToolType::Ellipse, 0, UiText(L"Oval", L"椭圆"),   36, false },
-        { ToolType::Arrow,   0, UiText(L"Arrow", L"箭头"),   36, false },
-        { ToolType::Pen,     0, UiText(L"Pen", L"画笔"),   36, false },
-        { ToolType::Mosaic,  0, UiText(L"Mosaic", L"马赛克"), 46, false },
-        { ToolType::Text,    0, UiText(L"Text", L"文本"),   36, false },
-        { ToolType::None,    0, nullptr,    4, true  },
-        { ToolType::None,    3, UiText(L"Undo", L"撤销"),   36, false },
-        { ToolType::None,    4, UiText(L"Redo", L"重做"),   36, false },
-        { ToolType::None,    0, nullptr,    4, true  },
-        { ToolType::None,    1, UiText(L"Done", L"完成"), 46, false },
-        { ToolType::None,    2, UiText(L"Cancel", L"取消"), 46, false },
-    };
-
-    constexpr int gap = 2;
-    constexpr int barH = 26;
-    constexpr int subItemH = 24;
-
-    int totalMainW = 0;
-    for (const auto& d : defs) totalMainW += d.width + gap;
-    totalMainW -= gap;
-
-    int tbW = totalMainW + 12;
-    int tbH = hasSub ? (barH + subItemH + 12) : (barH + 10);
-
-    POINT ptScreen = { 0, 0 };
-    if (m_hwnd) {
-        ::ClientToScreen(m_hwnd, &ptScreen);
+    int preferredWidth = 0;
+    int rowWidth = 0;
+    for (size_t i = 0; i < widths.size(); ++i) {
+        if (i == mainCount) rowWidth = 0;
+        rowWidth += widths[i] + margin;
+        preferredWidth = (std::max)(preferredWidth, rowWidth + margin);
     }
+    const int toolbarWidth = hasWorkArea
+        ? (std::min)(preferredWidth, (std::max)(1, static_cast<int>(info.rcWork.right - info.rcWork.left) - 2 * margin))
+        : preferredWidth;
+    // Lay out at the top of a synthetic viewport so wrapped rows determine the popup height.
+    const int maximumHeight = dip(36) * static_cast<int>(widths.size()) + 2 * margin;
+    const auto layout = LayoutSelectionToolbar(widths, {0, 0, toolbarWidth, 0},
+        {0, 0, toolbarWidth, maximumHeight}, mainCount, dpi);
+    for (size_t i = 0; i < layout.size(); ++i) m_toolbarItems[i].rect = layout[i];
+    const int toolbarHeight = layout.back().bottom + margin;
 
-    int tbX = ptScreen.x + (clientW - tbW) / 2;
-    int tbY = ptScreen.y + clientH - tbH - 10;
-    if (tbY < ptScreen.y + 4) tbY = ptScreen.y + 4;
-
-    HMONITOR hMon = ::MonitorFromWindow(m_hwnd ? m_hwnd : m_hwndToolbar, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO mi{ sizeof(mi) };
-    if (::GetMonitorInfoW(hMon, &mi)) {
-        if (tbX + tbW > mi.rcWork.right - 4) tbX = mi.rcWork.right - 4 - tbW;
-        if (tbX < mi.rcWork.left + 4)        tbX = mi.rcWork.left + 4;
-        if (tbY + tbH > mi.rcWork.bottom - 4) tbY = mi.rcWork.bottom - 4 - tbH;
-        if (tbY < mi.rcWork.top + 4)          tbY = mi.rcWork.top + 4;
+    int x = origin.x + (clientW - toolbarWidth) / 2;
+    int y = (std::max)(origin.y + margin, origin.y + clientH - toolbarHeight - dip(10));
+    if (hasWorkArea) {
+        x = std::clamp(x, static_cast<int>(info.rcWork.left) + margin,
+                      (std::max)(static_cast<int>(info.rcWork.left) + margin,
+                                 static_cast<int>(info.rcWork.right) - margin - toolbarWidth));
+        y = std::clamp(y, static_cast<int>(info.rcWork.top) + margin,
+                      (std::max)(static_cast<int>(info.rcWork.top) + margin,
+                                 static_cast<int>(info.rcWork.bottom) - margin - toolbarHeight));
     }
-
     if (m_hwndToolbar) {
-        ::SetWindowPos(
-            m_hwndToolbar,
-            HWND_TOPMOST,
-            tbX, tbY, tbW, tbH,
-            SWP_NOACTIVATE | (m_isEditing ? SWP_SHOWWINDOW : SWP_HIDEWINDOW)
-        );
-    }
-
-    // Primary row inside toolbar local coords
-    int startX = (tbW - totalMainW) / 2;
-    if (startX < 4) startX = 4;
-    int startY = 4;
-
-    int curX = startX;
-    for (const auto& d : defs) {
-        PipToolItem item{};
-        item.rect        = { curX, startY, curX + d.width, startY + barH };
-        item.tool        = d.tool;
-        item.action      = d.action;
-        item.label       = d.label;
-        item.isSeparator = d.isSep;
-        item.selected    = (d.tool != ToolType::None && m_annotationEngine.GetTool() == d.tool);
-        m_toolbarItems.push_back(item);
-        curX += d.width + gap;
-    }
-
-    // Secondary row (if active tool)
-    if (hasSub) {
-        int subY = startY + barH + 4;
-        const int subBarW = 298;
-        int subStartX = (tbW - subBarW) / 2;
-        if (subStartX < 4) subStartX = 4;
-
-        int sx = subStartX;
-        int widths[] = { 2, 4, 8 };
-        const wchar_t* wLabels[] = { L"● 2", L"● 4", L"● 8" };
-        for (int i = 0; i < 3; i++) {
-            PipToolItem item{};
-            item.rect     = { sx, subY, sx + 32, subY + subItemH };
-            item.action   = 5; // Width
-            item.widthVal = widths[i];
-            item.label    = wLabels[i];
-            item.selected = (m_annotationEngine.GetStrokeWidth() == widths[i]);
-            m_toolbarItems.push_back(item);
-            sx += 32 + gap;
-        }
-
-        PipToolItem sep{};
-        sep.rect        = { sx, subY, sx + 4, subY + subItemH };
-        sep.isSeparator = true;
-        m_toolbarItems.push_back(sep);
-        sx += 4 + gap;
-
-        COLORREF colors[] = {
-            RGB(255, 59, 48),   // Red
-            RGB(255, 149, 0),  // Orange
-            RGB(255, 204, 0),  // Yellow
-            RGB(52, 199, 89),  // Green
-            RGB(0, 122, 255),  // Blue
-            RGB(175, 82, 222), // Purple
-            RGB(240, 240, 245),// White
-            RGB(30, 30, 35)    // Dark
-        };
-
-        for (int i = 0; i < 8; i++) {
-            PipToolItem item{};
-            item.rect          = { sx, subY, sx + 22, subY + subItemH };
-            item.action        = 6; // Color
-            item.color         = colors[i];
-            item.isColorChoice = true;
-            item.selected      = (m_annotationEngine.GetColor() == colors[i]);
-            m_toolbarItems.push_back(item);
-            sx += 22 + gap;
-        }
+        ::SetWindowPos(m_hwndToolbar, HWND_TOPMOST, x, y, toolbarWidth, toolbarHeight,
+                       SWP_NOACTIVATE | (m_isEditing ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
     }
 
     if (m_hwndToolbar) {
@@ -1412,7 +1325,7 @@ void PipWindow::DrawToolbar(HDC hdc, int clientW, int clientH) {
 
     // 2. Draw Items
     for (const auto& item : m_toolbarItems) {
-        if (item.isSeparator) {
+        if (item.IsSeparator()) {
             int midX = (item.rect.left + item.rect.right) / 2;
             HPEN sepPen = ::CreatePen(PS_SOLID, 1, palette.border);
             HGDIOBJ oldPen = ::SelectObject(hdc, sepPen);
@@ -1423,7 +1336,7 @@ void PipWindow::DrawToolbar(HDC hdc, int clientW, int clientH) {
             continue;
         }
 
-        if (item.isColorChoice) {
+        if (item.action == AnnotationAction::Color) {
             COLORREF cbg = item.hovered ? palette.hover : palette.panel;
             HBRUSH cbgBrush = ::CreateSolidBrush(cbg);
             ::FillRect(hdc, &item.rect, cbgBrush);
@@ -1456,7 +1369,7 @@ void PipWindow::DrawToolbar(HDC hdc, int clientW, int clientH) {
             continue;
         }
 
-        const bool primary = item.action == 1;
+        const bool primary = item.action == AnnotationAction::Done;
         const auto btnBg = item.selected || primary ? palette.accent : (item.hovered ? palette.hover : palette.panel);
 
         HBRUSH itemBgBrush = ::CreateSolidBrush(btnBg);
@@ -1469,7 +1382,7 @@ void PipWindow::DrawToolbar(HDC hdc, int clientW, int clientH) {
 
         if (item.label) {
             HFONT oldFont = static_cast<HFONT>(::SelectObject(hdc, m_font));
-            ::SetTextColor(hdc, (item.selected || item.action == 1) ? palette.onAccent : palette.text);
+            ::SetTextColor(hdc, (item.selected || item.action == AnnotationAction::Done) ? palette.onAccent : palette.text);
             RECT textRect = item.rect;
             ::DrawTextW(hdc, item.label, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             ::SelectObject(hdc, oldFont);

@@ -287,6 +287,15 @@ int wmain() {
     struct GdiplusGuard{ULONG_PTR token;~GdiplusGuard(){Gdiplus::GdiplusShutdown(token);}} gdiplusGuard{gdiplusToken};
     using namespace nskry;
     bool ok = true, closed = false;
+    {
+        AnnotationEngine engine;
+        engine.SetTool(ToolType::Rect);
+        engine.OnMouseDown({4, 4});
+        engine.OnMouseUp({20, 20});
+        const auto pixels = engine.RenderOverlayRgba(nullptr, 0, 0, 32, 32);
+        ok &= Expect(std::any_of(pixels.begin(), pixels.end(), [](uint32_t pixel) { return pixel != 0; }),
+                     "annotation records the mouse-release endpoint without a move message");
+    }
     // Redirect persistence to an owned, unique test folder; never touch user settings.
     const auto testDirectory = std::filesystem::current_path() / (L"feature-config-" + std::to_wstring(GetCurrentProcessId()));
     if (!std::filesystem::create_directory(testDirectory)) return 1;
@@ -463,6 +472,23 @@ int wmain() {
         LONG count{};
         ok &= Expect(SUCCEEDED(annotation->get_accChildCount(&count)) && count > 8,
                      "fixed image annotation commands are visible to assistive tools");
+        VARIANT child{};
+        child.vt = VT_I4;
+        child.lVal = 1;
+        LONG x{}, y{}, width{}, height{}, movedX{}, movedY{};
+        const bool located = annotation->accLocation(&x, &y, &width, &height, child) == S_OK;
+        const bool moved = ::SetWindowPos(pin.Hwnd(), nullptr, expanded.left + 36, expanded.top + 24,
+                                          0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE) != FALSE;
+        VARIANT hit{};
+        ok &= Expect(located && moved &&
+                     annotation->accLocation(&movedX, &movedY, &width, &height, child) == S_OK &&
+                     movedX == x + 36 && movedY == y + 24 &&
+                     annotation->accHitTest(movedX + width / 2, movedY + height / 2, &hit) == S_OK &&
+                     hit.vt == VT_I4 && hit.lVal == child.lVal,
+                     "fixed annotation accessibility follows a move without rebuilding the toolbar");
+        ::VariantClear(&hit);
+        ::SetWindowPos(pin.Hwnd(), nullptr, expanded.left, expanded.top, 0, 0,
+                       SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
         annotation->Release();
     } else {
         ok &= Expect(false, "fixed image annotation toolbar publishes accessibility");

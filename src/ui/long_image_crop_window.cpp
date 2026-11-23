@@ -45,7 +45,6 @@ LongImageCropWindow::LongImageCropWindow(HBITMAP bitmap, int width, int height,
     if (m_width <= 0 || m_height < kMinimumCropHeight) return;
     m_cropBottom = m_height;
     m_cropRight = m_width;
-    m_originalWidth = m_width; m_originalHeight = m_height;
     m_model = ImageEditModel(m_width, m_height);
     m_zoomFocusY = m_height / 2;
 

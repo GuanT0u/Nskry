@@ -111,14 +111,17 @@ public:
     HRESULT STDMETHODCALLTYPE accLocation(LONG* left, LONG* top, LONG* width, LONG* height, VARIANT child) override {
         if (!left || !top || !width || !height) return E_POINTER;
         const std::lock_guard lock(m_state->mutex);
+        POINT origin{};
+        if (!::ClientToScreen(m_state->surface, &origin)) return S_FALSE;
         RECT bounds{};
         if (Self(child)) {
-            for (const auto &item : m_state->items) ::UnionRect(&bounds, &bounds, &item.screenBounds);
+            for (const auto &item : m_state->items) ::UnionRect(&bounds, &bounds, &item.clientBounds);
         } else if (const auto* item = GetItem(child)) {
-            bounds = item->screenBounds;
+            bounds = item->clientBounds;
         } else {
             return E_INVALIDARG;
         }
+        ::OffsetRect(&bounds, origin.x, origin.y);
         *left = bounds.left; *top = bounds.top;
         *width = bounds.right - bounds.left; *height = bounds.bottom - bounds.top;
         return S_OK;
@@ -127,8 +130,10 @@ public:
         if (!hit) return E_POINTER;
         ::VariantInit(hit);
         const std::lock_guard lock(m_state->mutex);
+        POINT point{x, y};
+        if (!::ScreenToClient(m_state->surface, &point)) return S_FALSE;
         for (size_t i = 0; i < m_state->items.size(); ++i)
-            if (::PtInRect(&m_state->items[i].screenBounds, {x, y})) {
+            if (::PtInRect(&m_state->items[i].clientBounds, point)) {
                 *hit = Id(static_cast<LONG>(i + 1));
                 return S_OK;
             }
@@ -193,10 +198,11 @@ private:
 };
 } // namespace
 
-void ToolbarAccessibility::Update(HWND window, std::vector<Item> items, const wchar_t* name, const wchar_t* action) {
+void ToolbarAccessibility::Update(HWND window, HWND surface, std::vector<Item> items, const wchar_t* name, const wchar_t* action) {
     {
         const std::lock_guard lock(m_state->mutex);
         m_state->window = window;
+        m_state->surface = surface;
         ++m_state->generation;
         m_state->focused = 0;
         m_state->items = std::move(items);
@@ -217,6 +223,7 @@ void ToolbarAccessibility::Focus(HWND window, LONG child) {
 void ToolbarAccessibility::Detach() {
     const std::lock_guard lock(m_state->mutex);
     m_state->window = nullptr;
+    m_state->surface = nullptr;
     m_state->items.clear();
     ++m_state->generation;
     m_state->focused = 0;

@@ -85,7 +85,6 @@ private:
     std::vector<std::unique_ptr<AnnotationShape>> m_redoStack;
     std::unique_ptr<AnnotationShape>              m_inProgressShape;
 
-    POINT m_mouseDownPt{};
     bool  m_isDrawing = false;
 };
 

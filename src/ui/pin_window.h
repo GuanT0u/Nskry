@@ -64,18 +64,6 @@ private:
     bool IsQuickActionPoint(POINT clientPoint) const;
 
     // Pin Toolbar
-    struct PinToolItem {
-        RECT            rect{};
-        ToolType        tool   = ToolType::None;
-        int             action = 0; // 1: Done, 2: Cancel, 3: Undo, 4: Redo, 5: Width, 6: Color
-        int             widthVal = 0;
-        COLORREF        color  = 0;
-        const wchar_t*  label  = nullptr;
-        bool            hovered  = false;
-        bool            selected = false;
-        bool            isSeparator = false;
-        bool            isColorChoice = false;
-    };
 
     void BuildPinToolbar(int clientW, int clientH);
     void DrawPinToolbar(HDC hdc, int clientW, int clientH);
@@ -90,7 +78,7 @@ private:
     // Edit mode state
     bool             m_isEditing = false;
     AnnotationEngine m_annotationEngine;
-    std::vector<PinToolItem> m_toolbarItems;
+    std::vector<AnnotationToolbarItem> m_toolbarItems;
     RECT             m_toolbarBounds{};
     bool             m_isDrawing = false;
     HFONT            m_font{};

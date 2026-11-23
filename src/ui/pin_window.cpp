@@ -760,78 +760,11 @@ void PinWindow::CommitTextEdit() {
 }
 
 void PinWindow::BuildPinToolbar(int clientW, int clientH) {
-    m_toolbarItems.clear();
-
-    struct Command { ToolType tool; int action; const wchar_t* label; };
-    const Command commands[] = {
-        {ToolType::Rect,    0, UiText(L"Rect", L"矩形")},
-        {ToolType::Ellipse, 0, UiText(L"Oval", L"椭圆")},
-        {ToolType::Arrow,   0, UiText(L"Arrow", L"箭头")},
-        {ToolType::Pen,     0, UiText(L"Pen", L"画笔")},
-        {ToolType::Mosaic,  0, UiText(L"Mosaic", L"马赛克")},
-        {ToolType::Text,    0, UiText(L"Text", L"文本")},
-        {ToolType::None,    0, nullptr},
-        {ToolType::None,    3, UiText(L"Undo", L"撤销")},
-        {ToolType::None,    4, UiText(L"Redo", L"重做")},
-        {ToolType::None,    0, nullptr},
-        {ToolType::None,    1, m_requiresPinDecision ? UiText(L"Pin", L"固定") : UiText(L"Done", L"完成")},
-        {ToolType::None,    2, UiText(L"Cancel", L"取消")},
-    };
-    const auto append = [&](const Command &command) {
-        PinToolItem item{};
-        item.tool = command.tool;
-        item.action = command.action;
-        item.label = command.label;
-        item.isSeparator = command.label == nullptr;
-        item.selected = command.tool != ToolType::None && m_annotationEngine.GetTool() == command.tool;
-        m_toolbarItems.push_back(item);
-    };
-    for (const auto &command : commands) append(command);
-    if (m_requiresPinDecision) {
-        append({ToolType::None, 7, UiText(L"Copy", L"复制")});
-        append({ToolType::None, 8, UiText(L"Save", L"保存")});
-    }
-
-    const size_t mainCount = m_toolbarItems.size();
-    if (m_annotationEngine.GetTool() != ToolType::None) {
-        constexpr const wchar_t* labels[] = {L"2", L"4", L"8"};
-        constexpr int widths[] = {2, 4, 8};
-        for (size_t i = 0; i < std::size(widths); ++i) {
-            PinToolItem item{};
-            item.action = 5;
-            item.widthVal = widths[i];
-            item.label = labels[i];
-            item.selected = m_annotationEngine.GetStrokeWidth() == widths[i];
-            m_toolbarItems.push_back(item);
-        }
-        constexpr COLORREF colors[] = {RGB(255,59,48), RGB(255,149,0), RGB(255,204,0), RGB(52,199,89),
-                                       RGB(0,122,255), RGB(175,82,222), RGB(240,240,245), RGB(30,30,35)};
-        for (COLORREF color : colors) {
-            PinToolItem item{};
-            item.action = 6;
-            item.color = color;
-            item.isColorChoice = true;
-            item.selected = m_annotationEngine.GetColor() == color;
-            m_toolbarItems.push_back(item);
-        }
-    }
-
+    size_t mainCount = 0;
+    m_toolbarItems = BuildAnnotationToolbarItems(m_annotationEngine, m_requiresPinDecision, mainCount);
     const UINT windowDpi = ::GetDpiForWindow(m_hwnd);
     const UINT dpi = windowDpi ? windowDpi : 96;
-    std::vector<int> widths;
-    widths.reserve(m_toolbarItems.size());
-    HDC measure = ::GetDC(m_hwnd);
-    HGDIOBJ oldFont = measure && m_font ? ::SelectObject(measure, m_font) : nullptr;
-    for (const auto &item : m_toolbarItems) {
-        int width = item.isSeparator ? 4 : 32;
-        SIZE text{};
-        if (measure && item.label &&
-            ::GetTextExtentPoint32W(measure, item.label, static_cast<int>(wcslen(item.label)), &text))
-            width = (std::max)(width, static_cast<int>(text.cx) + 16);
-        widths.push_back(::MulDiv(width, dpi, 96));
-    }
-    if (oldFont) ::SelectObject(measure, oldFont);
-    if (measure) ::ReleaseDC(m_hwnd, measure);
+    const auto widths = MeasureAnnotationToolbarItems(m_hwnd, m_font, m_toolbarItems, dpi);
     const auto layout = LayoutSelectionToolbar(widths, {0, clientH, clientW, clientH},
                                                  {0, 0, clientW, clientH}, mainCount, dpi);
     for (size_t i = 0; i < layout.size(); ++i) m_toolbarItems[i].rect = layout[i];
@@ -856,7 +789,7 @@ void PinWindow::DrawPinToolbar(HDC hdc, int /*clientW*/, int /*clientH*/) {
     ::SetBkMode(hdc, TRANSPARENT);
 
     for (const auto& item : m_toolbarItems) {
-        if (item.isSeparator) {
+        if (item.IsSeparator()) {
             int midX = (item.rect.left + item.rect.right) / 2;
             HPEN sepPen = ::CreatePen(PS_SOLID, 1, palette.border);
             HGDIOBJ oldPen = sepPen ? ::SelectObject(hdc, sepPen) : nullptr;
@@ -869,7 +802,7 @@ void PinWindow::DrawPinToolbar(HDC hdc, int /*clientW*/, int /*clientH*/) {
             continue;
         }
 
-        if (item.isColorChoice) {
+        if (item.action == AnnotationAction::Color) {
             COLORREF bg = item.hovered ? palette.hover : palette.panel;
             HBRUSH bgBrush = ::CreateSolidBrush(bg);
             ::FillRect(hdc, &item.rect, bgBrush);
@@ -907,7 +840,7 @@ void PinWindow::DrawPinToolbar(HDC hdc, int /*clientW*/, int /*clientH*/) {
             continue;
         }
 
-        const bool primary = item.action == 1;
+        const bool primary = item.action == AnnotationAction::Done;
         const auto bg = item.selected || primary ? palette.accent : (item.hovered ? palette.hover : palette.panel);
 
         HBRUSH bgBrush = ::CreateSolidBrush(bg);
@@ -920,7 +853,7 @@ void PinWindow::DrawPinToolbar(HDC hdc, int /*clientW*/, int /*clientH*/) {
 
         if (item.label) {
             HFONT oldFont = static_cast<HFONT>(::SelectObject(hdc, m_font));
-            ::SetTextColor(hdc, (item.selected || item.action == 1) ? palette.onAccent : palette.text);
+            ::SetTextColor(hdc, (item.selected || item.action == AnnotationAction::Done) ? palette.onAccent : palette.text);
             RECT textRect = item.rect;
             ::DrawTextW(hdc, item.label, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             ::SelectObject(hdc, oldFont);
@@ -969,18 +902,18 @@ void PinWindow::OnLButtonDown(int x, int y) {
 
     // 1. Check toolbar click
     for (const auto& item : m_toolbarItems) {
-        if (item.isSeparator) continue;
+        if (item.IsSeparator()) continue;
         if (::PtInRect(&item.rect, pt)) {
             CommitTextEdit();
 
-            if (item.action == 1) { FinishEdit(true); return; }
-            if (item.action == 2) { FinishEdit(false); return; }
-            if (item.action == 3) { m_annotationEngine.Undo(); ::InvalidateRect(m_hwnd, nullptr, FALSE); return; }
-            if (item.action == 4) { m_annotationEngine.Redo(); ::InvalidateRect(m_hwnd, nullptr, FALSE); return; }
-            if (item.action == 7) { ExportEditedBitmap(false); return; }
-            if (item.action == 8) { ExportEditedBitmap(true); return; }
+            if (item.action == AnnotationAction::Done) { FinishEdit(true); return; }
+            if (item.action == AnnotationAction::Cancel) { FinishEdit(false); return; }
+            if (item.action == AnnotationAction::Undo) { m_annotationEngine.Undo(); ::InvalidateRect(m_hwnd, nullptr, FALSE); return; }
+            if (item.action == AnnotationAction::Redo) { m_annotationEngine.Redo(); ::InvalidateRect(m_hwnd, nullptr, FALSE); return; }
+            if (item.action == AnnotationAction::Copy) { ExportEditedBitmap(false); return; }
+            if (item.action == AnnotationAction::Save) { ExportEditedBitmap(true); return; }
 
-            if (item.action == 5) { // Width
+            if (item.action == AnnotationAction::Width) { // Width
                 m_annotationEngine.SetStrokeWidth(item.widthVal);
                 m_annotationEngine.SetFontSize(item.widthVal == 2 ? 14 : (item.widthVal == 4 ? 18 : 26));
                 RECT rc{}; ::GetClientRect(m_hwnd, &rc);
@@ -989,7 +922,7 @@ void PinWindow::OnLButtonDown(int x, int y) {
                 return;
             }
 
-            if (item.action == 6) { // Color
+            if (item.action == AnnotationAction::Color) { // Color
                 m_annotationEngine.SetColor(item.color);
                 RECT rc{}; ::GetClientRect(m_hwnd, &rc);
                 BuildPinToolbar(rc.right, rc.bottom);
@@ -1064,7 +997,7 @@ void PinWindow::OnMouseMove(int x, int y) {
     // Update toolbar item hover
     bool needRepaint = false;
     for (auto& item : m_toolbarItems) {
-        if (item.isSeparator) continue;
+        if (item.IsSeparator()) continue;
         POINT pt{ x, y };
         bool inside = ::PtInRect(&item.rect, pt);
         if (inside != item.hovered) {

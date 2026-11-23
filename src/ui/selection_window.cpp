@@ -480,8 +480,6 @@ void SelectionWindow::OnLButtonDown(int x, int y) {
             m_state = State::Adjusting;
             UpdateAccessibleToolbar();
             m_activeZone = zone;
-            m_adjustStartPt = { x, y };
-            m_adjustStartRect = m_finalRect;
             m_adjustLastPt = { x, y };
             m_adjustRemainderX = 0.0;
             m_adjustRemainderY = 0.0;
@@ -847,12 +845,10 @@ void SelectionWindow::UpdateAccessibleToolbar() {
                     std::to_wstring(GetGValue(item.color)) + L", " + std::to_wstring(GetBValue(item.color));
             if (item.type == ToolbarItemType::Action && item.action == SelectionAction::Copy)
                 name = UiText(L"Copy image", L"复制图片");
-            RECT bounds = item.rect;
-            ::OffsetRect(&bounds, m_vX, m_vY);
-            items.push_back({std::move(name), bounds, item.selected});
+            items.push_back({std::move(name), item.rect, item.selected});
         }
     }
-    m_accessibleToolbar.Update(m_hwnd, std::move(items), UiText(L"Capture toolbar", L"截图工具栏"),
+    m_accessibleToolbar.Update(m_hwnd, m_hwnd, std::move(items), UiText(L"Capture toolbar", L"截图工具栏"),
                                UiText(L"Activate", L"执行"));
     if (m_toolbarFocus >= 0)
         NotifyToolbarFocus();

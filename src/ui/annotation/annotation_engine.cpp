@@ -7,7 +7,6 @@ void AnnotationEngine::OnMouseDown(POINT localPt) {
     if (m_currentTool == ToolType::None) return;
 
     m_isDrawing = true;
-    m_mouseDownPt = localPt;
     m_redoStack.clear();
 
     switch (m_currentTool) {
@@ -62,11 +61,10 @@ void AnnotationEngine::OnMouseMove(POINT localPt) {
 
 void AnnotationEngine::OnMouseUp(POINT localPt) {
     if (!m_isDrawing) return;
+    OnMouseMove(localPt);
     m_isDrawing = false;
 
     if (m_inProgressShape) {
-        // Ensure final point is registered
-        OnMouseMove(localPt);
         m_shapes.push_back(std::move(m_inProgressShape));
     }
 }

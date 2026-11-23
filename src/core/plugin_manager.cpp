@@ -42,6 +42,7 @@ void PluginManager::Shutdown() {
     m_initialized = false;
     m_uiThread = 0;
     m_graphicsProvider = {};
+    m_uiPreferencesProvider = nullptr;
 }
 
 bool PluginManager::EnsureLoaded(const std::wstring &pluginId) {
@@ -226,13 +227,15 @@ bool PluginManager::Unload(const std::wstring &pluginId) {
     return true;
 }
 
-static void NotifyUiPreferences(HMODULE module, const NskryUiPreferencesV1* ui) {
-    if (const auto set = reinterpret_cast<NskrySetUiPreferencesV1>(::GetProcAddress(module, kNskrySetUiPreferencesV1)))
-        set(ui);
+void PluginManager::NotifyUiPreferences(HMODULE module) const {
+    const auto set = reinterpret_cast<NskrySetUiPreferencesV1>(::GetProcAddress(module, kNskrySetUiPreferencesV1));
+    if (!set) return;
+    const auto ui = m_uiPreferencesProvider ? m_uiPreferencesProvider() : NskryUiPreferencesV1{};
+    set(m_uiPreferencesProvider ? &ui : nullptr);
 }
 
 bool PluginManager::ExecutePlugin(const std::wstring &pluginId, const NskryHostContext &hostContext,
-                                  const std::wstring &actionId, const NskryUiPreferencesV1 *ui) {
+                                  const std::wstring &actionId) {
     if (!actionId.empty()) {
         const auto *record = m_registry ? m_registry->Find(pluginId) : nullptr;
         if (!record || std::none_of(record->manifest.captureActions.begin(), record->manifest.captureActions.end(),
@@ -245,7 +248,7 @@ bool PluginManager::ExecutePlugin(const std::wstring &pluginId, const NskryHostC
     if (it == m_plugins.end() || !it->second.fnExecute)
         return false;
     try {
-        NotifyUiPreferences(it->second.hModule, ui);
+        NotifyUiPreferences(it->second.hModule);
         auto context = hostContext;
         if (m_graphicsProvider)
             m_graphicsProvider(context);
@@ -260,14 +263,17 @@ bool PluginManager::ExecutePlugin(const std::wstring &pluginId, const NskryHostC
     }
 }
 
-bool PluginManager::ShowPluginSettings(const std::wstring &id, HWND owner, const NskryUiPreferencesV1* ui) {
+bool PluginManager::ShowPluginSettings(const std::wstring &id, HWND owner) {
     const auto *record = m_registry ? m_registry->Find(id) : nullptr;
     if (!record || !record->enabled || record->manifest.settingsUiApi != 1 || !EnsureLoaded(id))
         return false;
     const auto it = m_plugins.find(id);
     if (it == m_plugins.end() || !it->second.fnShowSettings)
         return false;
-    try { NotifyUiPreferences(it->second.hModule, ui); return it->second.fnShowSettings(owner) != 0; }
+    try {
+        NotifyUiPreferences(it->second.hModule);
+        return it->second.fnShowSettings(owner) != 0;
+    }
     catch (...) { return false; }
 }
 bool PluginManager::IsLoaded(const std::wstring &pluginId) const {
@@ -331,6 +337,7 @@ int32_t PluginManager::TranslateText(const NskryTextTranslationV1 *request, Nskr
         }
         const auto it = m_plugins.find(id);
         if (it == m_plugins.end() || !it->second.fnTranslateText) return NSKRY_TRANSLATION_UNAVAILABLE;
+        NotifyUiPreferences(it->second.hModule);
         const auto status = it->second.fnTranslateText(&copiedRequest, result);
         if (status >= NSKRY_TRANSLATION_CANCELED && status <= NSKRY_TRANSLATION_ACCEPTED) return status;
     } catch (...) {}
