@@ -2,6 +2,7 @@
 #include <windowsx.h>
 #include "ui/ui_preferences.h"
 #include "ui/settings/settings_window.h"
+#include "ui/resources/resource.h"
 #include <commctrl.h>
 #include <commdlg.h>
 #include <shellapi.h>
@@ -182,14 +183,7 @@ LRESULT SettingsWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_CLOSE:
-        if (m_services.getSettings && ReadSettingsDraft() != m_appliedDraft) {
-            const int choice = ::MessageBoxW(m_hwnd,
-                UiText(L"Apply your changes before closing Settings?", L"关闭设置前要应用更改吗？"),
-                UiText(L"Nskry Settings", L"Nskry 设置"), MB_YESNOCANCEL | MB_ICONQUESTION | MB_DEFBUTTON3);
-            if (choice == IDCANCEL || (choice == IDYES && !ApplySettings()))
-                return 0;
-        }
-        Close();
+        if (ConfirmSettingsClose()) Close();
         return 0;
     case WM_DESTROY: m_hwnd = nullptr; if (!m_closed) Close(); return 0;
     }
@@ -619,9 +613,53 @@ void SettingsWindow::InstallThirdPartyPackage(const std::wstring& packagePath) {
         L"\n\n" + kThirdPartyPolicy + L"\n\nInstall '" + manifest.name + L"'?";
     if (::MessageBoxW(m_hwnd, warning.c_str(), UiText(L"Install third-party plugin?", L"安装这个第三方插件？"), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
     const PluginPackageResult result = m_services.installThirdPartyPlugin(packagePath);
-    ::MessageBoxW(m_hwnd, result.message.c_str(), result.success ? UiText(L"Nskry Settings", L"Nskry 设置") : UiText(L"Plugin installation failed", L"插件安装失败"),
-        result.success ? MB_ICONINFORMATION : MB_ICONERROR);
-    if (result.success) RefreshPluginList();
+    if (!result.success) {
+        ::MessageBoxW(m_hwnd, result.message.c_str(), UiText(L"Plugin installation failed", L"插件安装失败"), MB_ICONERROR);
+        return;
+    }
+    RefreshPluginList();
+    OfferPluginRestart(result.restartRequired);
+}
+
+bool SettingsWindow::ConfirmSettingsClose() {
+    if (!m_services.getSettings || ReadSettingsDraft() == m_appliedDraft) return true;
+    const int choice = ::MessageBoxW(m_hwnd,
+        UiText(L"Apply your changes before closing Settings?", L"关闭设置前要应用更改吗？"),
+        UiText(L"Nskry Settings", L"Nskry 设置"), MB_YESNOCANCEL | MB_ICONQUESTION | MB_DEFBUTTON3);
+    return choice == IDNO || (choice == IDYES && ApplySettings());
+}
+
+namespace {
+INT_PTR CALLBACK PluginRestartDialog(HWND dialog, UINT message, WPARAM wp, LPARAM param) {
+    if (message == WM_INITDIALOG) {
+        const bool staged = param != 0;
+        ::SetWindowTextW(dialog, UiText(L"Restart Nskry", L"重启 Nskry"));
+        ::SetDlgItemTextW(dialog, IDC_PLUGIN_RESTART_MESSAGE, staged
+            ? UiText(L"The plugin update is ready. Restart Nskry to apply it.", L"插件更新已准备就绪。重启 Nskry 后将应用新版本。")
+            : UiText(L"The plugin is installed. Restart Nskry to load its startup features and shortcuts.", L"插件已安装。重启 Nskry 可加载插件的启动功能和快捷键。"));
+        ::SetDlgItemTextW(dialog, IDYES, UiText(L"Restart now", L"立即重启 App"));
+        ::SetDlgItemTextW(dialog, IDCANCEL, UiText(L"Restart later", L"暂不重启"));
+        return TRUE;
+    }
+    if (message == WM_CLOSE || (message == WM_COMMAND && (LOWORD(wp) == IDYES || LOWORD(wp) == IDCANCEL))) {
+        ::EndDialog(dialog, message == WM_CLOSE ? IDCANCEL : LOWORD(wp));
+        return TRUE;
+    }
+    return FALSE;
+}
+} // namespace
+
+void SettingsWindow::OfferPluginRestart(bool stagedUpdate) {
+    if (!m_services.restartApp) return;
+    const auto choice = ::DialogBoxParamW(::GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_PLUGIN_RESTART),
+                                          m_hwnd, PluginRestartDialog, stagedUpdate);
+    if (choice != IDYES || !ConfirmSettingsClose()) return;
+    const auto error = m_services.restartApp();
+    if (error != ERROR_SUCCESS) {
+        const auto message = UiText(L"Could not restart Nskry. Windows error: ", L"无法重启 Nskry。Windows 错误代码：") +
+            std::to_wstring(error);
+        ::MessageBoxW(m_hwnd, message.c_str(), L"Nskry", MB_OK | MB_ICONERROR);
+    }
 }
 void SettingsWindow::Close() { if (m_closed) return; m_closed = true;m_updateLifetime.reset();CancelPluginUpdate(); if (m_hwnd) ::DestroyWindow(m_hwnd); if (m_onClosed) m_onClosed(); }
 

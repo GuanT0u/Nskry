@@ -37,6 +37,7 @@ struct SettingsWindowServices {
     std::function<bool(const PluginUpdate&, UpdateTask::Completion, std::wstring&)> downloadPluginUpdate;
     std::function<PluginPackageResult(const PluginUpdate&, const DownloadedUpdate&)> commitPluginUpdate;
     std::function<void()> cancelPluginUpdate;
+    std::function<DWORD()> restartApp; // ERROR_SUCCESS means shutdown and restart are scheduled.
     std::function<std::wstring()> getOfficialPluginsPageUrl;
     std::function<std::vector<ShortcutDefinition>()> getShortcuts;
     std::function<void(bool)> setRecording;
@@ -50,6 +51,7 @@ public:
     bool HandleTab(const MSG &message);
 
 private:
+    friend struct SettingsWindowTestAccess;
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleMessage(UINT msg, WPARAM wp, LPARAM lp);
     void CreateControls();
@@ -61,6 +63,8 @@ private:
     void OpenOfficialPluginsPage();
     void ShowThirdPartyPolicy();
     bool ApplySettings();
+    bool ConfirmSettingsClose();
+    void OfferPluginRestart(bool stagedUpdate);
     UserSettings ReadSettingsDraft(bool commit = false) const;
     void RefreshDirtyState();
     void ApplyUiFont();
@@ -110,6 +114,7 @@ private:
     size_t m_nextUpdate=0;
     std::shared_ptr<int> m_updateLifetime=std::make_shared<int>(0);
     unsigned m_updateGeneration=0;
+    bool m_pluginRestartPending = false;
     std::vector<SettingsPluginItem> m_plugins;
     std::vector<HWND> m_generalDecor, m_hotkeyDecor;
     static inline std::once_flag s_classOnce;

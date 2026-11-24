@@ -769,7 +769,8 @@ void SelectionWindow::BuildToolbar(RECT selRect) {
     };
     command(ToolbarItemType::Undo, SelectionAction::Cancel, 1, 3, L"Undo", L"撤销");
     command(ToolbarItemType::Redo, SelectionAction::Cancel, 1, 3, L"Redo", L"重做");
-    command(ToolbarItemType::Action, SelectionAction::Copy, 2, 0, L"Copy", L"复制");
+    command(ToolbarItemType::Action, SelectionAction::Cancel, 2, 0, L"Cancel capture", L"取消截图");
+    command(ToolbarItemType::Action, SelectionAction::Copy, 2, 0, L"Copy image", L"复制图片");
     command(ToolbarItemType::Action, SelectionAction::Save, 2, 1, L"Save", L"保存");
     command(ToolbarItemType::Action, SelectionAction::Edit, 2, 1, L"Edit", L"编辑");
     command(ToolbarItemType::Action, SelectionAction::Pin, 2, 3, L"Pin", L"固定");
@@ -899,8 +900,6 @@ void SelectionWindow::UpdateAccessibleToolbar() {
                 name = UiText(L"Color · ", L"颜色 · ") +
                     std::to_wstring(GetRValue(item.color)) + L", " +
                     std::to_wstring(GetGValue(item.color)) + L", " + std::to_wstring(GetBValue(item.color));
-            if (item.type == ToolbarItemType::Action && item.action == SelectionAction::Copy)
-                name = UiText(L"Copy image", L"复制图片");
             if (item.Icon() != EditorIcon::None)
                 m_toolbarTooltip.Add(m_hwnd, m_hwnd, item.rect, name.c_str());
             items.push_back({std::move(name), item.rect, item.selected});

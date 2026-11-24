@@ -1,10 +1,13 @@
 #include "core/single_instance.h"
+#include "core/app_restart.h"
+#include <optional>
 #include <array>
 #include <iostream>
 #include <string>
 
 namespace {
 using Guard = nskry::SingleInstanceGuard;
+constexpr wchar_t kRestartProbe[] = L"NSKRY_TEST_RESTART_PROBE";
 struct Child {
     HANDLE process{};
     ~Child() {
@@ -50,6 +53,17 @@ bool Probe(const std::wstring& id, DWORD expected, bool abrupt = false) {
 } // namespace
 
 int wmain(int argc, wchar_t** argv) {
+    wchar_t restartedId[256]{};
+    if (GetEnvironmentVariableW(kRestartProbe, restartedId, static_cast<DWORD>(std::size(restartedId)))) {
+        Guard guard(restartedId);
+        if (guard.Status() != Guard::Result::Primary) return 30;
+        const auto eventName = std::wstring(L"Local\\") + restartedId + L".resumed";
+        const auto event = OpenEventW(EVENT_MODIFY_STATE, FALSE, eventName.c_str());
+        if (!event) return 31;
+        const bool signaled = SetEvent(event) != FALSE;
+        CloseHandle(event);
+        return signaled ? 0 : 32;
+    }
     if (argc >= 3) {
         Guard guard(argv[2]);
         if (guard.Status() == Guard::Result::AlreadyRunning)
@@ -84,6 +98,22 @@ int wmain(int argc, wchar_t** argv) {
                     "same-process and second-process launches are rejected");
     }
     ok &= Check(Probe(id, 0), "normal exit permits immediate restart");
+    {
+        const auto restartId = id + L".restart";
+        const auto eventName = L"Local\\" + restartId + L".resumed";
+        const auto event = CreateEventW(nullptr, TRUE, FALSE, eventName.c_str());
+        std::optional<Guard> original(std::in_place, restartId.c_str());
+        nskry::AppRestart restart;
+        const bool prepared = event && original->Status() == Guard::Result::Primary &&
+            SetEnvironmentVariableW(kRestartProbe, restartId.c_str()) && restart.Prepare() == ERROR_SUCCESS;
+        SetEnvironmentVariableW(kRestartProbe, nullptr);
+        const bool suspended = prepared && restart.Pending() && WaitForSingleObject(event, 50) == WAIT_TIMEOUT;
+        original.reset();
+        ok &= Check(suspended && restart.Start() == ERROR_SUCCESS &&
+                    WaitForSingleObject(event, 5000) == WAIT_OBJECT_0,
+                    "prepared restart waits for cleanup then acquires the released instance guard");
+        if (event) CloseHandle(event);
+    }
     ok &= Check(Probe(id, 0, true) && Probe(id, 0), "abrupt process exit leaves no stale lock");
     {
         const std::wstring otherId = id + L".independent";

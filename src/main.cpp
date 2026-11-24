@@ -11,6 +11,7 @@
 #include "ui/selection_window.h"
 #include "ui/settings/settings_window.h"
 #include "core/command_registry.h"
+#include "core/app_restart.h"
 #include "core/hotkey_manager.h"
 #include "core/plugin_manager.h"
 #include "core/plugin_package_manager.h"
@@ -22,6 +23,7 @@
 
 // GDI+ for PNG saving (needs min/max workaround with NOMINMAX)
 #include <algorithm>
+#include <optional>
 namespace Gdiplus { using std::min; using std::max; }
 #include <gdiplus.h>
 #pragma comment(lib, "gdiplus.lib")
@@ -178,12 +180,12 @@ int WINAPI wWinMain(
     if (RunPluginPackageCli(packageCliExitCode)) return packageCliExitCode;
 
     // Gate before COM, GPU, plugin state, tray and global shortcut registration.
-    nskry::SingleInstanceGuard instance;
-    if (instance.Status() == nskry::SingleInstanceGuard::Result::AlreadyRunning)
+    std::optional<nskry::SingleInstanceGuard> instance(std::in_place);
+    if (instance->Status() == nskry::SingleInstanceGuard::Result::AlreadyRunning)
         return 0;
-    if (instance.Status() == nskry::SingleInstanceGuard::Result::Failed) {
+    if (instance->Status() == nskry::SingleInstanceGuard::Result::Failed) {
         const auto message = L"Unable to check whether Nskry is already running. Windows error: " +
-                             std::to_wstring(instance.Error());
+                             std::to_wstring(instance->Error());
         ::MessageBoxW(nullptr, message.c_str(), L"Nskry", MB_ICONERROR);
         return 1;
     }
@@ -376,6 +378,12 @@ int WINAPI wWinMain(
     };
     settingsServices.commitPluginUpdate=[&pluginUpdateManager](const nskry::PluginUpdate& update,const nskry::DownloadedUpdate& download){return pluginUpdateManager.CommitDownload(update,download);};
     settingsServices.cancelPluginUpdate=[&updateTask]{updateTask.Cancel();};
+    nskry::AppRestart replacement;
+    settingsServices.restartApp = [&replacement]() {
+        const DWORD error = replacement.Prepare();
+        if (error == ERROR_SUCCESS) ::PostQuitMessage(0);
+        return error;
+    };
     settingsServices.getOfficialPluginsPageUrl = [&settings]() { return settings.GetOfficialPluginsPageUrl(); };
     g_settingsServices = &settingsServices;
 
@@ -432,6 +440,15 @@ int WINAPI wWinMain(
     g_device.reset();
     Gdiplus::GdiplusShutdown(g_gdiplusToken);
 
+    if (replacement.Pending()) {
+        instance.reset();
+        if (const DWORD error = replacement.Start(); error != ERROR_SUCCESS) {
+            const auto message = nskry::UiText(L"Could not restart Nskry. Windows error: ", L"无法重启 Nskry。Windows 错误代码：") +
+                std::to_wstring(error);
+            ::MessageBoxW(nullptr, message.c_str(), L"Nskry", MB_OK | MB_ICONERROR);
+            return 1;
+        }
+    }
     return static_cast<int>(msg.wParam);
 }
 

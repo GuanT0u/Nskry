@@ -4,7 +4,7 @@
 #include "ui/annotation/annotation_shape.h"
 
 namespace nskry {
-enum class EditorIcon { None, Rectangle, Ellipse, Arrow, Pen, Mosaic, Text, Undo, Redo, Shapes, Line };
+enum class EditorIcon { None, Rectangle, Ellipse, Arrow, Pen, Mosaic, Text, Undo, Redo, Shapes, Line, Check, Close, Save, Edit, Pin, PictureInPicture };
 
 inline EditorIcon IconForTool(ToolType tool) {
     switch (tool) {
@@ -80,6 +80,31 @@ inline void DrawEditorIcon(HDC dc, EditorIcon icon, int x, int y, int size, COLO
         break;
     case EditorIcon::Line:
         lines({{3, 13}, {13, 3}});
+        break;
+    case EditorIcon::Check:
+        lines({{2.5f, 8}, {6.25f, 11.5f}, {13.5f, 4.25f}});
+        break;
+    case EditorIcon::Close:
+        lines({{3.5f, 3.5f}, {12.5f, 12.5f}});
+        lines({{12.5f, 3.5f}, {3.5f, 12.5f}});
+        break;
+    case EditorIcon::Save:
+        lines({{2.5f, 2.5f}, {11, 2.5f}, {13.5f, 5}, {13.5f, 13.5f}, {2.5f, 13.5f}, {2.5f, 2.5f}});
+        lines({{5, 2.5f}, {5, 6}, {10, 6}, {10, 2.5f}});
+        lines({{5, 13.5f}, {5, 9}, {11, 9}, {11, 13.5f}});
+        break;
+    case EditorIcon::Edit:
+        lines({{6, 3}, {3, 3}, {3, 13}, {13, 13}, {13, 10}});
+        lines({{7, 9}, {8, 6.5f}, {12.5f, 2}, {14.5f, 4}, {10, 8.5f}, {7, 9}});
+        break;
+    case EditorIcon::Pin:
+        lines({{6.5f, 2.5f}, {9.5f, 2.5f}, {9.5f, 6.25f}, {11.5f, 8}, {11.5f, 9.5f},
+               {4.5f, 9.5f}, {4.5f, 8}, {6.5f, 6.25f}, {6.5f, 2.5f}});
+        lines({{8, 9.5f}, {8, 14}});
+        break;
+    case EditorIcon::PictureInPicture:
+        graphics.DrawRectangle(&stroke, 2.0f, 3.5f, 12.0f, 9.0f);
+        graphics.DrawRectangle(&stroke, 7.8f, 7.5f, 4.1f, 2.8f);
         break;
     case EditorIcon::None:
         break;

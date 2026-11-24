@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "ui/ui_preferences.h"
 #include "ui/settings/settings_window.h"
+#include <utility>
 namespace nskry {
 namespace {
 void SetText(HWND w, const std::wstring &text) {
@@ -51,6 +52,7 @@ void SettingsWindow::CancelPluginUpdate() {
         m_services.cancelPluginUpdate();
     m_updates.clear();
     m_nextUpdate = 0;
+    m_pluginRestartPending = false;
     SetUpdateBusy(false);
     if (wasBusy && !m_closed && m_hwnd)
         SetUpdateNotice(UiText(L"Update cancelled. Temporary resource cleanup may still be completing.", L"已取消更新，可能仍在清理临时文件。"));
@@ -111,6 +113,8 @@ void SettingsWindow::DownloadNextUpdate() {
                         }
                     } else
                         committed.message = result.message;
+                    if (committed.success && committed.restartRequired)
+                        m_pluginRestartPending = true;
                     result.download.reset();
                     SetUpdateBusy(false);
                     RefreshPluginList();
@@ -125,5 +129,6 @@ void SettingsWindow::DownloadNextUpdate() {
         return;
     }
     m_updates.clear();
+    if (std::exchange(m_pluginRestartPending, false)) OfferPluginRestart(true);
 }
 } // namespace nskry

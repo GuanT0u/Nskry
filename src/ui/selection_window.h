@@ -140,6 +140,17 @@ private:
             if (type == ToolbarItemType::ShapeMenu) return EditorIcon::Shapes;
             if (type == ToolbarItemType::Undo) return EditorIcon::Undo;
             if (type == ToolbarItemType::Redo) return EditorIcon::Redo;
+            if (type == ToolbarItemType::Action) {
+                switch (action) {
+                case SelectionAction::Cancel: return EditorIcon::Close;
+                case SelectionAction::Copy: return EditorIcon::Check;
+                case SelectionAction::Save: return EditorIcon::Save;
+                case SelectionAction::Edit: return EditorIcon::Edit;
+                case SelectionAction::Pin: return EditorIcon::Pin;
+                case SelectionAction::PiP: return EditorIcon::PictureInPicture;
+                default: break;
+                }
+            }
             return IconForTool(tool);
         }
     };

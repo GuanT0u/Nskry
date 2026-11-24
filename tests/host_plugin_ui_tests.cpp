@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include "ui/settings/settings_window.h"
+#include "ui/resources/resource.h"
 #include "ui/long_image_crop_window.h"
 #include "ui/image_action.h"
 #include "ui/selection_window.h"
@@ -125,7 +126,66 @@ struct ImageEditorTestAccess {
         return ok && window.m_width == 120 && window.m_height == 80 && !window.m_hasCut;
     }
 };
+struct SettingsWindowTestAccess {
+    static bool VerifyPluginRestart() {
+        int restarts = 0;
+        SettingsWindowServices services;
+        services.restartApp = [&]() -> DWORD { ++restarts; return ERROR_SUCCESS; };
+        SettingsWindow window(std::move(services), {});
+
+        const auto hook = ::SetWindowsHookExW(WH_CBT, DialogHook, nullptr, ::GetCurrentThreadId());
+        if (!hook) return false;
+        choice = IDCANCEL;
+        sawButtons = false;
+        window.OfferPluginRestart(false);
+        const bool deferred = sawButtons && restarts == 0;
+        choice = IDYES;
+        sawButtons = false;
+        window.OfferPluginRestart(true);
+        ::UnhookWindowsHookEx(hook);
+        return deferred && sawButtons && restarts == 1;
+    }
+
+private:
+    static inline int choice = IDCANCEL;
+    static inline bool sawButtons = false;
+    static LRESULT CALLBACK DialogHook(int code, WPARAM wp, LPARAM lp) {
+        if (code == HCBT_ACTIVATE) {
+            const auto dialog = reinterpret_cast<HWND>(wp);
+            if (::GetDlgItem(dialog, IDC_PLUGIN_RESTART_MESSAGE)) {
+                wchar_t now[64]{}, later[64]{};
+                ::GetDlgItemTextW(dialog, IDYES, now, static_cast<int>(std::size(now)));
+                ::GetDlgItemTextW(dialog, IDCANCEL, later, static_cast<int>(std::size(later)));
+                sawButtons = std::wstring_view(now) == UiText(L"Restart now", L"立即重启 App") &&
+                    std::wstring_view(later) == UiText(L"Restart later", L"暂不重启");
+                ::PostMessageW(dialog, WM_COMMAND, MAKEWPARAM(choice, BN_CLICKED), 0);
+            }
+        }
+        return ::CallNextHookEx(nullptr, code, wp, lp);
+    }
+};
+
 struct SelectionWindowTestAccess {
+    static bool VerifyCancelIcon() {
+        bool cancelled = false;
+        SelectionWindow window([&](SelectionAction action, SelectionResult result) {
+            cancelled = action == SelectionAction::Cancel && !result.bitmap;
+            if (result.bitmap) ::DeleteObject(result.bitmap);
+        });
+        window.m_windows.clear();
+        window.OnLButtonDown(30, 40);
+        window.OnLButtonUp(150, 140);
+        const auto& items = window.m_toolbarItems;
+        using Type = SelectionWindow::ToolbarItemType;
+        const auto copy = std::find_if(items.begin(), items.end(), [](const auto& item) {
+            return item.type == Type::Action && item.action == SelectionAction::Copy;
+        });
+        if (copy == items.begin() || copy == items.end() || copy->Icon() != EditorIcon::Check ||
+            std::prev(copy)->Icon() != EditorIcon::Close) return false;
+        window.ActivateToolbarItem(*std::prev(copy));
+        return cancelled;
+    }
+
     static bool VerifyDoubleClickText() {
         SelectionWindow window([](SelectionAction, SelectionResult) {});
         window.m_windows.clear();
@@ -456,6 +516,8 @@ int wmain() {
             }), "toolbar stays in negative-coordinate work area at 100, 125, 150 and 200 percent DPI");
     }
     ok &= Expect(SelectionWindowTestAccess::VerifyOverflow(), "selection overflow preserves copy, plugin order and keyboard activation");
+    ok &= Expect(SelectionWindowTestAccess::VerifyCancelIcon(), "close icon to the left of copy cancels without capturing");
+    ok &= Expect(SettingsWindowTestAccess::VerifyPluginRestart(), "restart dialog routes both buttons and only restarts on request");
     ok &= Expect(SelectionWindowTestAccess::Verify(), "desktop drag, reverse drag, release endpoint, empty click and window snap");
     ok &= Expect(MonitorControllerTestAccess::Verify(), "event controller focus/menu/override/release/resume/source destruction");
     waitingUpdate.Cancel();waitingUpdate.Shutdown();

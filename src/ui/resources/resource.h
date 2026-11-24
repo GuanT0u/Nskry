@@ -1,2 +1,4 @@
 #pragma once
 #define IDI_NSKRY 101
+#define IDD_PLUGIN_RESTART 102
+#define IDC_PLUGIN_RESTART_MESSAGE 1001

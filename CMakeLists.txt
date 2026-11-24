@@ -54,6 +54,7 @@ if(MSVC AND CMAKE_GENERATOR MATCHES "Ninja")
         COMMAND "${CMAKE_RC_COMPILER}" /nologo /fo "${NSKRY_ICON_RES}" "${NSKRY_RESOURCES}/nskry.rc"
         DEPENDS "${NSKRY_RESOURCES}/nskry.rc" "${NSKRY_RESOURCES}/resource.h" "${NSKRY_RESOURCES}/nskry.ico"
         VERBATIM)
+    set_source_files_properties("${NSKRY_ICON_RES}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
     target_sources(Nskry PRIVATE "${NSKRY_ICON_RES}")
 else()
     target_sources(Nskry PRIVATE "${NSKRY_RESOURCES}/nskry.rc")
@@ -235,6 +236,11 @@ if (BUILD_TESTING)
         src/ui/precision_loupe.cpp src/ui/image_action.cpp src/core/plugin_update_policy.cpp
         src/ui/selection_window.cpp src/ui/pin_window.cpp
         src/ui/toolbar_accessibility.cpp src/ui/annotation/annotation_engine.cpp src/interop/window_enumerator.cpp)
+    if(NSKRY_ICON_RES)
+        target_sources(NskryHostPluginUiTests PRIVATE "${NSKRY_ICON_RES}")
+    else()
+        target_sources(NskryHostPluginUiTests PRIVATE "${NSKRY_RESOURCES}/nskry.rc")
+    endif()
     target_link_libraries(NskryHostPluginUiTests PRIVATE nskry_plugin_metadata)
     target_include_directories(NskryHostPluginUiTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} src sdk)
     target_compile_definitions(NskryHostPluginUiTests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX WINRT_LEAN_AND_MEAN)
