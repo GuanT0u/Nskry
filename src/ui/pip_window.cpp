@@ -60,6 +60,7 @@ PipWindow::PipWindow(
     std::call_once(s_classOnce, [&] {
         WNDCLASSEXW wc{};
         wc.cbSize        = sizeof(wc);
+        wc.style         = CS_DBLCLKS;
         wc.lpfnWndProc   = WndProc;
         wc.hInstance      = ::GetModuleHandleW(nullptr);
         wc.lpszClassName  = kClassName;
@@ -280,7 +281,11 @@ void PipWindow::UpdateOverlayFromEngine() {
     std::vector<uint32_t> pixels;
     if (!m_annotationEngine.IsEmpty()) {
         FrameHdcGuard fg = GetLastFrameHdc();
-        pixels = m_annotationEngine.RenderOverlayRgba(fg.hdc, 0, 0, m_contentW, m_contentH);
+        RECT client{};
+        ::GetClientRect(m_hwnd, &client);
+        const int radius = m_isEditing
+            ? AnnotationEngine::HandleRadius(client, m_contentW, m_contentH, ::GetDpiForWindow(m_hwnd)) : 0;
+        pixels = m_annotationEngine.RenderOverlayRgba(fg.hdc, 0, 0, m_contentW, m_contentH, radius);
     }
 
     std::lock_guard lk(m_renderMutex);
@@ -624,6 +629,7 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 m_annotationEngine.SetTool(ToolType::None);
                 RECT rc{}; ::GetClientRect(hwnd, &rc);
                 BuildToolbar(rc.right, rc.bottom);
+                UpdateOverlayFromEngine();
             } else {
                 FinishEdit(false);
             }
@@ -639,8 +645,22 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (!m_isEditing) {
             EnterEditMode();
             return 0;
+        } else {
+            const POINT client{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            RECT viewport{};
+            ::GetClientRect(hwnd, &viewport);
+            CommitTextEdit();
+            const int tolerance = AnnotationEngine::HandleRadius(viewport, m_contentW, m_contentH, ::GetDpiForWindow(hwnd));
+            if (auto text = m_annotationEngine.SelectTextAt(AnnotationPoint(client, viewport), tolerance / 2)) {
+                const auto origin = text->position;
+                OpenTextEdit({::MulDiv(origin.x, viewport.right, m_contentW), ::MulDiv(origin.y, viewport.bottom, m_contentH)},
+                             origin, std::move(text));
+                UpdateOverlayFromEngine();
+                return 0;
+            }
+            OnLButtonDown(client.x, client.y);
+            return 0;
         }
-        break;
 
     case WM_LBUTTONDOWN:
         if (m_isEditing) {
@@ -661,6 +681,14 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (!m_isEditing) ShowQuickActions(true);
         break;
 
+    case WM_CANCELMODE:
+    case WM_CAPTURECHANGED:
+        if (m_isDrawing) {
+            m_isDrawing = false;
+            m_annotationEngine.CancelPointer();
+            UpdateOverlayFromEngine();
+        }
+        break;
     case WM_LBUTTONUP:
         if (m_isEditing) {
             OnLButtonUp(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
@@ -698,6 +726,7 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 RECT rc{}; ::GetClientRect(hwnd, &rc);
                 BuildToolbar(rc.right, rc.bottom);
+                if (m_annotationEngine.HasSelection()) UpdateOverlayFromEngine();
             }
         }
         break;
@@ -724,6 +753,7 @@ LRESULT PipWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     m_annotationEngine.SetTool(ToolType::None);
                     RECT rc{}; ::GetClientRect(hwnd, &rc);
                     BuildToolbar(rc.right, rc.bottom);
+                    UpdateOverlayFromEngine();
                 } else {
                     FinishEdit(false);
                 }
@@ -981,8 +1011,10 @@ void PipWindow::FinishEdit(bool apply) {
         m_annotationEngine.RestoreFrom(m_backupEngine);
     }
 
+    m_annotationEngine.ClearSelection();
     m_annotationEngine.SetTool(ToolType::None);
     m_isEditing = false;
+    m_mosaicSlider.Hide();
     m_toolbarInput.Clear();
     if (m_visibilityRefresh) m_visibilityRefresh();
     if (m_hwndToolbar) {
@@ -1024,84 +1056,84 @@ void PipWindow::CommitTextEdit() {
     if (len > 0) {
         std::vector<wchar_t> buf(len + 1);
         ::GetWindowTextW(hEdit, buf.data(), len + 1);
-        m_annotationEngine.AddTextShape(m_textEditPos, buf.data());
+        m_annotationEngine.CommitText(m_textEditPos, m_textEditTarget, buf.data());
         UpdateOverlayFromEngine();
     }
 
     ::DestroyWindow(hEdit);
 }
 
+POINT PipWindow::AnnotationPoint(POINT client, RECT viewport) const {
+    return {::MulDiv(client.x, m_contentW, (std::max)(1L, viewport.right)),
+            ::MulDiv(client.y, m_contentH, (std::max)(1L, viewport.bottom))};
+}
+
 void PipWindow::OnLButtonDown(int x, int y) {
-    if (m_annotationEngine.GetTool() == ToolType::None) return;
-
     CommitTextEdit();
-
-    RECT rc{}; ::GetClientRect(m_hwnd, &rc);
-    int cw = rc.right; int ch = rc.bottom;
-    if (cw <= 0 || ch <= 0) return;
-
-    int bmpX = x * static_cast<int>(m_contentW) / cw;
-    int bmpY = y * static_cast<int>(m_contentH) / ch;
-
-    if (m_annotationEngine.GetTool() == ToolType::Text) {
-        m_textEditPos = { bmpX, bmpY };
-        POINT ptScreen = { x, y };
-        ::ClientToScreen(m_hwnd, &ptScreen);
-
-        HMONITOR hMon = ::MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST);
-        MONITORINFO mi{ sizeof(mi) };
-        if (::GetMonitorInfoW(hMon, &mi)) {
-            if (ptScreen.x + 140 > mi.rcWork.right - 4) ptScreen.x = mi.rcWork.right - 144;
-            if (ptScreen.y + 26 > mi.rcWork.bottom - 4) ptScreen.y = mi.rcWork.bottom - 30;
-        }
-
-        m_hTextEdit = ::CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-            L"EDIT", L"",
-            WS_POPUP | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-            ptScreen.x, ptScreen.y, 140, 26,
-            m_hwnd,
-            nullptr,
-            ::GetModuleHandleW(nullptr), nullptr);
-        ::SetWindowLongPtrW(m_hTextEdit, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
-        s_origPipEditProc = reinterpret_cast<WNDPROC>(::SetWindowLongPtrW(m_hTextEdit, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(TextEditSubclassProc)));
-        ::SendMessageW(m_hTextEdit, WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
-        ::SetActiveWindow(m_hTextEdit);
-        ::SetFocus(m_hTextEdit);
-    } else {
+    RECT viewport{};
+    ::GetClientRect(m_hwnd, &viewport);
+    if (::IsRectEmpty(&viewport)) return;
+    const POINT image = AnnotationPoint({x, y}, viewport);
+    const int tolerance = AnnotationEngine::HandleRadius(viewport, m_contentW, m_contentH, ::GetDpiForWindow(m_hwnd));
+    if (m_annotationEngine.BeginPointerEdit(image, tolerance, ::GetKeyState(VK_MENU) < 0)) {
         m_isDrawing = true;
-        m_annotationEngine.OnMouseDown({ bmpX, bmpY });
         ::SetCapture(m_hwnd);
-        UpdateOverlayFromEngine();
+    } else if (m_annotationEngine.GetTool() == ToolType::Text) {
+        OpenTextEdit({x, y}, image);
+    } else if (m_annotationEngine.GetTool() != ToolType::None) {
+        m_isDrawing = true;
+        m_annotationEngine.OnMouseDown(image);
+        ::SetCapture(m_hwnd);
     }
+    UpdateOverlayFromEngine();
+}
+
+void PipWindow::OpenTextEdit(POINT client, POINT image, std::optional<AnnotationEngine::TextTarget> target) {
+    m_textEditPos = image;
+    m_textEditTarget = target ? std::optional{target->index} : std::nullopt;
+    POINT screen = client;
+    ::ClientToScreen(m_hwnd, &screen);
+
+    const int width = target ? 220 : 140;
+    MONITORINFO monitor{sizeof(monitor)};
+    if (::GetMonitorInfoW(::MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        screen.x = std::clamp(screen.x, monitor.rcWork.left,
+                              (std::max)(monitor.rcWork.left, monitor.rcWork.right - width));
+        screen.y = std::clamp(screen.y, monitor.rcWork.top,
+                              (std::max)(monitor.rcWork.top, monitor.rcWork.bottom - 26));
+    }
+    m_hTextEdit = ::CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW, L"EDIT", target ? target->text.c_str() : L"",
+        WS_POPUP | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+        screen.x, screen.y, width, 26, m_hwnd, nullptr, ::GetModuleHandleW(nullptr), nullptr);
+    if (!m_hTextEdit) return;
+    ::SetWindowLongPtrW(m_hTextEdit, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+    s_origPipEditProc = reinterpret_cast<WNDPROC>(::SetWindowLongPtrW(
+        m_hTextEdit, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(TextEditSubclassProc)));
+    ::SendMessageW(m_hTextEdit, WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
+    if (target) ::SendMessageW(m_hTextEdit, EM_SETSEL, 0, -1);
+    ::SetActiveWindow(m_hTextEdit);
+    ::SetFocus(m_hTextEdit);
 }
 
 void PipWindow::OnMouseMove(int x, int y) {
-    if (m_isDrawing) {
-        RECT rc{}; ::GetClientRect(m_hwnd, &rc);
-        int cw = rc.right; int ch = rc.bottom;
-        if (cw > 0 && ch > 0) {
-            int bmpX = x * static_cast<int>(m_contentW) / cw;
-            int bmpY = y * static_cast<int>(m_contentH) / ch;
-            m_annotationEngine.OnMouseMove({ bmpX, bmpY });
-            UpdateOverlayFromEngine();
-        }
-    }
+    if (!m_isDrawing) return;
+    RECT viewport{};
+    ::GetClientRect(m_hwnd, &viewport);
+    if (::IsRectEmpty(&viewport)) return;
+    m_annotationEngine.OnMouseMove(AnnotationPoint({x, y}, viewport));
+    UpdateOverlayFromEngine();
 }
 
 void PipWindow::OnLButtonUp(int x, int y) {
-    if (m_isDrawing) {
-        ::ReleaseCapture();
-        m_isDrawing = false;
-        RECT rc{}; ::GetClientRect(m_hwnd, &rc);
-        int cw = rc.right; int ch = rc.bottom;
-        if (cw > 0 && ch > 0) {
-            int bmpX = x * static_cast<int>(m_contentW) / cw;
-            int bmpY = y * static_cast<int>(m_contentH) / ch;
-            m_annotationEngine.OnMouseUp({ bmpX, bmpY });
-        }
-        UpdateOverlayFromEngine();
-    }
+    if (!m_isDrawing) return;
+    m_isDrawing = false;
+    RECT viewport{};
+    ::GetClientRect(m_hwnd, &viewport);
+    if (::IsRectEmpty(&viewport)) m_annotationEngine.CancelPointer();
+    else m_annotationEngine.OnMouseUp(AnnotationPoint({x, y}, viewport));
+    ::ReleaseCapture();
+    UpdateOverlayFromEngine();
 }
 
 // ---------------------------------------------------------------------------
@@ -1112,7 +1144,7 @@ void PipWindow::CreateToolbarWindow() {
     m_hwndToolbar = ::CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         kToolbarClassName, L"",
-        WS_POPUP,
+        WS_POPUP | WS_CLIPCHILDREN,
         0, 0, 100, 30,
         m_hwnd, nullptr,
         ::GetModuleHandleW(nullptr),
@@ -1131,6 +1163,9 @@ LRESULT CALLBACK PipWindow::ToolbarWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARA
 
 LRESULT PipWindow::HandleToolbarMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+    case WM_HSCROLL:
+        if (m_mosaicSlider.Read(lp, m_annotationEngine)) return 0;
+        break;
     case WM_ERASEBKGND:
         return 1;
 
@@ -1238,6 +1273,22 @@ LRESULT PipWindow::HandleToolbarMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
                     return 0;
                 }
 
+                if (item.action == AnnotationAction::MosaicStrength) {
+                    m_mosaicSlider.Focus();
+                    return 0;
+                }
+
+                if (item.action == AnnotationAction::ShapeMenu) {
+                    const auto shape = ChooseAnnotationShape(m_hwnd, hwnd, item.rect, m_annotationEngine.GetTool());
+                    if (shape) {
+                        m_annotationEngine.SetTool(*shape);
+                        RECT rc{}; ::GetClientRect(m_hwnd, &rc);
+                        BuildToolbar(rc.right, rc.bottom);
+                        UpdateOverlayFromEngine();
+                    }
+                    return 0;
+                }
+
                 if (item.tool != ToolType::None) {
                     if (m_annotationEngine.GetTool() == item.tool) {
                         m_annotationEngine.SetTool(ToolType::None);
@@ -1246,6 +1297,7 @@ LRESULT PipWindow::HandleToolbarMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
                     }
                     RECT rc{}; ::GetClientRect(m_hwnd, &rc);
                     BuildToolbar(rc.right, rc.bottom);
+                    UpdateOverlayFromEngine();
                     return 0;
                 }
             }
@@ -1306,11 +1358,19 @@ void PipWindow::BuildToolbar(int clientW, int clientH) {
         ::InvalidateRect(m_hwndToolbar, nullptr, FALSE);
         ::UpdateWindow(m_hwndToolbar);
     }
-    if (m_isEditing && m_hwndToolbar) m_toolbarInput.Update(m_hwnd, m_hwndToolbar, m_toolbarItems);
+    if (m_isEditing && m_hwndToolbar) {
+        m_toolbarInput.Update(m_hwnd, m_hwndToolbar, m_toolbarItems);
+        if (m_annotationEngine.GetTool() == ToolType::Mosaic)
+            m_mosaicSlider.Update(m_hwndToolbar, m_hwnd, m_toolbarItems.back().rect, dpi, m_annotationEngine);
+        else
+            m_mosaicSlider.Hide();
+    }
 }
 
 void PipWindow::DrawToolbar(HDC hdc, int clientW, int clientH) {
     const auto &palette = m_palette;
+    const UINT windowDpi = ::GetDpiForWindow(m_hwnd);
+    const UINT dpi = windowDpi ? windowDpi : 96;
     // 1. Draw Toolbar background container
     RECT bgRect = { 0, 0, clientW, clientH };
     HBRUSH bgBrush = ::CreateSolidBrush(palette.window);
@@ -1382,9 +1442,16 @@ void PipWindow::DrawToolbar(HDC hdc, int clientW, int clientH) {
 
         if (item.label) {
             HFONT oldFont = static_cast<HFONT>(::SelectObject(hdc, m_font));
-            ::SetTextColor(hdc, (item.selected || item.action == AnnotationAction::Done) ? palette.onAccent : palette.text);
-            RECT textRect = item.rect;
-            ::DrawTextW(hdc, item.label, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            const auto foreground = item.selected || primary ? palette.onAccent : palette.text;
+            if (item.Icon() != EditorIcon::None)
+                DrawCenteredEditorIcon(hdc, item.rect, item.Icon(), dpi, foreground);
+            else if (item.action == AnnotationAction::MosaicStrength)
+                MosaicStrengthSlider::DrawLabel(hdc, item.rect, dpi, foreground);
+            else {
+                RECT bounds = item.rect;
+                ::SetTextColor(hdc, foreground);
+                ::DrawTextW(hdc, item.label, -1, &bounds, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            }
             ::SelectObject(hdc, oldFont);
         }
     }

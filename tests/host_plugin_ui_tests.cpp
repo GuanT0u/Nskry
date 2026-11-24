@@ -126,6 +126,47 @@ struct ImageEditorTestAccess {
     }
 };
 struct SelectionWindowTestAccess {
+    static bool VerifyDoubleClickText() {
+        SelectionWindow window([](SelectionAction, SelectionResult) {});
+        window.m_windows.clear();
+        window.OnLButtonDown(30, 40);
+        window.OnLButtonUp(240, 184);
+        window.m_annotationEngine.CommitText({20, 20}, {}, L"Original");
+        ::SendMessageW(window.m_hwnd, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(56, 68));
+        if (!window.m_hTextEdit) return false;
+        wchar_t text[40]{};
+        ::GetWindowTextW(window.m_hTextEdit, text, static_cast<int>(std::size(text)));
+        if (std::wstring_view(text) != L"Original") return false;
+        ::SetWindowTextW(window.m_hTextEdit, L"Edited");
+        window.CommitTextEdit();
+        const auto updated = window.m_annotationEngine.SelectTextAt({24, 25}, 2);
+        return updated && updated->index == 0 && updated->text == L"Edited";
+    }
+
+    static bool VerifyShapeAndMosaicControls() {
+        SelectionWindow window([](SelectionAction, SelectionResult) {});
+        window.m_windows.clear();
+        window.OnLButtonDown(30, 40);
+        window.OnLButtonUp(180, 170);
+        using ItemType = SelectionWindow::ToolbarItemType;
+        const auto& items = window.m_toolbarItems;
+        if (std::count_if(items.begin(), items.end(), [](const auto& item) { return item.type == ItemType::ShapeMenu; }) != 1 ||
+            std::any_of(items.begin(), items.end(), [](const auto& item) { return IsShapeTool(item.tool); }))
+            return false;
+        const auto mosaic = std::find_if(items.begin(), items.end(), [](const auto& item) {
+            return item.type == ItemType::ToolToggle && item.tool == ToolType::Mosaic;
+        });
+        if (mosaic == items.end()) return false;
+        window.ActivateToolbarItem(*mosaic);
+        const HWND slider = ::FindWindowExW(window.m_hwnd, nullptr, TRACKBAR_CLASSW, nullptr);
+        if (!slider || items.back().type != ItemType::MosaicStrength ||
+            std::any_of(items.begin(), items.end(), [](const auto& item) { return item.type == ItemType::WidthChoice; }))
+            return false;
+        ::SendMessageW(slider, TBM_SETPOS, TRUE, 37);
+        ::SendMessageW(window.m_hwnd, WM_HSCROLL, TB_THUMBPOSITION, reinterpret_cast<LPARAM>(slider));
+        return window.m_annotationEngine.GetMosaicBlockSize() == 37 && window.m_annotationEngine.GetStrokeWidth() == 3;
+    }
+
     static bool VerifyOverflow() {
         std::vector<PluginToolbarAction> plugins;
         for (int i = 0; i < 8; ++i)
@@ -296,6 +337,60 @@ int wmain() {
         ok &= Expect(std::any_of(pixels.begin(), pixels.end(), [](uint32_t pixel) { return pixel != 0; }),
                      "annotation records the mouse-release endpoint without a move message");
     }
+    {
+        AnnotationEngine line;
+        line.SetTool(ToolType::Line);
+        line.OnMouseDown({4, 10});
+        line.OnMouseUp({25, 10});
+        const auto pixels = line.RenderOverlayRgba(nullptr, 0, 0, 32, 32);
+        ok &= Expect(pixels.size() == 1024 && pixels[10 * 32 + 16] != 0 && pixels[18 * 32 + 16] == 0 &&
+                     line.Undo() && line.IsEmpty() && line.Redo(),
+                     "straight line renders its release endpoint and supports undo and redo");
+
+        const auto mosaic = [](int strength) {
+            AnnotationEngine engine;
+            engine.SetTool(ToolType::Mosaic);
+            engine.SetMosaicBlockSize(strength);
+            engine.OnMouseDown({0, 0});
+            engine.OnMouseUp({32, 32});
+            return engine.RenderOverlayRgba(nullptr, 0, 0, 32, 32);
+        };
+        const auto fine = mosaic(6), coarse = mosaic(48);
+        ok &= Expect(fine.size() == 1024 && coarse.size() == 1024 && fine[15] != coarse[15],
+                     "mosaic strength changes the rendered pixel block size");
+    }
+    {
+        AnnotationEngine engine;
+        engine.SetTool(ToolType::Rect);
+        engine.OnMouseDown({8, 8});
+        engine.OnMouseUp({28, 28});
+        const auto original = engine.RenderOverlayRgba(nullptr, 0, 0, 64, 64);
+        ok &= Expect(engine.BeginPointerEdit({18, 18}, 4), "click inside a rectangle selects it");
+        engine.OnMouseUp({18, 18});
+        const auto preview = engine.RenderOverlayRgba(nullptr, 0, 0, 64, 64, 4);
+        ok &= Expect(preview != original && engine.RenderOverlayRgba(nullptr, 0, 0, 64, 64) == original,
+                     "selection handles are visible only in the editing preview");
+        ok &= Expect(engine.BeginPointerEdit({28, 28}, 4), "drag the rectangle corner handle");
+        engine.OnMouseMove({39, 40});
+        engine.OnMouseUp({39, 40});
+        const auto resized = engine.RenderOverlayRgba(nullptr, 0, 0, 64, 64);
+        ok &= Expect(resized != original && engine.Undo() &&
+                     engine.RenderOverlayRgba(nullptr, 0, 0, 64, 64) == original && engine.Redo() &&
+                     engine.RenderOverlayRgba(nullptr, 0, 0, 64, 64) == resized,
+                     "resizing a shape is one undoable action");
+        ok &= Expect(engine.BeginPointerEdit({19, 19}, 4), "drag selected rectangle body");
+        engine.OnMouseMove({28, 20});
+        engine.CancelPointer();
+        ok &= Expect(engine.RenderOverlayRgba(nullptr, 0, 0, 64, 64) == resized,
+                     "capture cancellation restores original geometry");
+    }
+    {
+        TextShape text({4, 6}, L"Text", RGB(255, 255, 255), 16);
+        const auto original = text.Clone();
+        text.EditFrom(*original, 3, {40, 0});
+        ok &= Expect(text.fontSize > 16 && text.pt.x == 4 && text.pt.y == 6,
+                     "text corner drag scales up while keeping the opposite corner anchored");
+    }
     // Redirect persistence to an owned, unique test folder; never touch user settings.
     const auto testDirectory = std::filesystem::current_path() / (L"feature-config-" + std::to_wstring(GetCurrentProcessId()));
     if (!std::filesystem::create_directory(testDirectory)) return 1;
@@ -303,6 +398,48 @@ int wmain() {
     oldLocal.resize(oldLength);
     if(!SetEnvironmentVariableW(L"LOCALAPPDATA", testDirectory.c_str()))return 1;
     // Establish isolation before any UI helper can initialize the settings singleton.
+    ok &= Expect(SelectionWindowTestAccess::VerifyDoubleClickText(),
+                 "double-click opens the original text and commits changes into the same object");
+    {
+        HWND target = ::CreateWindowExW(WS_EX_TOOLWINDOW, L"STATIC", L"Tooltip test", WS_POPUP,
+            -20000, -20000, 44, 44, nullptr, nullptr, ::GetModuleHandleW(nullptr), nullptr);
+        struct TooltipWindows { HWND owner; HWND popup; } windows{target, nullptr};
+        if (target) {
+            ToolbarTooltip tooltip;
+            ::ShowWindow(target, SW_SHOWNOACTIVATE);
+            tooltip.Add(target, target, {0, 0, 40, 40}, L"Rectangle");
+            ::SendMessageW(target, WM_MOUSEMOVE, 0, MAKELPARAM(12, 12));
+            MSG timer{};
+            const auto deadline = ::GetTickCount64() + 1500;
+            while (::GetTickCount64() < deadline) {
+                if (::PeekMessageW(&timer, target, WM_TIMER, WM_TIMER, PM_REMOVE)) {
+                    ::DispatchMessageW(&timer);
+                    break;
+                }
+                ::Sleep(10);
+            }
+            ::EnumThreadWindows(::GetCurrentThreadId(), [](HWND hwnd, LPARAM value) -> BOOL {
+                auto& found = *reinterpret_cast<TooltipWindows*>(value);
+                wchar_t name[64]{};
+                ::GetClassNameW(hwnd, name, static_cast<int>(std::size(name)));
+                if (::GetWindow(hwnd, GW_OWNER) != found.owner || wcscmp(name, L"NskryToolbarTooltip")) return TRUE;
+                found.popup = hwnd;
+                return FALSE;
+            }, reinterpret_cast<LPARAM>(&windows));
+            wchar_t prompt[40]{};
+            if (windows.popup) ::GetWindowTextW(windows.popup, prompt, static_cast<int>(std::size(prompt)));
+            const bool displayed = windows.popup && ::IsWindowVisible(windows.popup) &&
+                std::wstring_view(prompt) == L"Rectangle";
+            ::SendMessageW(target, WM_MOUSELEAVE, 0, 0);
+            ok &= Expect(displayed && !::IsWindowVisible(windows.popup),
+                         "hover activates the real tooltip popup and leaving dismisses it");
+        } else {
+            ok &= Expect(false, "created native tooltip test surface");
+        }
+        if (target) ::DestroyWindow(target);
+    }
+    ok &= Expect(SelectionWindowTestAccess::VerifyShapeAndMosaicControls(),
+                 "selection groups shape tools and routes its native mosaic slider independently of stroke width");
     std::mutex waitMutex;std::condition_variable_any waitSignal;UpdateTask waitingUpdate;
     ok &= Expect(waitingUpdate.Start([&](std::stop_token stop){
         std::unique_lock lock(waitMutex);waitSignal.wait(lock,stop,[]{return false;});return UpdateTaskResult{};
@@ -499,6 +636,50 @@ int wmain() {
     GetWindowRect(pin.Hwnd(), &restored);
     ok &= Expect(restored.right - restored.left == 170 && restored.bottom - restored.top == 110,
                  "leaving annotation restores the original fixed image bounds");
+
+    {
+        AnnotationEngine marks;
+        marks.CommitText({20, 10}, {}, L"Pinned text");
+        PinWindow editable(CreateBitmap(120, 80, 1, 32, nullptr), 120, 80, {}, {},
+                           {60, 60, 400, 280}, {}, std::move(marks));
+        const bool opened = editable.ShowInEditMode();
+        IAccessible* toolbar = nullptr;
+        bool applied = false;
+        if (opened && SUCCEEDED(::AccessibleObjectFromWindow(editable.Hwnd(), OBJID_CLIENT, IID_IAccessible,
+            reinterpret_cast<void**>(&toolbar))) && toolbar) {
+            LONG count{};
+            toolbar->get_accChildCount(&count);
+            for (LONG index = 1; index <= count; ++index) {
+                VARIANT child{};
+                child.vt = VT_I4;
+                child.lVal = index;
+                BSTR label = nullptr;
+                toolbar->get_accName(child, &label);
+                const bool done = label && (!wcscmp(label, L"Done") || !wcscmp(label, L"完成"));
+                ::SysFreeString(label);
+                if (!done) continue;
+                MSG command{};
+                if (SUCCEEDED(toolbar->accDoDefaultAction(child)) &&
+                    ::PeekMessageW(&command, editable.Hwnd(), ToolbarAccessibility::InvokeMessage,
+                                   ToolbarAccessibility::InvokeMessage, PM_REMOVE)) {
+                    ::DispatchMessageW(&command);
+                    applied = true;
+                }
+                break;
+            }
+            toolbar->Release();
+        }
+        const bool reopened = applied && editable.ShowInEditMode();
+        RECT viewport{};
+        if (reopened) ::GetClientRect(editable.Hwnd(), &viewport);
+        if (reopened) ::SendMessageW(editable.Hwnd(), WM_LBUTTONDBLCLK, MK_LBUTTON,
+            MAKELPARAM(::MulDiv(26, viewport.right, 120), ::MulDiv(16, viewport.bottom, 80)));
+        const auto textEdit = reopened ? ::GetDlgItem(editable.Hwnd(), 102) : nullptr;
+        wchar_t text[40]{};
+        if (textEdit) ::GetWindowTextW(textEdit, text, static_cast<int>(std::size(text)));
+        ok &= Expect(textEdit && std::wstring_view(text) == L"Pinned text",
+                     "after applying and reopening a pin, the original annotation is still editable");
+    }
 
     ImageActions actions;
     ok &= Expect(!ChooseImageAction(nullptr, actions), "no empty action selection");

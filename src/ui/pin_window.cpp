@@ -41,14 +41,15 @@ static int GetPngEncoderClsidHelper(CLSID* pClsid) {
 }
 
 PinWindow::PinWindow(HBITMAP bitmap, int width, int height, CloseCallback closed,
-              ImageActions imageActions, RECT initialScreenRect, ImageEditorCallback editor)
-    : m_bitmap(bitmap), m_width(width), m_height(height), m_closed(std::move(closed)),
+              ImageActions imageActions, RECT initialScreenRect, ImageEditorCallback editor, AnnotationEngine annotations)
+    : m_bitmap(bitmap), m_width(width), m_height(height), m_annotationEngine(std::move(annotations)), m_closed(std::move(closed)),
       m_imageActions(std::move(imageActions)), m_editor(std::move(editor)),
       m_hasInitialScreenRect(initialScreenRect.right > initialScreenRect.left && initialScreenRect.bottom > initialScreenRect.top)
 {
     std::call_once(s_classOnce, [] {
         WNDCLASSEXW wc{};
         wc.cbSize        = sizeof(wc);
+        wc.style         = CS_DBLCLKS;
         wc.lpfnWndProc   = WndProc;
         wc.hInstance      = ::GetModuleHandleW(nullptr);
         wc.lpszClassName  = kClassName;
@@ -161,6 +162,9 @@ LRESULT CALLBACK PinWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+    case WM_HSCROLL:
+        if (m_mosaicSlider.Read(lp, m_annotationEngine)) return 0;
+        break;
     case WM_GETOBJECT:
         if (m_isEditing && static_cast<LONG>(lp) == OBJID_CLIENT)
             return m_toolbarInput.GetObject(hwnd, wp, lp);
@@ -330,8 +334,24 @@ LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (!m_isEditing) {
             EnterEditMode();
             return 0;
+        } else {
+            const POINT client{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            POINT image{};
+            CommitTextEdit();
+            if (!::PtInRect(&m_toolbarBounds, client) && ClientPointToBitmap(client.x, client.y, image)) {
+                const int tolerance = AnnotationEngine::HandleRadius(ImageRect(), m_width, m_height, ::GetDpiForWindow(hwnd));
+                if (auto text = m_annotationEngine.SelectTextAt(image, tolerance / 2)) {
+                    const auto origin = text->position;
+                    const auto bounds = ImageRect();
+                    OpenTextEdit({bounds.left + ::MulDiv(origin.x, bounds.right - bounds.left, m_width),
+                                  bounds.top + ::MulDiv(origin.y, bounds.bottom - bounds.top, m_height)},
+                                 origin, std::move(text));
+                    return 0;
+                }
+            }
+            OnLButtonDown(client.x, client.y);
+            return 0;
         }
-        break;
 
     case WM_LBUTTONDOWN:
         if (m_isEditing) {
@@ -353,6 +373,14 @@ LRESULT PinWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (!m_isEditing) ShowQuickActions(true);
         break;
 
+    case WM_CANCELMODE:
+    case WM_CAPTURECHANGED:
+        if (m_isDrawing) {
+            m_isDrawing = false;
+            m_annotationEngine.CancelPointer();
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        break;
     case WM_LBUTTONUP:
         if (m_isEditing) {
             OnLButtonUp(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
@@ -507,10 +535,24 @@ void PinWindow::ShowQuickActions(bool show) {
 void PinWindow::RunQuickImageAction() {
     const auto index = ChooseImageAction(m_hwnd, m_imageActions);
     if (!index) return;
-    const auto& action = m_imageActions[*index];
+    InvokeImageAction(m_imageActions[*index]);
+}
+
+void PinWindow::InvokeImageAction(const ImageAction& action) {
+    if (!action.invoke) return;
+    const auto invoke = action.invoke;
+    const int width = m_width, height = m_height;
+    const HWND owner = m_hwnd;
     RECT region{};
-    ::GetWindowRect(m_hwnd, &region);
-    action.invoke(m_bitmap, m_width, m_height, region, m_hwnd);
+    ::GetWindowRect(owner, &region);
+    const bool baked = !m_annotationEngine.IsEmpty();
+    HBITMAP image = baked ? BakeEditedBitmap() : m_bitmap;
+    if (!image) return;
+    struct OwnedBitmap {
+        HBITMAP handle;
+        ~OwnedBitmap() { if (handle) ::DeleteObject(handle); }
+    } cleanup{baked ? image : nullptr};
+    invoke(image, width, height, region, owner);
 }
 
 // ============================================================================
@@ -547,10 +589,7 @@ void PinWindow::ShowContextMenu(int screenX, int screenY) {
     case 205: OpenStructureEditor(); break;
     default:
         if (cmd >= 220 && cmd < 220 + static_cast<int>(m_imageActions.size())) {
-            const ImageAction& action = m_imageActions[cmd - 220];
-            RECT region{};
-            ::GetWindowRect(m_hwnd, &region);
-            if (action.invoke) action.invoke(m_bitmap, m_width, m_height, region, m_hwnd);
+            InvokeImageAction(m_imageActions[cmd - 220]);
         }
         break;
     }
@@ -571,6 +610,13 @@ bool PinWindow::SetVisualSettings(WindowVisualSettings settings) {
 }
 
 bool PinWindow::CopyToClipboard(HBITMAP bitmap) {
+    if (!bitmap && !m_annotationEngine.IsEmpty()) {
+        const auto annotated = BakeEditedBitmap();
+        if (!annotated) return false;
+        const bool copied = CopyToClipboard(annotated);
+        ::DeleteObject(annotated);
+        return copied;
+    }
     if (!bitmap) bitmap = m_bitmap;
     if (!bitmap || m_width <= 0 || m_height <= 0) return false;
 
@@ -610,6 +656,13 @@ bool PinWindow::CopyToClipboard(HBITMAP bitmap) {
 }
 
 bool PinWindow::SaveToFile(HBITMAP bitmap) {
+    if (!bitmap && !m_annotationEngine.IsEmpty()) {
+        const auto annotated = BakeEditedBitmap();
+        if (!annotated) return false;
+        const bool saved = SaveToFile(annotated);
+        ::DeleteObject(annotated);
+        return saved;
+    }
     if (!bitmap) bitmap = m_bitmap;
     if (!bitmap) return false;
 
@@ -648,7 +701,7 @@ bool PinWindow::SaveToFile(HBITMAP bitmap) {
 void PinWindow::EnterEditMode() {
     ShowQuickActions(false);
     m_isEditing = true;
-    m_annotationEngine.Clear();
+    m_editBackup = m_annotationEngine.Clone();
     m_annotationEngine.SetTool(ToolType::Pen);
 
     RECT bounds{};
@@ -678,20 +731,12 @@ void PinWindow::EnterEditMode() {
 void PinWindow::FinishEdit(bool apply) {
     CommitTextEdit();
 
-    if (apply && !m_annotationEngine.IsEmpty()) {
-        HBITMAP baked = BakeEditedBitmap();
-        if (baked) {
-            ::DeleteObject(m_bitmap);
-            m_bitmap = baked;
-        } else {
-            ::MessageBoxW(m_hwnd, L"Failed to apply annotations.", L"Nskry", MB_ICONERROR);
-            return;
-        }
-    }
-
-    m_annotationEngine.Clear();
+    if (!apply) m_annotationEngine = std::move(m_editBackup);
+    m_editBackup.Clear();
+    m_annotationEngine.ClearSelection();
     m_annotationEngine.SetTool(ToolType::None);
     m_isEditing = false;
+    m_mosaicSlider.Hide();
     m_toolbarInput.Clear();
     m_toolbarItems.clear();
     if (!::IsRectEmpty(&m_editExpandedBounds)) {
@@ -752,7 +797,7 @@ void PinWindow::CommitTextEdit() {
     if (len > 0) {
         std::vector<wchar_t> buf(len + 1);
         ::GetWindowTextW(edit, buf.data(), len + 1);
-        m_annotationEngine.AddTextShape(m_textEditPos, buf.data());
+        m_annotationEngine.CommitText(m_textEditPos, m_textEditTarget, buf.data());
     }
 
     if (::IsWindow(edit)) ::DestroyWindow(edit);
@@ -781,11 +826,19 @@ void PinWindow::BuildPinToolbar(int clientW, int clientH) {
     } else {
         m_toolbarBounds = {};
     }
-    if (m_isEditing && m_hwnd) m_toolbarInput.Update(m_hwnd, m_hwnd, m_toolbarItems);
+    if (m_isEditing && m_hwnd) {
+        m_toolbarInput.Update(m_hwnd, m_hwnd, m_toolbarItems);
+        if (m_annotationEngine.GetTool() == ToolType::Mosaic)
+            m_mosaicSlider.Update(m_hwnd, m_hwnd, m_toolbarItems.back().rect, dpi, m_annotationEngine);
+        else
+            m_mosaicSlider.Hide();
+    }
 }
 
 void PinWindow::DrawPinToolbar(HDC hdc, int /*clientW*/, int /*clientH*/) {
     const auto &palette = m_palette;
+    const UINT windowDpi = ::GetDpiForWindow(m_hwnd);
+    const UINT dpi = windowDpi ? windowDpi : 96;
     ::SetBkMode(hdc, TRANSPARENT);
 
     for (const auto& item : m_toolbarItems) {
@@ -853,9 +906,16 @@ void PinWindow::DrawPinToolbar(HDC hdc, int /*clientW*/, int /*clientH*/) {
 
         if (item.label) {
             HFONT oldFont = static_cast<HFONT>(::SelectObject(hdc, m_font));
-            ::SetTextColor(hdc, (item.selected || item.action == AnnotationAction::Done) ? palette.onAccent : palette.text);
-            RECT textRect = item.rect;
-            ::DrawTextW(hdc, item.label, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            const auto foreground = item.selected || primary ? palette.onAccent : palette.text;
+            if (item.Icon() != EditorIcon::None)
+                DrawCenteredEditorIcon(hdc, item.rect, item.Icon(), dpi, foreground);
+            else if (item.action == AnnotationAction::MosaicStrength)
+                MosaicStrengthSlider::DrawLabel(hdc, item.rect, dpi, foreground);
+            else {
+                RECT bounds = item.rect;
+                ::SetTextColor(hdc, foreground);
+                ::DrawTextW(hdc, item.label, -1, &bounds, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            }
             ::SelectObject(hdc, oldFont);
         }
     }
@@ -930,6 +990,22 @@ void PinWindow::OnLButtonDown(int x, int y) {
                 return;
             }
 
+            if (item.action == AnnotationAction::MosaicStrength) {
+                m_mosaicSlider.Focus();
+                return;
+            }
+
+            if (item.action == AnnotationAction::ShapeMenu) {
+                const auto shape = ChooseAnnotationShape(m_hwnd, m_hwnd, item.rect, m_annotationEngine.GetTool());
+                if (shape) {
+                    m_annotationEngine.SetTool(*shape);
+                    RECT rc{}; ::GetClientRect(m_hwnd, &rc);
+                    BuildPinToolbar(rc.right, rc.bottom);
+                    ::InvalidateRect(m_hwnd, nullptr, FALSE);
+                }
+                return;
+            }
+
             if (item.tool != ToolType::None) {
                 if (m_annotationEngine.GetTool() == item.tool) {
                     m_annotationEngine.SetTool(ToolType::None);
@@ -947,40 +1023,47 @@ void PinWindow::OnLButtonDown(int x, int y) {
     // Ignore clicks in toolbar area that missed a button
     if (::PtInRect(&m_toolbarBounds, pt)) return;
 
-    // 2. Annotation Canvas drawing
-    if (m_annotationEngine.GetTool() != ToolType::None) {
-        CommitTextEdit();
-
-        POINT bitmapPoint{};
-        if (!ClientPointToBitmap(x, y, bitmapPoint)) return;
-
+    CommitTextEdit();
+    POINT bitmapPoint{};
+    const int tolerance = AnnotationEngine::HandleRadius(ImageRect(), m_width, m_height, ::GetDpiForWindow(m_hwnd));
+    if (!ClientPointToBitmap(x, y, bitmapPoint, true)) return;
+    if (m_annotationEngine.BeginPointerEdit(bitmapPoint, tolerance, ::GetKeyState(VK_MENU) < 0)) {
+        m_isDrawing = true;
+        ::SetCapture(m_hwnd);
+    } else if (ClientPointToBitmap(x, y, bitmapPoint)) {
         if (m_annotationEngine.GetTool() == ToolType::Text) {
-            m_textEditPos = bitmapPoint;
-            RECT client{};
-            ::GetClientRect(m_hwnd, &client);
-            const int clientW = static_cast<int>(client.right - client.left);
-            const int clientH = static_cast<int>(client.bottom - client.top);
-            const int editW = (std::min)(120, (std::max)(1, clientW));
-            const int editX = (std::clamp)(x, 0, (std::max)(0, clientW - editW));
-            const int editY = (std::clamp)(y, 0, (std::max)(0, clientH - 24));
-            m_hTextEdit = ::CreateWindowExW(
-                0, L"EDIT", L"",
-                WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-                editX, editY, editW, 24,
-                m_hwnd,
-                reinterpret_cast<HMENU>(static_cast<UINT_PTR>(102)),
-                ::GetModuleHandleW(nullptr), nullptr);
-            if (m_hTextEdit) {
-                if (m_font) ::SendMessageW(m_hTextEdit, WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
-                ::SetWindowSubclass(m_hTextEdit,TextKeyRelay,1,DWORD_PTR(m_hwnd));
-                ::SetFocus(m_hTextEdit);
-            }
-        } else {
+            OpenTextEdit({x, y}, bitmapPoint);
+        } else if (m_annotationEngine.GetTool() != ToolType::None) {
             m_isDrawing = true;
             m_annotationEngine.OnMouseDown(bitmapPoint);
             ::SetCapture(m_hwnd);
-            ::InvalidateRect(m_hwnd, nullptr, FALSE);
         }
+    }
+    ::InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void PinWindow::OpenTextEdit(POINT clientPoint, POINT image, std::optional<AnnotationEngine::TextTarget> target) {
+    m_textEditPos = image;
+    m_textEditTarget = target ? std::optional{target->index} : std::nullopt;
+    RECT client{};
+    ::GetClientRect(m_hwnd, &client);
+    const int clientW = static_cast<int>(client.right - client.left);
+    const int clientH = static_cast<int>(client.bottom - client.top);
+    const int editW = (std::min)(target ? 220 : 120, (std::max)(1, clientW));
+    const int editX = (std::clamp)(int(clientPoint.x), 0, (std::max)(0, clientW - editW));
+    const int editY = (std::clamp)(int(clientPoint.y), 0, (std::max)(0, clientH - 24));
+    m_hTextEdit = ::CreateWindowExW(
+        0, L"EDIT", target ? target->text.c_str() : L"",
+        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+        editX, editY, editW, 24,
+        m_hwnd,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(102)),
+        ::GetModuleHandleW(nullptr), nullptr);
+    if (m_hTextEdit) {
+        if (m_font) ::SendMessageW(m_hTextEdit, WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
+        ::SetWindowSubclass(m_hTextEdit,TextKeyRelay,1,DWORD_PTR(m_hwnd));
+        if (target) ::SendMessageW(m_hTextEdit, EM_SETSEL, 0, -1);
+        ::SetFocus(m_hTextEdit);
     }
 }
 
@@ -1010,12 +1093,14 @@ void PinWindow::OnMouseMove(int x, int y) {
 
 void PinWindow::OnLButtonUp(int x, int y) {
     if (m_isDrawing) {
-        ::ReleaseCapture();
         m_isDrawing = false;
         POINT bitmapPoint{};
         if (ClientPointToBitmap(x, y, bitmapPoint, true)) {
             m_annotationEngine.OnMouseUp(bitmapPoint);
+        } else {
+            m_annotationEngine.CancelPointer();
         }
+        ::ReleaseCapture();
         ::InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
@@ -1054,8 +1139,7 @@ void PinWindow::OnPaint(HWND hwnd) {
                      hdcMem, 0, 0, m_width, m_height, SRCCOPY);
     }
 
-    // 2. Draw annotations in edit mode
-    if (m_isEditing && sourceReady) {
+    if (sourceReady && !m_annotationEngine.IsEmpty()) {
         Gdiplus::Graphics g(hdc);
         Gdiplus::Matrix transform(
             static_cast<Gdiplus::REAL>(image.right - image.left) / m_width, 0.0f,
@@ -1063,6 +1147,8 @@ void PinWindow::OnPaint(HWND hwnd) {
             static_cast<Gdiplus::REAL>(image.left), static_cast<Gdiplus::REAL>(image.top));
         g.SetTransform(&transform);
         m_annotationEngine.Draw(g, hdcMem, 0, 0, m_width, m_height);
+        if (m_isEditing)
+            m_annotationEngine.DrawSelection(g, AnnotationEngine::HandleRadius(image, m_width, m_height, ::GetDpiForWindow(hwnd)));
     }
 
     // Draw the toolbar even when the source bitmap could not be selected, so

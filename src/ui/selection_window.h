@@ -5,6 +5,9 @@
 #include "ui/annotation/annotation_engine.h"
 #include "core/plugin_manager.h"
 #include "ui/toolbar_accessibility.h"
+#include "ui/editor_icons.h"
+#include "ui/annotation_toolbar_controls.h"
+#include "ui/toolbar_tooltip.h"
 #include "ui/ui_preferences.h"
 #include <functional>
 #include <vector>
@@ -107,7 +110,9 @@ private:
     // Toolbar item representation
     enum class ToolbarItemType {
         Action,        // Copy, Save, Pin, PiP
-        ToolToggle,    // Rect, Ellipse, Arrow, Pen, Mosaic, Text
+        ToolToggle,    // Arrow, Pen, Mosaic, Text
+        ShapeMenu,
+        MosaicStrength,
         Undo,
         Redo,
         WidthChoice,   // Stroke width
@@ -130,6 +135,13 @@ private:
         bool            selected = false;
         int             group = 0;
         bool            isSeparator = false;
+
+        EditorIcon Icon() const {
+            if (type == ToolbarItemType::ShapeMenu) return EditorIcon::Shapes;
+            if (type == ToolbarItemType::Undo) return EditorIcon::Undo;
+            if (type == ToolbarItemType::Redo) return EditorIcon::Redo;
+            return IconForTool(tool);
+        }
     };
 
     void BuildToolbar(RECT selectionRect);
@@ -142,6 +154,7 @@ private:
     HBITMAP CaptureSelectedRegion(RECT localRect);
     void FinishWithAction(SelectionAction action, std::wstring pluginId = {}, std::wstring actionId = {});
     void CommitTextEdit();
+    void OpenTextEdit(POINT client, POINT image, std::optional<AnnotationEngine::TextTarget> target = {});
 
     // ---- Members ----
     HWND               m_hwnd{};
@@ -187,6 +200,8 @@ private:
     std::vector<ToolbarItem> m_toolbarItems;
     std::vector<ToolbarItem> m_overflowItems;
     ToolbarAccessibility m_accessibleToolbar;
+    ToolbarTooltip m_toolbarTooltip;
+    MosaicStrengthSlider m_mosaicSlider;
     int m_toolbarFocus = -1;
     UINT m_toolbarDpi = 96;
     DesktopPalette m_toolbarPalette;
@@ -196,6 +211,7 @@ private:
     AnnotationEngine m_annotationEngine;
     HWND             m_hTextEdit{};
     POINT            m_textEditPos{};
+    std::optional<size_t> m_textEditTarget;
     std::vector<PluginToolbarAction> m_pluginActions;
 
     static constexpr wchar_t kClassName[] = L"NskrySelectionWindow";

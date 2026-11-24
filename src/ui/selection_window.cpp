@@ -37,6 +37,7 @@ SelectionWindow::SelectionWindow(CompletionCallback onComplete, std::vector<Plug
     std::call_once(s_classOnce, [] {
         WNDCLASSEXW wc{};
         wc.cbSize        = sizeof(wc);
+        wc.style         = CS_DBLCLKS;
         wc.lpfnWndProc   = WndProc;
         wc.hInstance      = ::GetModuleHandleW(nullptr);
         wc.lpszClassName  = kClassName;
@@ -46,7 +47,7 @@ SelectionWindow::SelectionWindow(CompletionCallback onComplete, std::vector<Plug
 
     m_hwnd = ::CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-        kClassName, L"Nskry Selection", WS_POPUP,
+        kClassName, L"Nskry Selection", WS_POPUP | WS_CLIPCHILDREN,
         m_vX, m_vY, m_vW, m_vH,
         nullptr, nullptr, ::GetModuleHandleW(nullptr), this);
     // Snapshot pixels were taken BEFORE this window existed. CaptureSelectedRegion
@@ -150,15 +151,35 @@ LRESULT SelectionWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
         }
         return 0;
     }
+    case WM_HSCROLL:
+        if (m_mosaicSlider.Read(lp, m_annotationEngine)) return 0;
+        break;
     case WM_NCDESTROY:
+        m_toolbarTooltip.Reset();
         m_accessibleToolbar.Detach();
         ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         break;
     case WM_MOUSEMOVE:   OnMouseMove(GET_X_LPARAM(lp), GET_Y_LPARAM(lp)); return 0;
+    case WM_LBUTTONDBLCLK:
+        if (m_state == State::Selected && HitTest(GET_X_LPARAM(lp), GET_Y_LPARAM(lp)) != HitZone::Toolbar) {
+            CommitTextEdit();
+            const POINT local{GET_X_LPARAM(lp) - m_finalRect.left, GET_Y_LPARAM(lp) - m_finalRect.top};
+            if (auto text = m_annotationEngine.SelectTextAt(local, ::MulDiv(3, m_toolbarDpi, 96))) {
+                const POINT image = text->position;
+                OpenTextEdit({m_finalRect.left + image.x, m_finalRect.top + image.y}, image, std::move(text));
+                return 0;
+            }
+        }
+        [[fallthrough]];
     case WM_LBUTTONDOWN: OnLButtonDown(GET_X_LPARAM(lp), GET_Y_LPARAM(lp)); return 0;
     case WM_LBUTTONUP:   OnLButtonUp(GET_X_LPARAM(lp), GET_Y_LPARAM(lp)); return 0;
     case WM_CAPTURECHANGED:
     case WM_CANCELMODE:
+        if (m_state == State::Annotating) {
+            m_annotationEngine.CancelPointer();
+            m_state = State::Selected;
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+        }
         if (m_state == State::Adjusting) {
             m_state = State::Selected;
             BuildToolbar(m_finalRect);
@@ -446,26 +467,20 @@ void SelectionWindow::OnLButtonDown(int x, int y) {
         if (m_toolbarFocus >= 0) { m_toolbarFocus = -1; NotifyToolbarFocus(); }
         ::InvalidateRect(m_hwnd, nullptr, FALSE);
 
-        // 2. Check canvas annotation or adjustment
+        // Existing objects and handles take priority over starting a new mark.
+        CommitTextEdit();
+        const POINT localPt{x - m_finalRect.left, y - m_finalRect.top};
+        if (m_annotationEngine.BeginPointerEdit(localPt, ::MulDiv(5, m_toolbarDpi, 96), ::GetKeyState(VK_MENU) < 0)) {
+            m_state = State::Annotating;
+            ::SetCapture(m_hwnd);
+            ::InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
         if (m_annotationEngine.GetTool() != ToolType::None && ::PtInRect(&m_finalRect, pt)) {
-            CommitTextEdit();
-
             if (m_annotationEngine.GetTool() == ToolType::Text) {
-                // In-place text input
-                m_textEditPos = { x - m_finalRect.left, y - m_finalRect.top };
-                m_hTextEdit = ::CreateWindowExW(
-                    0, L"EDIT", L"",
-                    WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-                    x, y, 140, 26,
-                    m_hwnd,
-                    reinterpret_cast<HMENU>(static_cast<UINT_PTR>(101)),
-                    ::GetModuleHandleW(nullptr), nullptr);
-                ::SendMessageW(m_hTextEdit, WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
-                ::SetWindowSubclass(m_hTextEdit,TextKeyRelay,1,DWORD_PTR(m_hwnd));
-                ::SetFocus(m_hTextEdit);
+                OpenTextEdit(pt, localPt);
             } else {
                 m_state = State::Annotating;
-                POINT localPt{ x - m_finalRect.left, y - m_finalRect.top };
                 m_annotationEngine.OnMouseDown(localPt);
                 ::SetCapture(m_hwnd);
                 ::InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -527,26 +542,39 @@ void SelectionWindow::OnLButtonUp(int x, int y) {
         ::InvalidateRect(m_hwnd, nullptr, FALSE);
     }
     else if (m_state == State::Annotating) {
-        ::ReleaseCapture();
         POINT localPt{ x - m_finalRect.left, y - m_finalRect.top };
         m_annotationEngine.OnMouseUp(localPt);
         m_state = State::Selected;
+        ::ReleaseCapture();
         ::InvalidateRect(m_hwnd, nullptr, FALSE);
     }
+}
+
+void SelectionWindow::OpenTextEdit(POINT client, POINT image, std::optional<AnnotationEngine::TextTarget> target) {
+    m_hTextEdit = ::CreateWindowExW(0, L"EDIT", target ? target->text.c_str() : L"",
+        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, client.x, client.y, target ? 220 : 140, 26,
+        m_hwnd, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(101)), ::GetModuleHandleW(nullptr), nullptr);
+    if (!m_hTextEdit) return;
+    m_textEditPos = image;
+    m_textEditTarget = target ? std::optional{target->index} : std::nullopt;
+    ::SendMessageW(m_hTextEdit, WM_SETFONT, reinterpret_cast<WPARAM>(m_font), TRUE);
+    ::SetWindowSubclass(m_hTextEdit, TextKeyRelay, 1, DWORD_PTR(m_hwnd));
+    if (target) ::SendMessageW(m_hTextEdit, EM_SETSEL, 0, -1);
+    ::SetFocus(m_hTextEdit);
 }
 
 void SelectionWindow::CommitTextEdit() {
     if (!m_hTextEdit) return;
 
-    int len = ::GetWindowTextLengthW(m_hTextEdit);
+    const HWND edit = std::exchange(m_hTextEdit, nullptr);
+    int len = ::GetWindowTextLengthW(edit);
     if (len > 0) {
         std::vector<wchar_t> buf(len + 1);
-        ::GetWindowTextW(m_hTextEdit, buf.data(), len + 1);
-        m_annotationEngine.AddTextShape(m_textEditPos, buf.data());
+        ::GetWindowTextW(edit, buf.data(), len + 1);
+        m_annotationEngine.CommitText(m_textEditPos, m_textEditTarget, buf.data());
     }
 
-    ::DestroyWindow(m_hTextEdit);
-    m_hTextEdit = nullptr;
+    ::DestroyWindow(edit);
     ::InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -563,6 +591,21 @@ void SelectionWindow::ActivateToolbarItem(ToolbarItem item) {
 
     case ToolbarItemType::PluginAction:
         FinishWithAction(SelectionAction::Plugin, item.pluginId, item.pluginActionId);
+        return;
+
+    case ToolbarItemType::ShapeMenu: {
+        m_toolbarTooltip.Hide();
+        const auto shape = ChooseAnnotationShape(m_hwnd, m_hwnd, item.rect, m_annotationEngine.GetTool());
+        if (shape) {
+            m_annotationEngine.SetTool(*shape);
+            BuildToolbar(m_finalRect);
+            ::InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+
+    case ToolbarItemType::MosaicStrength:
+        m_mosaicSlider.Focus();
         return;
 
     case ToolbarItemType::ToolToggle:
@@ -694,7 +737,7 @@ void SelectionWindow::BuildToolbar(RECT selRect) {
     struct Candidate { ToolbarItem item; int width; int priority; bool visible = true; };
     std::vector<Candidate> items;
     const auto add = [&](ToolbarItem item, int priority) {
-        const int width = measure(item.label);
+        const int width = item.Icon() == EditorIcon::None ? measure(item.label) : dip(32);
         items.push_back({std::move(item), width, priority});
     };
     const auto tool = [&](ToolType type, const wchar_t *en, const wchar_t *zh) {
@@ -706,8 +749,11 @@ void SelectionWindow::BuildToolbar(RECT selRect) {
         const int priority = item.selected ? 0 : 2;
         add(std::move(item), priority);
     };
-    tool(ToolType::Rect, L"Rectangle", L"矩形");
-    tool(ToolType::Ellipse, L"Ellipse", L"椭圆");
+    ToolbarItem shapes;
+    shapes.type = ToolbarItemType::ShapeMenu;
+    shapes.label = chinese ? L"形状" : L"Shapes";
+    shapes.selected = IsShapeTool(m_annotationEngine.GetTool());
+    add(std::move(shapes), 0);
     tool(ToolType::Arrow, L"Arrow", L"箭头");
     tool(ToolType::Pen, L"Pen", L"画笔");
     tool(ToolType::Mosaic, L"Mosaic", L"马赛克");
@@ -787,7 +833,12 @@ void SelectionWindow::BuildToolbar(RECT selRect) {
     if (!m_overflowItems.empty())
         place(std::move(more), moreWidth);
     const auto mainCount = widths.size();
-    if (m_annotationEngine.GetTool() != ToolType::None) {
+    if (m_annotationEngine.GetTool() == ToolType::Mosaic) {
+        ToolbarItem item;
+        item.type = ToolbarItemType::MosaicStrength;
+        item.label = UiText(L"Mosaic strength", L"马赛克强度");
+        place(std::move(item), dip(kMosaicSliderWidth));
+    } else if (m_annotationEngine.GetTool() != ToolType::None) {
         for (int width : {2, 4, 8}) {
             ToolbarItem item;
             item.type = ToolbarItemType::WidthChoice;
@@ -832,6 +883,11 @@ void SelectionWindow::BuildToolbar(RECT selRect) {
 }
 
 void SelectionWindow::UpdateAccessibleToolbar() {
+    m_toolbarTooltip.Reset();
+    if (m_state == State::Selected && m_annotationEngine.GetTool() == ToolType::Mosaic && !m_toolbarItems.empty())
+        m_mosaicSlider.Update(m_hwnd, m_hwnd, m_toolbarItems.back().rect, m_toolbarDpi, m_annotationEngine);
+    else
+        m_mosaicSlider.Hide();
     std::vector<ToolbarAccessibility::Item> items;
     if (m_state == State::Selected) {
         for (const auto &item : m_toolbarItems) {
@@ -845,6 +901,8 @@ void SelectionWindow::UpdateAccessibleToolbar() {
                     std::to_wstring(GetGValue(item.color)) + L", " + std::to_wstring(GetBValue(item.color));
             if (item.type == ToolbarItemType::Action && item.action == SelectionAction::Copy)
                 name = UiText(L"Copy image", L"复制图片");
+            if (item.Icon() != EditorIcon::None)
+                m_toolbarTooltip.Add(m_hwnd, m_hwnd, item.rect, name.c_str());
             items.push_back({std::move(name), item.rect, item.selected});
         }
     }
@@ -936,9 +994,17 @@ void SelectionWindow::DrawToolbar(HDC hdc) {
         if (!item.label.empty()) {
             HFONT oldFont = static_cast<HFONT>(::SelectObject(hdc, m_font));
 
-            ::SetTextColor(hdc, primary ? palette.onAccent : palette.text);
-            RECT textRect = item.rect;
-            ::DrawTextW(hdc, item.label.c_str(), -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+            const auto foreground = primary ? palette.onAccent : palette.text;
+            if (item.Icon() != EditorIcon::None)
+                DrawCenteredEditorIcon(hdc, item.rect, item.Icon(), m_toolbarDpi, foreground);
+            else if (item.type == ToolbarItemType::MosaicStrength)
+                MosaicStrengthSlider::DrawLabel(hdc, item.rect, m_toolbarDpi, foreground);
+            else {
+                RECT bounds = item.rect;
+                ::SetTextColor(hdc, foreground);
+                ::DrawTextW(hdc, item.label.c_str(), -1, &bounds,
+                            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+            }
             ::SelectObject(hdc, oldFont);
         }
         drawFocus();
@@ -1008,7 +1074,7 @@ void SelectionWindow::FinishWithAction(SelectionAction action, std::wstring plug
         CommitTextEdit();
 
         // If there are annotations, bake them onto the bitmap; otherwise normal capture
-        if (m_annotationEngine.IsEmpty()) {
+        if (action == SelectionAction::Pin || m_annotationEngine.IsEmpty()) {
             m_capturedBitmap = CaptureSelectedRegion(m_finalRect);
         } else {
             m_capturedBitmap = m_annotationEngine.BakeToBitmap(
@@ -1100,6 +1166,7 @@ void SelectionWindow::OnPaint(HWND hwnd) {
                 static_cast<Gdiplus::REAL>(activeRect.left),
                 static_cast<Gdiplus::REAL>(activeRect.top));
             m_annotationEngine.Draw(g, m_hdcSnapshot, activeRect.left, activeRect.top, m_vW, m_vH);
+            m_annotationEngine.DrawSelection(g, ::MulDiv(4, m_toolbarDpi, 96));
         }
 
         // Border (2px blue)

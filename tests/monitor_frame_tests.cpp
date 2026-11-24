@@ -27,6 +27,16 @@ struct MonitorFrameTestAccess {
             valid &= ::IntersectRect(&intersection, &client, &item.rect) &&
                      ::EqualRect(&intersection, &item.rect);
         }
+        window.m_annotationEngine.SetTool(ToolType::Mosaic);
+        RECT owner{};
+        ::GetClientRect(window.m_hwnd, &owner);
+        window.BuildToolbar(owner.right, owner.bottom);
+        const HWND slider = ::FindWindowExW(window.m_hwndToolbar, nullptr, TRACKBAR_CLASSW, nullptr);
+        if (slider) {
+            ::SendMessageW(slider, TBM_SETPOS, TRUE, 42);
+            ::SendMessageW(window.m_hwndToolbar, WM_HSCROLL, TB_THUMBPOSITION, reinterpret_cast<LPARAM>(slider));
+        }
+        valid &= slider && ::IsWindowVisible(slider) && window.m_annotationEngine.GetMosaicBlockSize() == 42;
         window.FinishEdit(false);
         return valid && !::IsWindowVisible(window.m_hwndToolbar);
     }

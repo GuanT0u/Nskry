@@ -23,7 +23,8 @@ public:
 
     /// Takes ownership of the HBITMAP.
     PinWindow(HBITMAP bitmap, int width, int height, CloseCallback closed = {},
-              ImageActions imageActions = {}, RECT initialScreenRect = {}, ImageEditorCallback editor = {});
+              ImageActions imageActions = {}, RECT initialScreenRect = {}, ImageEditorCallback editor = {},
+              AnnotationEngine annotations = {});
     ~PinWindow();
 
     PinWindow(const PinWindow&)            = delete;
@@ -39,6 +40,7 @@ public:
 private:
     DesktopPalette m_palette = GetDesktopPalette();
     AnnotationToolbarInput m_toolbarInput;
+    MosaicStrengthSlider m_mosaicSlider;
     RECT m_editOriginalBounds{}, m_editExpandedBounds{};
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
@@ -57,10 +59,12 @@ private:
     void EnterEditMode();
     void FinishEdit(bool apply);
     void CommitTextEdit();
+    void OpenTextEdit(POINT client, POINT image, std::optional<AnnotationEngine::TextTarget> target = {});
     void CreateQuickActions(HWND parent);
     void LayoutQuickActions();
     void ShowQuickActions(bool show);
     void RunQuickImageAction();
+    void InvokeImageAction(const ImageAction& action);
     bool IsQuickActionPoint(POINT clientPoint) const;
 
     // Pin Toolbar
@@ -78,6 +82,7 @@ private:
     // Edit mode state
     bool             m_isEditing = false;
     AnnotationEngine m_annotationEngine;
+    AnnotationEngine m_editBackup;
     std::vector<AnnotationToolbarItem> m_toolbarItems;
     RECT             m_toolbarBounds{};
     bool             m_isDrawing = false;
@@ -91,6 +96,7 @@ private:
     bool             m_hasInitialScreenRect{};
     bool             m_requiresPinDecision{};
     POINT            m_textEditPos{};
+    std::optional<size_t> m_textEditTarget;
     CloseCallback    m_closed;
     ImageActions     m_imageActions;
     ImageEditorCallback m_editor;

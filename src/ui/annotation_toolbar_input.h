@@ -1,12 +1,14 @@
 #pragma once
 #include "ui/toolbar_accessibility.h"
 #include "ui/annotation_toolbar_items.h"
+#include "ui/toolbar_tooltip.h"
 #include <windowsx.h>
 
 namespace nskry {
 class AnnotationToolbarInput {
 public:
     void Update(HWND owner, HWND surface, const std::vector<AnnotationToolbarItem>& controls) {
+        m_tooltip.Reset();
         m_targets.clear();
         std::vector<ToolbarAccessibility::Item> items;
         for (const auto& control : controls) {
@@ -20,6 +22,8 @@ public:
                        std::to_wstring(GetGValue(control.color)) + L", " + std::to_wstring(GetBValue(control.color));
             else if (control.label)
                 name = control.label;
+            if (control.Icon() != EditorIcon::None)
+                m_tooltip.Add(surface, surface, control.rect, name.c_str());
             items.push_back({std::move(name), control.rect, control.selected});
         }
         if (m_focus >= static_cast<int>(m_targets.size())) m_focus = -1;
@@ -31,6 +35,7 @@ public:
     void Clear() {
         m_focus = -1;
         m_targets.clear();
+        m_tooltip.Reset();
         m_accessibility.Detach();
     }
 
@@ -86,6 +91,7 @@ private:
         ::SendMessageW(surface, WM_LBUTTONDOWN, 0, MAKELPARAM(x, y));
     }
 
+    ToolbarTooltip m_tooltip;
     ToolbarAccessibility m_accessibility;
     std::vector<RECT> m_targets;
     int m_focus = -1;

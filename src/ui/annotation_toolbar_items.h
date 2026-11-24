@@ -1,9 +1,10 @@
 #pragma once
-#include "ui/annotation/annotation_engine.h"
+#include "ui/annotation_toolbar_controls.h"
 #include "ui/ui_preferences.h"
+#include "ui/editor_icons.h"
 
 namespace nskry {
-enum class AnnotationAction { SelectTool, Separator, Done, Cancel, Undo, Redo, Width, Color, Copy, Save };
+enum class AnnotationAction { SelectTool, Separator, Done, Cancel, Undo, Redo, Width, Color, Copy, Save, ShapeMenu, MosaicStrength };
 
 struct AnnotationToolbarItem {
     RECT rect{};
@@ -16,14 +17,19 @@ struct AnnotationToolbarItem {
     bool selected = false;
 
     bool IsSeparator() const { return action == AnnotationAction::Separator; }
+    EditorIcon Icon() const {
+        if (action == AnnotationAction::ShapeMenu) return EditorIcon::Shapes;
+        if (action == AnnotationAction::Undo) return EditorIcon::Undo;
+        if (action == AnnotationAction::Redo) return EditorIcon::Redo;
+        return IconForTool(tool);
+    }
 };
 
 inline std::vector<AnnotationToolbarItem> BuildAnnotationToolbarItems(const AnnotationEngine& engine,
                                                                        bool pinDecision, size_t& mainCount) {
     using Action = AnnotationAction;
     std::vector<AnnotationToolbarItem> items{
-        {{}, ToolType::Rect,    Action::SelectTool, UiText(L"Rect", L"矩形")},
-        {{}, ToolType::Ellipse, Action::SelectTool, UiText(L"Oval", L"椭圆")},
+        {{}, ToolType::None,    Action::ShapeMenu, UiText(L"Shapes", L"形状")},
         {{}, ToolType::Arrow,   Action::SelectTool, UiText(L"Arrow", L"箭头")},
         {{}, ToolType::Pen,     Action::SelectTool, UiText(L"Pen", L"画笔")},
         {{}, ToolType::Mosaic,  Action::SelectTool, UiText(L"Mosaic", L"马赛克")},
@@ -40,10 +46,15 @@ inline std::vector<AnnotationToolbarItem> BuildAnnotationToolbarItems(const Anno
         items.push_back({{}, ToolType::None, Action::Save, UiText(L"Save", L"保存")});
     }
     for (auto& item : items)
-        item.selected = item.action == Action::SelectTool && engine.GetTool() == item.tool;
+        item.selected = item.action == Action::ShapeMenu ? IsShapeTool(engine.GetTool())
+            : item.action == Action::SelectTool && engine.GetTool() == item.tool;
 
     mainCount = items.size();
     if (engine.GetTool() == ToolType::None) return items;
+    if (engine.GetTool() == ToolType::Mosaic) {
+        items.push_back({{}, ToolType::None, Action::MosaicStrength, UiText(L"Mosaic strength", L"马赛克强度")});
+        return items;
+    }
 
     constexpr int widths[] = {2, 4, 8};
     constexpr const wchar_t* labels[] = {L"2", L"4", L"8"};
@@ -72,7 +83,10 @@ inline std::vector<int> MeasureAnnotationToolbarItems(HWND window, HFONT font,
     for (const auto& item : items) {
         const int minimum = ::MulDiv(item.IsSeparator() ? 4 : 32, dpi, 96);
         SIZE text{};
-        if (dc && item.label && ::GetTextExtentPoint32W(dc, item.label, static_cast<int>(wcslen(item.label)), &text))
+        if (item.action == AnnotationAction::MosaicStrength)
+            widths.push_back(::MulDiv(kMosaicSliderWidth, dpi, 96));
+        else if (item.Icon() == EditorIcon::None && dc && item.label &&
+                 ::GetTextExtentPoint32W(dc, item.label, static_cast<int>(wcslen(item.label)), &text))
             widths.push_back((std::max)(minimum, static_cast<int>(text.cx) + ::MulDiv(16, dpi, 96)));
         else
             widths.push_back(minimum);

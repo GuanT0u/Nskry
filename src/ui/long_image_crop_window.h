@@ -1,5 +1,6 @@
 #pragma once
 #include "ui/ui_preferences.h"
+#include "ui/toolbar_tooltip.h"
 
 
 #include <functional>
@@ -35,6 +36,7 @@ public:
     HWND Hwnd() const { return m_hwnd; }
 
 private:
+    ToolbarTooltip m_historyTooltip;
     DesktopPalette m_palette = GetDesktopPalette();
     HFONT m_uiFont{};
     int Dip(int value) const;

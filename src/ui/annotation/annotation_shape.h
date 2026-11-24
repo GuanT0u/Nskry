@@ -2,6 +2,8 @@
 
 #include <windows.h>
 #include <vector>
+#include <array>
+#include <memory>
 #include <string>
 #include <cmath>
 #include <algorithm>
@@ -18,7 +20,8 @@ enum class ToolType {
     Arrow,
     Pen,
     Mosaic,
-    Text
+    Text,
+    Line
 };
 
 struct ToolStyle {
@@ -26,29 +29,96 @@ struct ToolStyle {
     int      strokeWidth = 3;                // 2, 4, 8
     bool     filled      = false;
     int      fontSize    = 16;
+    int      mosaicBlockSize = 12;
 };
 
-/// Base class for all vector annotation shapes
+inline RECT AnnotationBounds(POINT a, POINT b) {
+    return {(std::min)(a.x, b.x), (std::min)(a.y, b.y), (std::max)(a.x, b.x), (std::max)(a.y, b.y)};
+}
+
+inline bool NearAnnotationSegment(POINT point, POINT a, POINT b, int tolerance) {
+    const double x = b.x - a.x, y = b.y - a.y;
+    const double length = x * x + y * y;
+    const double t = length ? std::clamp(((point.x - a.x) * x + (point.y - a.y) * y) / length, 0.0, 1.0) : 0;
+    const double dx = point.x - a.x - t * x, dy = point.y - a.y - t * y;
+    return dx * dx + dy * dy <= double(tolerance) * tolerance;
+}
+
 class AnnotationShape {
 public:
     virtual ~AnnotationShape() = default;
     virtual void Draw(Gdiplus::Graphics& g, HDC hdcBase, int baseOffsetX, int baseOffsetY, int baseW, int baseH) = 0;
     virtual std::unique_ptr<AnnotationShape> Clone() const = 0;
+    virtual RECT Bounds() const = 0;
+    virtual void SetBoundsFrom(const AnnotationShape& before, RECT bounds) = 0;
+
+    virtual bool HitTest(POINT point, int tolerance) const {
+        auto bounds = Bounds();
+        ::InflateRect(&bounds, tolerance, tolerance);
+        return ::PtInRect(&bounds, point) != FALSE;
+    }
+
+    virtual std::array<POINT, 4> Handles() const {
+        const auto [left, top, right, bottom] = Bounds();
+        return {{{left, top}, {right, top}, {left, bottom}, {right, bottom}}};
+    }
+    virtual int HandleCount() const { return 4; }
+
+    // Handle -1 moves the entire object. The original geometry is reused for
+    // every drag update so rounding never accumulates.
+    virtual void EditFrom(const AnnotationShape& before, int handle, POINT delta) {
+        auto bounds = before.Bounds();
+        if (handle < 0) {
+            ::OffsetRect(&bounds, delta.x, delta.y);
+        } else {
+            if (handle & 1) bounds.right = (std::max)(bounds.left + 4, bounds.right + delta.x);
+            else bounds.left = (std::min)(bounds.right - 4, bounds.left + delta.x);
+            if (handle & 2) bounds.bottom = (std::max)(bounds.top + 4, bounds.bottom + delta.y);
+            else bounds.top = (std::min)(bounds.bottom - 4, bounds.top + delta.y);
+        }
+        SetBoundsFrom(before, bounds);
+    }
+};
+
+class BoundedAnnotation : public AnnotationShape {
+public:
+    BoundedAnnotation(POINT start, POINT end) : startPt(start), endPt(end) {}
+    RECT Bounds() const override { return AnnotationBounds(startPt, endPt); }
+    void SetBoundsFrom(const AnnotationShape&, RECT bounds) override {
+        startPt = {bounds.left, bounds.top};
+        endPt = {bounds.right, bounds.bottom};
+    }
+    POINT startPt{}, endPt{};
+};
+
+class SegmentAnnotation : public BoundedAnnotation {
+public:
+    using BoundedAnnotation::BoundedAnnotation;
+    bool HitTest(POINT point, int tolerance) const override {
+        return NearAnnotationSegment(point, startPt, endPt, tolerance);
+    }
+    std::array<POINT, 4> Handles() const override { return {{startPt, endPt}}; }
+    int HandleCount() const override { return 2; }
+    void EditFrom(const AnnotationShape& before, int handle, POINT delta) override {
+        const auto& segment = static_cast<const SegmentAnnotation&>(before);
+        startPt = segment.startPt;
+        endPt = segment.endPt;
+        if (handle != 1) { startPt.x += delta.x; startPt.y += delta.y; }
+        if (handle != 0) { endPt.x += delta.x; endPt.y += delta.y; }
+    }
 };
 
 // ============================================================================
 // RectShape
 // ============================================================================
-class RectShape : public AnnotationShape {
+class RectShape : public BoundedAnnotation {
 public:
-    POINT     startPt{};
-    POINT     endPt{};
     COLORREF  color{};
     int       strokeWidth = 3;
     bool      filled = false;
 
     RectShape(POINT start, POINT end, COLORREF col, int width, bool isFilled)
-        : startPt(start), endPt(end), color(col), strokeWidth(width), filled(isFilled) {}
+        : BoundedAnnotation(start, end), color(col), strokeWidth(width), filled(isFilled) {}
 
     void Draw(Gdiplus::Graphics& g, HDC /*hdcBase*/, int /*baseOffsetX*/, int /*baseOffsetY*/, int /*baseW*/, int /*baseH*/) override {
         int x = (std::min)(startPt.x, endPt.x);
@@ -76,16 +146,14 @@ public:
 // ============================================================================
 // EllipseShape
 // ============================================================================
-class EllipseShape : public AnnotationShape {
+class EllipseShape : public BoundedAnnotation {
 public:
-    POINT     startPt{};
-    POINT     endPt{};
     COLORREF  color{};
     int       strokeWidth = 3;
     bool      filled = false;
 
     EllipseShape(POINT start, POINT end, COLORREF col, int width, bool isFilled)
-        : startPt(start), endPt(end), color(col), strokeWidth(width), filled(isFilled) {}
+        : BoundedAnnotation(start, end), color(col), strokeWidth(width), filled(isFilled) {}
 
     void Draw(Gdiplus::Graphics& g, HDC /*hdcBase*/, int /*baseOffsetX*/, int /*baseOffsetY*/, int /*baseW*/, int /*baseH*/) override {
         int x = (std::min)(startPt.x, endPt.x);
@@ -104,6 +172,14 @@ public:
         }
     }
 
+    bool HitTest(POINT point, int tolerance) const override {
+        const auto bounds = Bounds();
+        const double rx = (bounds.right - bounds.left) / 2.0, ry = (bounds.bottom - bounds.top) / 2.0;
+        const double x = point.x - bounds.left - rx, y = point.y - bounds.top - ry;
+        const double nx = x / (rx + tolerance), ny = y / (ry + tolerance);
+        return nx * nx + ny * ny <= 1;
+    }
+
     std::unique_ptr<AnnotationShape> Clone() const override {
         return std::make_unique<EllipseShape>(*this);
     }
@@ -112,15 +188,13 @@ public:
 // ============================================================================
 // ArrowShape
 // ============================================================================
-class ArrowShape : public AnnotationShape {
+class ArrowShape : public SegmentAnnotation {
 public:
-    POINT    startPt{};
-    POINT    endPt{};
     COLORREF color{};
     int      strokeWidth = 3;
 
     ArrowShape(POINT start, POINT end, COLORREF col, int width)
-        : startPt(start), endPt(end), color(col), strokeWidth(width) {}
+        : SegmentAnnotation(start, end), color(col), strokeWidth(width) {}
 
     void Draw(Gdiplus::Graphics& g, HDC /*hdcBase*/, int /*baseOffsetX*/, int /*baseOffsetY*/, int /*baseW*/, int /*baseH*/) override {
         double dx = static_cast<double>(endPt.x - startPt.x);
@@ -209,22 +283,67 @@ public:
         g.DrawLines(&pen, gdiPoints.data(), static_cast<INT>(gdiPoints.size()));
     }
 
+    RECT Bounds() const override {
+        auto bounds = AnnotationBounds(points.front(), points.front());
+        for (const auto point : points) {
+            bounds.left = (std::min)(bounds.left, point.x);
+            bounds.top = (std::min)(bounds.top, point.y);
+            bounds.right = (std::max)(bounds.right, point.x);
+            bounds.bottom = (std::max)(bounds.bottom, point.y);
+        }
+        return bounds;
+    }
+    bool HitTest(POINT point, int tolerance) const override {
+        if (!AnnotationShape::HitTest(point, tolerance + strokeWidth / 2)) return false;
+        for (size_t i = 0; i < points.size(); ++i)
+            if (NearAnnotationSegment(point, points[i ? i - 1 : 0], points[i], tolerance + strokeWidth / 2))
+                return true;
+        return false;
+    }
+    void SetBoundsFrom(const AnnotationShape& before, RECT bounds) override {
+        const auto& original = static_cast<const PenShape&>(before);
+        const auto old = original.Bounds();
+        for (size_t i = 0; i < points.size(); ++i) {
+            const auto p = original.points[i];
+            points[i] = {bounds.left + ::MulDiv(p.x - old.left, bounds.right - bounds.left, (std::max)(1L, old.right - old.left)),
+                         bounds.top + ::MulDiv(p.y - old.top, bounds.bottom - bounds.top, (std::max)(1L, old.bottom - old.top))};
+        }
+    }
+
     std::unique_ptr<AnnotationShape> Clone() const override {
         return std::make_unique<PenShape>(*this);
     }
 };
 
+class LineShape : public SegmentAnnotation {
+public:
+    LineShape(POINT start, POINT end, COLORREF color, int width)
+        : SegmentAnnotation(start, end), m_color(color), m_width(width) {}
+
+    void Draw(Gdiplus::Graphics& graphics, HDC, int, int, int, int) override {
+        Gdiplus::Pen pen(Gdiplus::Color(255, GetRValue(m_color), GetGValue(m_color), GetBValue(m_color)),
+                        static_cast<Gdiplus::REAL>(m_width));
+        pen.SetStartCap(Gdiplus::LineCapRound);
+        pen.SetEndCap(Gdiplus::LineCapRound);
+        graphics.DrawLine(&pen, static_cast<INT>(startPt.x), static_cast<INT>(startPt.y),
+                          static_cast<INT>(endPt.x), static_cast<INT>(endPt.y));
+    }
+    std::unique_ptr<AnnotationShape> Clone() const override { return std::make_unique<LineShape>(*this); }
+
+private:
+    COLORREF m_color{};
+    int m_width{};
+};
+
 // ============================================================================
 // MosaicShape (High performance pixelation)
 // ============================================================================
-class MosaicShape : public AnnotationShape {
+class MosaicShape : public BoundedAnnotation {
 public:
-    POINT startPt{};
-    POINT endPt{};
     int   blockSize = 10; // Pixel block size
 
     MosaicShape(POINT start, POINT end, int block = 10)
-        : startPt(start), endPt(end), blockSize(block) {}
+        : BoundedAnnotation(start, end), blockSize(block) {}
 
     void Draw(Gdiplus::Graphics& g, HDC hdcBase, int baseOffsetX, int baseOffsetY, int baseW, int baseH) override {
         int x = (std::min)(startPt.x, endPt.x);
@@ -257,8 +376,8 @@ public:
                 int curW = (std::min)(bs, (x + w) - curX);
                 int sampleX = baseOffsetX + curX + curW / 2;
                 int sampleY = baseOffsetY + curY + curH / 2;
-                if (sampleX >= baseW) sampleX = baseW - 1;
-                if (sampleY >= baseH) sampleY = baseH - 1;
+                sampleX = std::clamp(sampleX, 0, baseW - 1);
+                sampleY = std::clamp(sampleY, 0, baseH - 1);
 
                 COLORREF c = ::GetPixel(hdcBase, sampleX, sampleY);
                 Gdiplus::SolidBrush brush(Gdiplus::Color(255, GetRValue(c), GetGValue(c), GetBValue(c)));
@@ -300,9 +419,54 @@ public:
         g.DrawString(text.c_str(), -1, &font, origin, &brush);
     }
 
+    RECT Bounds() const override {
+        if (!m_extent.cx || !m_extent.cy) {
+            SIZE extent{fontSize, fontSize + 4};
+            if (HDC dc = ::GetDC(nullptr)) {
+                {
+                    Gdiplus::Graphics graphics(dc);
+                    graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
+                    Gdiplus::Font font(L"Segoe UI", static_cast<Gdiplus::REAL>(fontSize), Gdiplus::FontStyleBold,
+                                       Gdiplus::UnitPixel);
+                    Gdiplus::RectF ink;
+                    if (graphics.MeasureString(text.c_str(), -1, &font, Gdiplus::PointF(0, 0), &ink) == Gdiplus::Ok)
+                        extent = {static_cast<LONG>(std::ceil(ink.Width)) + 1, static_cast<LONG>(std::ceil(ink.Height)) + 1};
+                }
+                ::ReleaseDC(nullptr, dc);
+            }
+            m_extent = extent;
+        }
+        return {pt.x, pt.y, pt.x + m_extent.cx, pt.y + m_extent.cy};
+    }
+    void SetBoundsFrom(const AnnotationShape&, RECT bounds) override { pt = {bounds.left, bounds.top}; }
+
+    void EditFrom(const AnnotationShape& before, int handle, POINT delta) override {
+        const auto& original = static_cast<const TextShape&>(before);
+        pt = original.pt;
+        if (handle < 0) {
+            pt.x += delta.x;
+            pt.y += delta.y;
+            return;
+        }
+        const auto old = original.Bounds();
+        const double horizontal = double(handle & 1 ? delta.x : -delta.x) / (old.right - old.left);
+        const double vertical = double(handle & 2 ? delta.y : -delta.y) / (old.bottom - old.top);
+        const double adjustment = std::abs(horizontal) > std::abs(vertical) ? horizontal : vertical;
+        const int next = int(std::round(std::clamp(original.fontSize * (1.0 + adjustment), 8.0, 256.0)));
+        if (fontSize != next) m_extent = {};
+        fontSize = next;
+        const auto scaled = Bounds();
+        if (!(handle & 1)) pt.x = old.right - (scaled.right - scaled.left);
+        if (!(handle & 2)) pt.y = old.bottom - (scaled.bottom - scaled.top);
+    }
+    void SetText(std::wstring value) { text = std::move(value); m_extent = {}; }
+
     std::unique_ptr<AnnotationShape> Clone() const override {
         return std::make_unique<TextShape>(*this);
     }
+
+private:
+    mutable SIZE m_extent{};
 };
 
 } // namespace nskry

@@ -53,6 +53,7 @@ public:
 private:
     DesktopPalette m_palette = GetDesktopPalette();
     AnnotationToolbarInput m_toolbarInput;
+    MosaicStrengthSlider m_mosaicSlider;
     friend struct MonitorFrameTestAccess;
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
@@ -106,6 +107,7 @@ private:
     void EnterEditMode();
     void FinishEdit(bool apply);
     void CommitTextEdit();
+    void OpenTextEdit(POINT client, POINT image, std::optional<AnnotationEngine::TextTarget> target = {});
     void CreateQuickActions(HWND parent);
     void LayoutQuickActions();
     void ShowQuickActions(bool show);
@@ -120,6 +122,7 @@ private:
 
     void OnLButtonDown(int x, int y);
     void OnMouseMove(int x, int y);
+    POINT AnnotationPoint(POINT client, RECT viewport) const;
     void OnLButtonUp(int x, int y);
 
     std::shared_ptr<D3DDevice>      m_device;
@@ -159,6 +162,7 @@ private:
     bool             m_quickActionsVisible{};
     HWND             m_hTextEdit{};
     POINT            m_textEditPos{};
+    std::optional<size_t> m_textEditTarget;
     HFONT            m_font{};
     HFONT            m_quickFont{};
 

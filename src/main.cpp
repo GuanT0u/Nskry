@@ -658,7 +658,7 @@ static void OnSelectionComplete(nskry::SelectionAction action, nskry::SelectionR
         if (result.bitmap) {
             auto pin = std::make_unique<nskry::PinWindow>(
                 result.bitmap, result.bitmapWidth, result.bitmapHeight, NotifyPinClosed,
-                GetEnabledImageActions(), result.screenRegion, OpenBitmapEditor);
+                GetEnabledImageActions(), result.screenRegion, OpenBitmapEditor, std::move(result.annotationEngine));
             pin->SetVisualSettings(nskry::SettingsManager::Instance().GetUserSettings().visuals);
             if (pin->Show()) g_pins.push_back(std::move(pin));
             else ShowPluginNotification(L"The pin window could not be created.", 3500);

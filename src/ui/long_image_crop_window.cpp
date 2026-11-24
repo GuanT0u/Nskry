@@ -2,6 +2,7 @@
 #include "ui/long_image_crop_window.h"
 #include "ui/precision_loupe.h"
 #include "ui/interaction_visuals.h"
+#include "ui/editor_icons.h"
 #include "ui/ui_preferences.h"
 
 #include <algorithm>
@@ -171,7 +172,8 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
         for (const auto& button : std::vector<std::pair<int, const wchar_t*>>{
             {kCutRowsId, EditorText(L"Cut rows", L"切除行")}, {kCutColumnsId, EditorText(L"Cut columns", L"切除列")}, {kConfirmCutId, EditorText(L"Delete strip", L"删除区段")},
             {kExitCutId, EditorText(L"Cancel cut", L"取消切除")}, {kUndoCutId, EditorText(L"Undo cut", L"撤销切除")}, {kRedoCutId, EditorText(L"Redo cut", L"重做切除")}})
-            if (!::CreateWindowExW(0, L"BUTTON", button.second, WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            if (!::CreateWindowExW(0, L"BUTTON", button.second, WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                    (button.first == kUndoCutId || button.first == kRedoCutId ? BS_OWNERDRAW : BS_PUSHBUTTON),
                 0, 0, 80, 30, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(button.first)),
                 ::GetModuleHandleW(nullptr), nullptr)) return -1;
         m_applyButton = ::CreateWindowExW(0, L"BUTTON", EditorText(L"Open annotation editor", L"打开标注"), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
@@ -197,6 +199,7 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
             !m_copyButton || !m_saveButton ||
             (!m_imageActions.empty() && !m_imageActionButton)) return -1;
         RefreshFont();
+        RefreshLabels();
         LayoutControls();
         return 0;
     case WM_DPICHANGED: {
@@ -218,6 +221,28 @@ LRESULT LongImageCropWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wp, L
             limits->ptMinTrackSize.y = (std::max)(limits->ptMinTrackSize.y, static_cast<LONG>(Dip(360)));
         }
         return 0;
+    }
+    case WM_DRAWITEM: {
+        const auto &item = *reinterpret_cast<const DRAWITEMSTRUCT*>(lp);
+        if (item.CtlID != kUndoCutId && item.CtlID != kRedoCutId) break;
+        const auto fill = [&](COLORREF color) {
+            ::SetDCBrushColor(item.hDC, color);
+            return static_cast<HBRUSH>(::GetStockObject(DC_BRUSH));
+        };
+        const bool pressed = (item.itemState & ODS_SELECTED) != 0;
+        ::FillRect(item.hDC, &item.rcItem, fill(pressed ? m_palette.accent : m_palette.panel));
+        ::FrameRect(item.hDC, &item.rcItem, fill(m_palette.border));
+        const COLORREF foreground = item.itemState & ODS_DISABLED ? m_palette.secondary
+            : pressed ? m_palette.onAccent : m_palette.text;
+        const UINT dpi = ::GetDpiForWindow(hwnd);
+        DrawCenteredEditorIcon(item.hDC, item.rcItem,
+            item.CtlID == kUndoCutId ? EditorIcon::Undo : EditorIcon::Redo, dpi ? dpi : 96, foreground);
+        if ((item.itemState & (ODS_FOCUS | ODS_NOFOCUSRECT)) == ODS_FOCUS) {
+            RECT focus = item.rcItem;
+            ::InflateRect(&focus, -Dip(3), -Dip(3));
+            ::DrawFocusRect(item.hDC, &focus);
+        }
+        return TRUE;
     }
     case WM_PAINT:
         Paint(hwnd);
@@ -491,7 +516,8 @@ void LongImageCropWindow::LayoutControls() {
     const int lowerY = (std::max)(0, static_cast<int>(client.bottom - Dip(44)));
     int cutX = Dip(12);
     for (int id : {kCutRowsId, kCutColumnsId, kConfirmCutId, kExitCutId, kUndoCutId, kRedoCutId}) {
-        const int width = id == kCutColumnsId || id == kConfirmCutId ? 92 : 76;
+        const int width = id == kCutColumnsId || id == kConfirmCutId ? 92
+                        : id == kUndoCutId || id == kRedoCutId ? 36 : 76;
         place(::GetDlgItem(m_hwnd, id), cutX, client.bottom - Dip(124), width);
         cutX += Dip(width + 4);
     }
@@ -521,7 +547,14 @@ void LongImageCropWindow::RefreshLabels() {
         {kZoomOutId, EditorText(L"Zoom -", L"缩小")}, {kZoomInId, EditorText(L"Zoom +", L"放大")},
         {kCopyId, EditorText(L"Copy", L"复制")}, {kSaveId, EditorText(L"Save", L"保存")},
     };
-    for (const auto &[id, label] : labels) ::SetDlgItemTextW(m_hwnd, id, label);
+    m_historyTooltip.Reset();
+    for (const auto &[id, label] : labels) {
+        ::SetDlgItemTextW(m_hwnd, id, label);
+        if (id == kUndoCutId || id == kRedoCutId) {
+            if (const auto button = ::GetDlgItem(m_hwnd, id))
+                m_historyTooltip.Add(m_hwnd, button, {}, label, true);
+        }
+    }
 }
 
 void LongImageCropWindow::SetOcrSelectionMode(bool enabled) {
