@@ -4,6 +4,11 @@
 #include <commctrl.h>
 #include <commdlg.h>
 namespace nskry {
+namespace {
+constexpr int kDefaultShape = 51;
+constexpr int kAnnotationSectionHeight = 76;
+constexpr int kContentHeight = 880 + kAnnotationSectionHeight;
+} // namespace
 InteractionPage::InteractionPage(HWND parent) {
     static std::once_flag once;
     std::call_once(once, [] {
@@ -17,7 +22,9 @@ InteractionPage::InteractionPage(HWND parent) {
     });
     m_hwnd = CreateWindowExW(WS_EX_CONTROLPARENT, L"NskryInteractionPage", L"", WS_CHILD | WS_VSCROLL | WS_CLIPCHILDREN, 0, 0, 10, 10,
                              parent, nullptr, nullptr, this);
+    int offset = 0;
     auto control = [&](const wchar_t *cls, const wchar_t *text, int id, int x, int y, int w, int h, DWORD flags = 0) {
+        y += offset;
         HWND c = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | flags, x, y, w, h, m_hwnd, HMENU(INT_PTR(id)),
                                  nullptr, nullptr);
         SendMessageW(c, WM_SETFONT, WPARAM(GetStockObject(DEFAULT_GUI_FONT)), FALSE);
@@ -35,6 +42,10 @@ InteractionPage::InteractionPage(HWND parent) {
         SendMessageW(c, TBM_SETRANGE, TRUE, MAKELPARAM(min, max));
         control(L"STATIC", L"", id + 100, 544, y, 55, 25);
     };
+    control(L"STATIC", UiText(L"Annotation", L"标注"), 0, 8, 8, 580, 24);
+    control(L"STATIC", UiText(L"Default shape", L"默认形状"), 0, 16, 40, 220, 24);
+    combo(kDefaultShape, 36, {UiText(L"Rectangle", L"矩形"), UiText(L"Ellipse", L"椭圆"), UiText(L"Line", L"直线")});
+    offset = kAnnotationSectionHeight;
     control(L"STATIC", UiText(L"Selection border (display only)", L"选区边线（仅界面显示）"), 0, 8, 8, 580, 24);
     control(L"STATIC", UiText(L"Line style", L"线型"), 0, 16, 40, 220, 24);
     combo(1, 36, {UiText(L"Solid", L"实线"), UiText(L"Dashed", L"虚线")});
@@ -72,6 +83,7 @@ InteractionPage::~InteractionPage() {
 }
 void InteractionPage::Load(InteractionStyle s) {
     m_style = NormalizeInteractionStyle(s);
+    SendDlgItemMessageW(m_hwnd, kDefaultShape, CB_SETCURSEL, static_cast<int>(m_style.defaultShape), 0);
     SendDlgItemMessageW(m_hwnd, 1, CB_SETCURSEL, s.dashed ? 1 : 0, 0);
     for (auto [id, value] : {std::pair{2, s.borderWidth}, {3, s.borderOpacity}, {7, s.cutOpacity}}) {
         SendDlgItemMessageW(m_hwnd, id, TBM_SETPOS, TRUE, value);
@@ -98,6 +110,7 @@ void InteractionPage::Load(InteractionStyle s) {
     }
 }
 InteractionStyle InteractionPage::Value() {
+    m_style.defaultShape = static_cast<DefaultShape>(SendDlgItemMessageW(m_hwnd, kDefaultShape, CB_GETCURSEL, 0, 0));
     m_style.dashed = SendDlgItemMessageW(m_hwnd, 1, CB_GETCURSEL, 0, 0) == 1;
     m_style.borderWidth = int(SendDlgItemMessageW(m_hwnd, 2, TBM_GETPOS, 0, 0));
     m_style.borderOpacity = int(SendDlgItemMessageW(m_hwnd, 3, TBM_GETPOS, 0, 0));
@@ -119,7 +132,7 @@ void InteractionPage::Layout() {
     };
     r.right = ::MulDiv(r.right, 96, units);
     r.bottom = ::MulDiv(r.bottom, 96, units);
-    SCROLLINFO s{sizeof(s), SIF_RANGE | SIF_PAGE | SIF_POS, 0, 879, UINT(r.bottom), m_scroll};
+    SCROLLINFO s{sizeof(s), SIF_RANGE | SIF_PAGE | SIF_POS, 0, kContentHeight - 1, UINT(r.bottom), m_scroll};
     SetScrollInfo(m_hwnd, SB_VERT, &s, TRUE);
     for (auto i : m_items)
         move(i.hwnd, nullptr, i.x, i.y - m_scroll, i.w, i.h, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -131,7 +144,7 @@ void InteractionPage::Scroll(int pos) {
     const int units = dpi ? dpi : 96;
     r.right = ::MulDiv(r.right, 96, units);
     r.bottom = ::MulDiv(r.bottom, 96, units);
-    m_scroll = std::clamp(pos, 0, (std::max)(0, 880 - int(r.bottom)));
+    m_scroll = std::clamp(pos, 0, (std::max)(0, kContentHeight - int(r.bottom)));
     Layout();
 }
 LRESULT CALLBACK InteractionPage::Proc(HWND w, UINT m, WPARAM p, LPARAM l) {

@@ -476,10 +476,12 @@ std::vector<PluginToolbarAction> PluginManager::GetEnabledToolbarActions(LANGID 
     for (const PluginRecord *record : m_registry->GetAll()) {
         if (record->enabled && record->manifest.toolbarAction && record->manifest.IsCompatibleWithHost()) {
             const auto &manifest = record->manifest;
-            const bool useChinese = PRIMARYLANGID(language) == LANG_CHINESE && !manifest.toolbarLabelZhCn.empty();
-            actions.push_back({manifest.id, useChinese ? manifest.toolbarLabelZhCn : manifest.name});
-            for (const auto &a : record->manifest.captureActions)
-                actions.push_back({record->manifest.id, a.label, a.id});
+            const bool chinese = PRIMARYLANGID(language) == LANG_CHINESE;
+            actions.push_back({manifest.id, chinese && !manifest.toolbarLabelZhCn.empty() ? manifest.toolbarLabelZhCn : manifest.name,
+                               {}, manifest.toolbarIcon});
+            for (const auto &action : manifest.captureActions)
+                actions.push_back({manifest.id, chinese && !action.labelZhCn.empty() ? action.labelZhCn : action.label,
+                                   action.id, action.icon});
         }
     }
     return actions;

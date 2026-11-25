@@ -51,6 +51,11 @@ int wmain(int argc, wchar_t **argv) {
     if (rows.size() != 3 || !rows[1].pluginCommand || !rows[2].pluginCommand ||
         rows[1].kind != nskry::input::Kind::Global || GetModuleHandleW(dll.filename().c_str()))
         return 6;
+    const auto actions = manager.GetEnabledToolbarActions(MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED));
+    if (actions.size() != 2 || !actions[0].actionId.empty() || actions[1].actionId != L"gif" ||
+        actions[0].icon.empty() || actions[1].icon.empty() || actions[1].label != L"\u5f55\u5236 GIF" ||
+        manager.IsLoaded(manifest.id))
+        return 14;
     if (manager.ExecuteCommand(manifest.id, L"stop", error) || manager.IsLoaded(manifest.id))
         return 7;
     // Required optional service absent: reject cleanly without init/capture.
@@ -66,9 +71,7 @@ int wmain(int argc, wchar_t **argv) {
         return 10;
     if (manager.ExecuteCommand(manifest.id, L"pause_resume", error) || error.empty() || captureCalls)
         return 13;
-    const auto actions = manager.GetEnabledToolbarActions();
-    if (actions.size() != 2 || !actions[0].actionId.empty() || actions[1].actionId != L"gif" ||
-        !manifest.settingsUiApi || manifest.captureApi != 2)
+    if (!manifest.settingsUiApi || manifest.captureApi != 2)
         return 14;
     if (manager.ExecutePlugin(manifest.id, context, L"undeclared")) return 15;
     if (!manager.ShowPluginSettings(manifest.id, nullptr) || captureCalls) return 16;

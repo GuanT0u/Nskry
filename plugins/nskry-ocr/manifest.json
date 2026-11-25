@@ -3,6 +3,7 @@
   "id": "nskry-ocr",
   "name": "Text recognition",
   "toolbar_label_zh_cn": "文字识别",
+  "toolbar_icon": [[[2,5],[2,2],[5,2]],[[11,2],[14,2],[14,5]],[[2,11],[2,14],[5,14]],[[11,14],[14,14],[14,11]],[[5,6],[11,6]],[[5,8],[11,8]],[[5,10],[9,10]]],
   "version": "0.6.6",
   "author": "Nskry Team",
   "description": "On-demand offline Chinese and English text recognition, with a lightweight Windows OCR option.",

@@ -128,6 +128,10 @@ bool SettingsManager::Load() {
     if(const auto* v=root.Find(L"interaction")) {
         if(!v->IsObject())return false;
         int borderColor=int(m_interaction.borderColor), cutColor=int(m_interaction.cutColor);
+        std::wstring shape;
+        if (v->GetString(L"default_shape", shape))
+            m_interaction.defaultShape = shape == L"ellipse" ? DefaultShape::Ellipse
+                : shape == L"line" ? DefaultShape::Line : DefaultShape::Rectangle;
         if(!ReadOptionalBool(*v,L"dashed",m_interaction.dashed) || !ReadOptionalBool(*v,L"cut_edges",m_interaction.cutEdges) ||
             !ReadVisualInt(*v,L"border_width",m_interaction.borderWidth,6) ||
             !ReadVisualInt(*v,L"border_opacity",m_interaction.borderOpacity,100) ||
@@ -177,6 +181,8 @@ bool SettingsManager::Save() const {
            << L"    \"corner_radius\": " << m_visuals.cornerRadius << L",\n"
            << L"    \"corner_percent\": " << m_visuals.cornerPercent << L"\n  },\n"
            << L"  \"interaction\": {\n"
+           << L"    \"default_shape\": \"" << (m_interaction.defaultShape == DefaultShape::Ellipse ? L"ellipse"
+                    : m_interaction.defaultShape == DefaultShape::Line ? L"line" : L"rectangle") << L"\",\n"
            << L"    \"dashed\": " << (m_interaction.dashed?L"true":L"false") << L",\n"
            << L"    \"border_width\": " << m_interaction.borderWidth << L",\n"
            << L"    \"border_opacity\": " << m_interaction.borderOpacity << L",\n"

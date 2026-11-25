@@ -111,9 +111,22 @@ inline void DrawEditorIcon(HDC dc, EditorIcon icon, int x, int y, int size, COLO
     }
 }
 
-inline void DrawCenteredEditorIcon(HDC dc, const RECT& bounds, EditorIcon icon, UINT dpi, COLORREF color) {
+inline void DrawCenteredEditorIcon(HDC dc, const RECT& bounds, EditorIcon icon, UINT dpi,
+                                   COLORREF color, bool dropdown = false) {
     const int size = ::MulDiv(16, dpi, 96);
-    DrawEditorIcon(dc, icon, bounds.left + (bounds.right - bounds.left - size) / 2,
-                   bounds.top + (bounds.bottom - bounds.top - size) / 2, size, color);
+    const int left = bounds.left + (bounds.right - bounds.left - size) / 2;
+    const int top = bounds.top + (bounds.bottom - bounds.top - size) / 2;
+    const int offset = dropdown ? ::MulDiv(4, dpi, 96) : 0;
+    DrawEditorIcon(dc, icon, left - offset, top, size, color);
+    if (dropdown) {
+        Gdiplus::Graphics graphics(dc);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        const auto x = static_cast<Gdiplus::REAL>(left + size - offset);
+        const auto y = static_cast<Gdiplus::REAL>(top + size / 2);
+        const float step = size / 8.0f;
+        Gdiplus::Pen pen(Gdiplus::Color(255, GetRValue(color), GetGValue(color), GetBValue(color)), size / 12.0f);
+        const Gdiplus::PointF points[] = {{x, y - step}, {x + step, y}, {x + 2 * step, y - step}};
+        graphics.DrawLines(&pen, points, 3);
+    }
 }
 } // namespace nskry

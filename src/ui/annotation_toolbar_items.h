@@ -4,7 +4,7 @@
 #include "ui/editor_icons.h"
 
 namespace nskry {
-enum class AnnotationAction { SelectTool, Separator, Done, Cancel, Undo, Redo, Width, Color, Copy, Save, ShapeMenu, MosaicStrength };
+enum class AnnotationAction { SelectTool, Separator, Done, Cancel, Undo, Redo, Width, Color, Copy, Save, ToggleShapes, ShapeMenu, MosaicStrength };
 
 struct AnnotationToolbarItem {
     RECT rect{};
@@ -18,7 +18,7 @@ struct AnnotationToolbarItem {
 
     bool IsSeparator() const { return action == AnnotationAction::Separator; }
     EditorIcon Icon() const {
-        if (action == AnnotationAction::ShapeMenu) return EditorIcon::Shapes;
+        if (action == AnnotationAction::ToggleShapes) return EditorIcon::Shapes;
         if (action == AnnotationAction::Undo) return EditorIcon::Undo;
         if (action == AnnotationAction::Redo) return EditorIcon::Redo;
         return IconForTool(tool);
@@ -29,7 +29,7 @@ inline std::vector<AnnotationToolbarItem> BuildAnnotationToolbarItems(const Anno
                                                                        bool pinDecision, size_t& mainCount) {
     using Action = AnnotationAction;
     std::vector<AnnotationToolbarItem> items{
-        {{}, ToolType::None,    Action::ShapeMenu, UiText(L"Shapes", L"形状")},
+        {{}, ToolType::None,    Action::ToggleShapes, UiText(L"Shapes", L"形状")},
         {{}, ToolType::Arrow,   Action::SelectTool, UiText(L"Arrow", L"箭头")},
         {{}, ToolType::Pen,     Action::SelectTool, UiText(L"Pen", L"画笔")},
         {{}, ToolType::Mosaic,  Action::SelectTool, UiText(L"Mosaic", L"马赛克")},
@@ -46,7 +46,7 @@ inline std::vector<AnnotationToolbarItem> BuildAnnotationToolbarItems(const Anno
         items.push_back({{}, ToolType::None, Action::Save, UiText(L"Save", L"保存")});
     }
     for (auto& item : items)
-        item.selected = item.action == Action::ShapeMenu ? IsShapeTool(engine.GetTool())
+        item.selected = item.action == Action::ToggleShapes ? IsShapeTool(engine.GetTool())
             : item.action == Action::SelectTool && engine.GetTool() == item.tool;
 
     mainCount = items.size();
@@ -63,6 +63,8 @@ inline std::vector<AnnotationToolbarItem> BuildAnnotationToolbarItems(const Anno
         item.selected = engine.GetStrokeWidth() == widths[i];
         items.push_back(item);
     }
+    if (IsShapeTool(engine.GetTool()))
+        items.push_back({{}, engine.GetTool(), Action::ShapeMenu, ChangeShapeLabel(engine.GetTool())});
     constexpr COLORREF colors[] = {RGB(255,59,48), RGB(255,149,0), RGB(255,204,0), RGB(52,199,89),
                                    RGB(0,122,255), RGB(175,82,222), RGB(240,240,245), RGB(30,30,35)};
     for (COLORREF color : colors) {

@@ -9,6 +9,24 @@ inline bool IsShapeTool(ToolType tool) {
     return tool == ToolType::Rect || tool == ToolType::Ellipse || tool == ToolType::Line;
 }
 
+inline void ToggleShapeTool(AnnotationEngine& engine) {
+    if (IsShapeTool(engine.GetTool())) {
+        engine.SetTool(ToolType::None);
+        return;
+    }
+    const auto shape = SettingsManager::Instance().Interaction().defaultShape;
+    engine.SetTool(shape == DefaultShape::Ellipse ? ToolType::Ellipse
+        : shape == DefaultShape::Line ? ToolType::Line : ToolType::Rect);
+}
+
+inline const wchar_t* ChangeShapeLabel(ToolType shape) {
+    switch (shape) {
+    case ToolType::Ellipse: return UiText(L"Change shape (Ellipse)", L"切换形状（椭圆）");
+    case ToolType::Line: return UiText(L"Change shape (Line)", L"切换形状（直线）");
+    default: return UiText(L"Change shape (Rectangle)", L"切换形状（矩形）");
+    }
+}
+
 inline std::optional<ToolType> ChooseAnnotationShape(HWND owner, HWND surface, RECT bounds, ToolType current) {
     const auto menu = ::CreatePopupMenu();
     if (!menu) return std::nullopt;

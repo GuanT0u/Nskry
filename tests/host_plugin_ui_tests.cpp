@@ -210,9 +210,29 @@ struct SelectionWindowTestAccess {
         window.OnLButtonUp(180, 170);
         using ItemType = SelectionWindow::ToolbarItemType;
         const auto& items = window.m_toolbarItems;
-        if (std::count_if(items.begin(), items.end(), [](const auto& item) { return item.type == ItemType::ShapeMenu; }) != 1 ||
-            std::any_of(items.begin(), items.end(), [](const auto& item) { return IsShapeTool(item.tool); }))
+        const auto shapes = [&] {
+            return std::find_if(items.begin(), items.end(), [](const auto& item) { return item.type == ItemType::ToggleShapes; });
+        };
+        if (shapes() == items.end() ||
+            std::any_of(items.begin(), items.end(), [](const auto& item) { return item.type == ItemType::ShapeMenu; }))
             return false;
+        window.ActivateToolbarItem(*shapes());
+        const auto changeShape = std::find_if(items.begin(), items.end(), [](const auto& item) {
+            return item.type == ItemType::ShapeMenu;
+        });
+        if (window.m_annotationEngine.GetTool() != ToolType::Rect ||
+            changeShape == items.end() || changeShape == items.begin() ||
+            std::prev(changeShape)->type != ItemType::WidthChoice)
+            return false;
+        window.ActivateToolbarItem(*shapes());
+        auto& settings = SettingsManager::Instance();
+        const auto original = settings.GetUserSettings();
+        auto configured = original;
+        configured.interaction.defaultShape = DefaultShape::Ellipse;
+        settings.SetUserSettings(configured);
+        window.ActivateToolbarItem(*shapes());
+        settings.SetUserSettings(original);
+        if (window.m_annotationEngine.GetTool() != ToolType::Ellipse) return false;
         const auto mosaic = std::find_if(items.begin(), items.end(), [](const auto& item) {
             return item.type == ItemType::ToolToggle && item.tool == ToolType::Mosaic;
         });
@@ -530,6 +550,7 @@ int wmain() {
     }
     ok &= Expect(manager.Load(),"future configuration fields do not block known settings");
     auto stored = manager.GetUserSettings(); stored.hideMonitorOnSourceFocus = true;
+    stored.interaction.defaultShape = DefaultShape::Line;
     stored.language = L"zh-CN";
     stored.visuals.shadowEnabled = true; stored.visuals.cornersEnabled = true;
     stored.visuals.cornerMode = CornerMode::Percent; stored.visuals.cornerPercent = 11;
@@ -591,13 +612,19 @@ int wmain() {
     HWND window = OwnWindow(L"NskrySettings");
     ok &= Expect(window != nullptr, "settings created");
     HWND tabs = GetDlgItem(window, 100);
+    const auto interaction = ::FindWindowExW(window, nullptr, L"NskryInteractionPage", nullptr);
+    const auto shapeControl = ::GetDlgItem(interaction, 51);
+    ok &= Expect(shapeControl && ::SendMessageW(shapeControl, CB_GETCURSEL, 0, 0) == static_cast<int>(DefaultShape::Line),
+                 "annotation settings show the stored default shape");
+    ::SendMessageW(shapeControl, CB_SETCURSEL, static_cast<int>(DefaultShape::Ellipse), 0);
     HWND language = GetDlgItem(window, 105);
     SendMessageW(language, CB_SETCURSEL, 2, 0);
     SendMessageW(window, WM_COMMAND, MAKEWPARAM(105, CBN_SELCHANGE), LPARAM(language));
     ok &= Expect(IsWindowEnabled(GetDlgItem(window, 130)), "changing language marks settings dirty");
     SendMessageW(window, WM_COMMAND, 130, LPARAM(GetDlgItem(window, 130)));
     ok &= Expect(manager.GetUserSettings().language == L"en" && Text(window) == L"Nskry Settings" &&
-                 !IsWindowEnabled(GetDlgItem(window, 130)), "applying language refreshes active controls and clears the draft");
+                 manager.GetUserSettings().interaction.defaultShape == DefaultShape::Ellipse &&
+                 !IsWindowEnabled(GetDlgItem(window, 130)), "applying saves the default shape and refreshes language");
     tabs = GetDlgItem(window, 100);
     TabCtrl_SetCurSel(tabs, 4);
     NMHDR effects{tabs, 100, TCN_SELCHANGE}; SendMessageW(window, WM_NOTIFY, 100, reinterpret_cast<LPARAM>(&effects));

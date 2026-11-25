@@ -3,6 +3,7 @@
 #include "ui/precision_loupe.h"
 #include "ui/interaction_visuals.h"
 #include "ui/toolbar_layout.h"
+#include "ui/plugin_toolbar_icon.h"
 #include "ui/ui_preferences.h"
 #include <windowsx.h>
 #include <oleacc.h>
@@ -593,6 +594,12 @@ void SelectionWindow::ActivateToolbarItem(ToolbarItem item) {
         FinishWithAction(SelectionAction::Plugin, item.pluginId, item.pluginActionId);
         return;
 
+    case ToolbarItemType::ToggleShapes:
+        ToggleShapeTool(m_annotationEngine);
+        BuildToolbar(m_finalRect);
+        ::InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+
     case ToolbarItemType::ShapeMenu: {
         m_toolbarTooltip.Hide();
         const auto shape = ChooseAnnotationShape(m_hwnd, m_hwnd, item.rect, m_annotationEngine.GetTool());
@@ -737,7 +744,7 @@ void SelectionWindow::BuildToolbar(RECT selRect) {
     struct Candidate { ToolbarItem item; int width; int priority; bool visible = true; };
     std::vector<Candidate> items;
     const auto add = [&](ToolbarItem item, int priority) {
-        const int width = item.Icon() == EditorIcon::None ? measure(item.label) : dip(32);
+        const int width = item.Icon() != EditorIcon::None || item.pluginIcon ? dip(32) : measure(item.label);
         items.push_back({std::move(item), width, priority});
     };
     const auto tool = [&](ToolType type, const wchar_t *en, const wchar_t *zh) {
@@ -750,7 +757,7 @@ void SelectionWindow::BuildToolbar(RECT selRect) {
         add(std::move(item), priority);
     };
     ToolbarItem shapes;
-    shapes.type = ToolbarItemType::ShapeMenu;
+    shapes.type = ToolbarItemType::ToggleShapes;
     shapes.label = chinese ? L"形状" : L"Shapes";
     shapes.selected = IsShapeTool(m_annotationEngine.GetTool());
     add(std::move(shapes), 0);
@@ -782,6 +789,7 @@ void SelectionWindow::BuildToolbar(RECT selRect) {
         item.label = action.label;
         item.pluginId = action.id;
         item.pluginActionId = action.actionId;
+        if (!action.icon.empty()) item.pluginIcon = &action.icon;
         add(std::move(item), 4);
     }
 
@@ -848,6 +856,13 @@ void SelectionWindow::BuildToolbar(RECT selRect) {
             item.selected = m_annotationEngine.GetStrokeWidth() == width;
             place(std::move(item), dip(32));
         }
+        if (IsShapeTool(m_annotationEngine.GetTool())) {
+            ToolbarItem item;
+            item.type = ToolbarItemType::ShapeMenu;
+            item.tool = m_annotationEngine.GetTool();
+            item.label = ChangeShapeLabel(item.tool);
+            place(std::move(item), dip(32));
+        }
         COLORREF colors[] = {
             RGB(255, 59, 48),   // Red
             RGB(255, 149, 0),  // Orange
@@ -873,7 +888,7 @@ void SelectionWindow::BuildToolbar(RECT selRect) {
     if (restoreFocus) {
         const auto match = std::find_if(m_toolbarItems.begin(), m_toolbarItems.end(), [&](const ToolbarItem &item) {
             return !item.isSeparator && item.type == focused.type && item.action == focused.action &&
-                   item.tool == focused.tool && item.pluginId == focused.pluginId &&
+                   (item.type == ToolbarItemType::ShapeMenu || item.tool == focused.tool) && item.pluginId == focused.pluginId &&
                    item.pluginActionId == focused.pluginActionId && item.widthVal == focused.widthVal &&
                    item.color == focused.color;
         });
@@ -900,7 +915,7 @@ void SelectionWindow::UpdateAccessibleToolbar() {
                 name = UiText(L"Color · ", L"颜色 · ") +
                     std::to_wstring(GetRValue(item.color)) + L", " +
                     std::to_wstring(GetGValue(item.color)) + L", " + std::to_wstring(GetBValue(item.color));
-            if (item.Icon() != EditorIcon::None)
+            if (item.Icon() != EditorIcon::None || item.pluginIcon)
                 m_toolbarTooltip.Add(m_hwnd, m_hwnd, item.rect, name.c_str());
             items.push_back({std::move(name), item.rect, item.selected});
         }
@@ -994,8 +1009,10 @@ void SelectionWindow::DrawToolbar(HDC hdc) {
             HFONT oldFont = static_cast<HFONT>(::SelectObject(hdc, m_font));
 
             const auto foreground = primary ? palette.onAccent : palette.text;
-            if (item.Icon() != EditorIcon::None)
-                DrawCenteredEditorIcon(hdc, item.rect, item.Icon(), m_toolbarDpi, foreground);
+            if (item.pluginIcon)
+                DrawPluginToolbarIcon(hdc, item.rect, *item.pluginIcon, m_toolbarDpi, palette.text);
+            else if (item.Icon() != EditorIcon::None)
+                DrawCenteredEditorIcon(hdc, item.rect, item.Icon(), m_toolbarDpi, foreground, item.type == ToolbarItemType::ShapeMenu);
             else if (item.type == ToolbarItemType::MosaicStrength)
                 MosaicStrengthSlider::DrawLabel(hdc, item.rect, m_toolbarDpi, foreground);
             else {

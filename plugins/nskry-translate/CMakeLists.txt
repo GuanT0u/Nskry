@@ -41,9 +41,9 @@ set_target_properties(nskry_translate PROPERTIES OUTPUT_NAME "nskry-translate"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/package")
 file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/package/image-model.txt"
     CONTENT "$<BOOL:${NSKRY_OCR_MODEL_ENGINE}>\n")
+configure_file(manifest.json "${CMAKE_CURRENT_BINARY_DIR}/package/manifest.json" COPYONLY)
 add_custom_command(TARGET nskry_translate POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/manifest.json"
-        "${CMAKE_CURRENT_SOURCE_DIR}/README.md" "${CMAKE_CURRENT_SOURCE_DIR}/ONLINE_ENGINES.md" "${CMAKE_SOURCE_DIR}/LICENSE"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/README.md" "${CMAKE_CURRENT_SOURCE_DIR}/ONLINE_ENGINES.md" "${CMAKE_SOURCE_DIR}/LICENSE"
         "${CMAKE_SOURCE_DIR}/COPYING" "${CMAKE_SOURCE_DIR}/PLUGIN_EXCEPTION"
         "$<TARGET_FILE_DIR:nskry_translate>"
     VERBATIM)

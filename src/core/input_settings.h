@@ -95,7 +95,10 @@ struct CursorChoice {
     std::wstring file;
     bool operator==(const CursorChoice &) const = default;
 };
+enum class DefaultShape { Rectangle, Ellipse, Line };
+
 struct InteractionStyle {
+    DefaultShape defaultShape = DefaultShape::Rectangle;
     bool dashed = false;
     int borderWidth = 2, borderOpacity = 100;
     COLORREF borderColor = RGB(20, 150, 255);
@@ -110,6 +113,8 @@ struct InteractionStyle {
     bool operator==(const InteractionStyle &) const = default;
 };
 inline InteractionStyle NormalizeInteractionStyle(InteractionStyle s) {
+    if (s.defaultShape != DefaultShape::Ellipse && s.defaultShape != DefaultShape::Line)
+        s.defaultShape = DefaultShape::Rectangle;
     s.borderWidth = std::clamp(s.borderWidth, 1, 6);
     s.borderOpacity = std::clamp(s.borderOpacity, 0, 100);
     s.cutStyle = std::clamp(s.cutStyle, 0, 3);

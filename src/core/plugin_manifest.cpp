@@ -13,6 +13,30 @@ bool OptionalString(const json::Value& object, std::wstring_view key, std::wstri
     return object.GetString(key, value);
 }
 
+PluginToolbarIcon ReadToolbarIcon(const json::Value& object) {
+    const auto* member = object.Find(L"toolbar_icon");
+    const auto* strokes = member ? member->AsArray() : nullptr;
+    if (!strokes || strokes->empty() || strokes->size() > 12) return {};
+    PluginToolbarIcon icon;
+    for (const auto& stroke : *strokes) {
+        const auto* points = stroke.AsArray();
+        if (!points || points->size() < 2 || points->size() > kMaxPluginIconStrokePoints) return {};
+        auto& result = icon.emplace_back();
+        for (const auto& point : *points) {
+            const auto* pair = point.AsArray();
+            if (!pair || pair->size() != 2) return {};
+            const auto* x = (*pair)[0].AsNumber();
+            const auto* y = (*pair)[1].AsNumber();
+            if (!x || !y || *x < 1 || *x > 15 || *y < 1 || *y > 15) return {};
+            result.push_back({static_cast<float>(*x), static_cast<float>(*y)});
+        }
+        if (std::none_of(result.begin() + 1, result.end(), [&](const auto& point) {
+            return point.x != result.front().x || point.y != result.front().y;
+        })) return {};
+    }
+    return icon;
+}
+
 void SetError(std::wstring* error, const wchar_t* message) {
     if (error) *error = message;
 }
@@ -39,6 +63,7 @@ bool PluginManifest::LoadFromFile(const std::wstring& path, PluginManifest& mani
     result.manifestVersion = static_cast<int>(manifestVersion);
     // Optional display metadata can fall back to the manifest name.
     root.GetString(L"toolbar_label_zh_cn", result.toolbarLabelZhCn);
+    result.toolbarIcon = ReadToolbarIcon(root);
     if (const auto *extensions = root.Find(L"extensions")) {
         if (!extensions->IsObject() ||
             (extensions->Find(L"image_recognition") &&
@@ -77,6 +102,9 @@ bool PluginManifest::LoadFromFile(const std::wstring& path, PluginManifest& mani
                 SetError(error, L"Invalid or duplicate capture action.");
                 return false;
             }
+            item.GetString(L"label_zh_cn", action.labelZhCn);
+            if (action.labelZhCn.size() > 40) action.labelZhCn.clear();
+            action.icon = ReadToolbarIcon(item);
             result.captureActions.push_back(std::move(action));
         }
     }

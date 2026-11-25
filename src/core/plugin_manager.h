@@ -45,6 +45,7 @@ struct PluginToolbarAction {
     std::wstring id;
     std::wstring label;
     std::wstring actionId;
+    PluginToolbarIcon icon;
 };
 struct PluginImageAction {
     std::wstring id;

@@ -3,6 +3,7 @@
   "id": "nskry-scroll",
   "name": "Long Screenshot",
   "toolbar_label_zh_cn": "长截图",
+  "toolbar_icon": [[[6,2],[3,2],[3,14],[6,14]],[[10,2],[13,2],[13,14],[10,14]],[[8,4],[8,12]],[[6,6],[8,4],[10,6]],[[6,10],[8,12],[10,10]]],
   "version": "0.6.0",
   "author": "Nskry Team",
   "description": "Vertical and horizontal scrolling capture with manual/automatic modes and live preview.",

@@ -908,7 +908,7 @@ void PinWindow::DrawPinToolbar(HDC hdc, int /*clientW*/, int /*clientH*/) {
             HFONT oldFont = static_cast<HFONT>(::SelectObject(hdc, m_font));
             const auto foreground = item.selected || primary ? palette.onAccent : palette.text;
             if (item.Icon() != EditorIcon::None)
-                DrawCenteredEditorIcon(hdc, item.rect, item.Icon(), dpi, foreground);
+                DrawCenteredEditorIcon(hdc, item.rect, item.Icon(), dpi, foreground, item.action == AnnotationAction::ShapeMenu);
             else if (item.action == AnnotationAction::MosaicStrength)
                 MosaicStrengthSlider::DrawLabel(hdc, item.rect, dpi, foreground);
             else {
@@ -992,6 +992,14 @@ void PinWindow::OnLButtonDown(int x, int y) {
 
             if (item.action == AnnotationAction::MosaicStrength) {
                 m_mosaicSlider.Focus();
+                return;
+            }
+
+            if (item.action == AnnotationAction::ToggleShapes) {
+                ToggleShapeTool(m_annotationEngine);
+                RECT rc{}; ::GetClientRect(m_hwnd, &rc);
+                BuildPinToolbar(rc.right, rc.bottom);
+                ::InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
 

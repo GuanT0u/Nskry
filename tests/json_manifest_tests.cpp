@@ -101,13 +101,21 @@ bool TestSemVerDoesNotOverflow() {
 bool TestManifestDependencyContract() {
     wchar_t directory[MAX_PATH]{}, path[MAX_PATH]{};
     if (!GetTempPathW(MAX_PATH, directory) || !GetTempFileNameW(directory, L"nsk", 0, path)) return false;
-    const auto load = [&](const std::string& extra) {
+    const auto load = [&](const std::string& extra, nskry::PluginManifest* parsed = nullptr) {
         const std::string text = R"({"manifest_version":1,"id":"org.test","name":"Test","version":"1.0.0","runtime":{"entry":"test.dll","architecture":"x64","api_version":2})" + extra + "}";
         { std::ofstream file(path, std::ios::binary | std::ios::trunc); file << text; }
         nskry::PluginManifest manifest;
-        return nskry::PluginManifest::LoadFromFile(path, manifest);
+        return nskry::PluginManifest::LoadFromFile(path, parsed ? *parsed : manifest);
     };
     bool ok = Expect(load(""), "minimal API 2 manifest accepted");
+    nskry::PluginManifest iconManifest;
+    ok &= Expect(load(R"(,"toolbar_icon":[[[2,2],[7.5,3]],[[5,5],[13,14]]])", &iconManifest) &&
+                 iconManifest.toolbarIcon.size() == 2 && iconManifest.toolbarIcon[0][1].x == 7.5f,
+                 "valid plugin icon strokes are read from the manifest");
+    ok &= Expect(load(R"(,"toolbar_icon":[[[2,2],[1000,3]]])", &iconManifest) && iconManifest.toolbarIcon.empty(),
+                 "out-of-range plugin icon falls back to label without rejecting the plugin");
+    ok &= Expect(load(R"(,"toolbar_icon":"<svg/>")", &iconManifest) && iconManifest.toolbarIcon.empty(),
+                 "the toolbar accepts bounded geometry instead of markup");
     ok &= Expect(load(",\"requires_plugins\":[]"), "empty prerequisites accepted");
     ok &= Expect(load(R"(,"extensions":{"commands":1,"region_capture":1},"shortcuts":[{"id":"stop","label":"Stop","scope":"command","default":"Ctrl+Alt+R"}])"),"optional versioned command/capture metadata accepted");
     ok &= Expect(!load(R"(,"extensions":{"commands":2})"),"unknown command version rejected before DLL load");

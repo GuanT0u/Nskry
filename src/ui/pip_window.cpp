@@ -1278,6 +1278,14 @@ LRESULT PipWindow::HandleToolbarMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
                     return 0;
                 }
 
+                if (item.action == AnnotationAction::ToggleShapes) {
+                    ToggleShapeTool(m_annotationEngine);
+                    RECT rc{}; ::GetClientRect(m_hwnd, &rc);
+                    BuildToolbar(rc.right, rc.bottom);
+                    UpdateOverlayFromEngine();
+                    return 0;
+                }
+
                 if (item.action == AnnotationAction::ShapeMenu) {
                     const auto shape = ChooseAnnotationShape(m_hwnd, hwnd, item.rect, m_annotationEngine.GetTool());
                     if (shape) {
@@ -1444,7 +1452,7 @@ void PipWindow::DrawToolbar(HDC hdc, int clientW, int clientH) {
             HFONT oldFont = static_cast<HFONT>(::SelectObject(hdc, m_font));
             const auto foreground = item.selected || primary ? palette.onAccent : palette.text;
             if (item.Icon() != EditorIcon::None)
-                DrawCenteredEditorIcon(hdc, item.rect, item.Icon(), dpi, foreground);
+                DrawCenteredEditorIcon(hdc, item.rect, item.Icon(), dpi, foreground, item.action == AnnotationAction::ShapeMenu);
             else if (item.action == AnnotationAction::MosaicStrength)
                 MosaicStrengthSlider::DrawLabel(hdc, item.rect, dpi, foreground);
             else {

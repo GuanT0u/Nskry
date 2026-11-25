@@ -111,6 +111,7 @@ private:
     enum class ToolbarItemType {
         Action,        // Copy, Save, Pin, PiP
         ToolToggle,    // Arrow, Pen, Mosaic, Text
+        ToggleShapes,
         ShapeMenu,
         MosaicStrength,
         Undo,
@@ -131,13 +132,14 @@ private:
         std::wstring    label;
         std::wstring    pluginId;
         std::wstring    pluginActionId;
+        const PluginToolbarIcon* pluginIcon = nullptr;
         bool            hovered  = false;
         bool            selected = false;
         int             group = 0;
         bool            isSeparator = false;
 
         EditorIcon Icon() const {
-            if (type == ToolbarItemType::ShapeMenu) return EditorIcon::Shapes;
+            if (type == ToolbarItemType::ToggleShapes) return EditorIcon::Shapes;
             if (type == ToolbarItemType::Undo) return EditorIcon::Undo;
             if (type == ToolbarItemType::Redo) return EditorIcon::Redo;
             if (type == ToolbarItemType::Action) {
