@@ -1,7 +1,8 @@
-# Optional online engines — 0.3.0
+# Online engines
 
-First run defaults to Offline. The engine dropdown remembers an explicit user
-selection; reopening never bypasses upload confirmation. There is no automatic
+The online-only package asks you to choose an engine on first use. The package
+with an offline runtime defaults to Offline. The engine dropdown remembers an
+explicit selection; reopening never bypasses upload confirmation. There is no automatic
 fallback, retry, endpoint discovery, key acquisition or startup connection.
 All engines currently expose Chinese/English directions, not universal detection.
 

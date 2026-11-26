@@ -1,4 +1,5 @@
 #include "online_translation.h"
+#include "nskry_ui_preferences.h"
 #include "core/json.h"
 #include "translation_http.h"
 #include "translation_policy.h"
@@ -49,7 +50,8 @@ std::wstring ValidateEndpoint(std::wstring_view endpoint) {
     if (endpoint.empty() || endpoint.size() > 8192 || endpoint.find(L'#') != endpoint.npos ||
         endpoint.find(L'\\') != endpoint.npos ||
         std::any_of(endpoint.begin(), endpoint.end(), [](wchar_t c) { return c <= 32 || c >= 127; }))
-        return L"Use a complete HTTPS endpoint without spaces, fragments or embedded credentials.";
+        return plugin_ui::Text(L"Enter the complete HTTPS endpoint without spaces, fragments or URL credentials.",
+                               L"请输入完整的 HTTPS 端点，地址中不能含空格、片段或登录凭据。");
     URL_COMPONENTS components{};
     components.dwStructSize = sizeof(components);
     components.dwSchemeLength = components.dwHostNameLength = components.dwUserNameLength =
@@ -57,7 +59,8 @@ std::wstring ValidateEndpoint(std::wstring_view endpoint) {
     if (!WinHttpCrackUrl(endpoint.data(), DWORD(endpoint.size()), 0, &components) ||
         components.nScheme != INTERNET_SCHEME_HTTPS || !components.dwHostNameLength ||
         components.dwUserNameLength || components.dwPasswordLength)
-        return L"Online endpoints must use HTTPS with no username or password in the URL.";
+        return plugin_ui::Text(L"Online endpoints require HTTPS. Remove the username or password from the URL.",
+                               L"在线端点必须使用 HTTPS。请移除地址中的用户名或密码。");
     return {};
 }
 
@@ -71,15 +74,17 @@ std::wstring ValidateOnlineConfig(Provider provider, const OnlineConfig &config)
     if (!error.empty())
         return error;
     if (config.endpoint.size() > 2048 || config.endpoint.find(L'?') != config.endpoint.npos)
-        return L"Configure the full API endpoint path, without query parameters or API keys in the URL.";
+        return plugin_ui::Text(L"Enter the full API path. Put any API key in its own field.",
+                               L"请输入完整 API 路径。请将 API 密钥填入专用字段，并移除地址中的查询参数。");
     if (provider == Provider::OpenAI &&
         (config.model.empty() || config.model.size() > 160 ||
          std::any_of(config.model.begin(), config.model.end(), [](wchar_t c) { return c < 33 || c == 127; })))
-        return L"Enter the model ID supported by your OpenAI-compatible provider (maximum 160 characters).";
+        return plugin_ui::Text(L"Enter a model ID supported by your OpenAI-compatible provider (up to 160 characters).",
+                               L"请输入服务支持的模型 ID，最多 160 个字符。");
     if (config.key.size() > 4096 ||
         std::any_of(config.key.begin(), config.key.end(), [](wchar_t c) { return c < 33 || c > 126; }))
-        return L"API keys must be printable ASCII without whitespace (maximum 4096 characters); an empty key "
-               L"is allowed.";
+        return plugin_ui::Text(L"Use a printable ASCII API key without spaces, up to 4096 characters, or leave it blank.",
+                               L"API 密钥须为不含空格的可打印 ASCII 字符，最多 4096 个字符，也可以留空。");
     return {};
 }
 
@@ -173,8 +178,9 @@ std::wstring ParseOnlineReply(Provider provider, std::wstring_view json) {
 
 std::vector<std::wstring> SplitFreeOnlineText(std::wstring_view source) {
     if (ValidateText(source) != InputError::None || Utf8(source).size() > 2000)
-        throw std::wstring(L"Free online mode is limited to 2000 UTF-8 bytes per task; select a smaller "
-                           L"region or another engine.");
+        throw std::wstring(plugin_ui::Text(
+            L"MyMemory allows up to 2000 UTF-8 bytes per task. Shorten the text or choose another engine.",
+            L"MyMemory 每次最多支持 2000 个 UTF-8 字节。请缩短原文或选择其他引擎。"));
     std::vector<std::wstring> parts;
     for (size_t start = 0; start < source.size();) {
         size_t end = start, bytes = 0, boundary = start;
@@ -206,7 +212,9 @@ std::vector<std::wstring> SplitFreeOnlineText(std::wstring_view source) {
         return part.find_first_not_of(L" \t\r\n") != part.npos;
     });
     if (requests > 16)
-        throw std::wstring(L"Too many paragraphs for one free-provider task (maximum 16 requests).");
+        throw std::wstring(plugin_ui::Text(
+            L"MyMemory allows up to 16 requests per task. Translate fewer paragraphs at a time.",
+            L"MyMemory 每项任务最多发送 16 个请求。请减少一次翻译的段落。"));
     return parts;
 }
 

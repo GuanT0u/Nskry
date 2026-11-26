@@ -30,9 +30,13 @@ from the official `rapidocr-onnxruntime` 1.4.4 wheel (SHA256
 - `ch_PP-OCRv4_rec_infer.onnx`, SHA256
   `48fc40f24f6d2a207a2b1091d3437eb3cc3eb6b676dc3ef9c37384005483683b`
 
-Model copyright belongs to Baidu/the corresponding upstream rights holders.
-RapidOCR's current upstream README states that its PaddleOCR-derived ONNX
-models are redistributed under Apache-2.0; the 1.4.4 wheel itself does not
-contain a separate version-specific model license. Verify this exact-weight
-attribution/permission chain before publishing a release containing the models.
-This development integration and testing do not constitute that release review.
+Model copyright belongs to Baidu and the applicable PaddleOCR rights holders.
+RapidOCR converted these upstream PP-OCRv4 models to ONNX. Nskry ships the
+ONNX files byte-for-byte from the pinned wheel. Both hashes above also appear
+in the v3.10.0 RapidOCR model registry as `ch_PP-OCRv4_det_mobile` and
+`ch_PP-OCRv4_rec_mobile` under ONNX Runtime. RapidOCR's current model license
+notice identifies every model in that registry as Apache-2.0. The full license
+text is included in `licenses/RapidOCR-LICENSE.txt`.
+
+- Registry and exact hashes: https://github.com/RapidAI/RapidOCR/blob/v3.10.0/python/rapidocr/default_models.yaml
+- Model license and upstream attribution: https://github.com/RapidAI/RapidOCR/blob/main/python/MODEL_LICENSES.md

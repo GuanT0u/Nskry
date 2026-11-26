@@ -72,7 +72,7 @@ if(BUILD_TESTING)
     add_executable(NskryTranslationOnlineTests "${CMAKE_SOURCE_DIR}/tests/translation_online_tests.cpp"
         src/online_translation.cpp src/online_config.cpp src/translation_http.cpp)
     target_link_libraries(NskryTranslationOnlineTests PRIVATE nskry_json)
-    target_include_directories(NskryTranslationOnlineTests PRIVATE src "${CMAKE_SOURCE_DIR}/src")
+    target_include_directories(NskryTranslationOnlineTests PRIVATE src "${CMAKE_SOURCE_DIR}/src" "${CMAKE_SOURCE_DIR}/sdk")
     target_compile_definitions(NskryTranslationOnlineTests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
     target_link_libraries(NskryTranslationOnlineTests PRIVATE winhttp crypt32 advapi32 ws2_32 psapi)
     if(MSVC)

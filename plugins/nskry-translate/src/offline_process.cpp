@@ -66,7 +66,7 @@ WorkerReply RunOffline(const std::filesystem::path &pluginDirectory, HANDLE canc
         if (!input)
             winrt::throw_hresult(E_FAIL);
     }
-    const auto executable = pluginDirectory / L"engine" / L"nskry-translate-worker.exe";
+    const auto executable = OfflineWorkerPath(pluginDirectory);
     if (!std::filesystem::is_regular_file(executable))
         throw TranslationFailure{
             L"Translation engine missing. Install a complete plugin package with its engine folder."};

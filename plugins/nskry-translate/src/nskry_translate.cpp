@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <vector>
 #include <winrt/Windows.Foundation.h>
@@ -27,6 +28,7 @@ bool closing{};
 bool starting{}, uploadCanceled{};
 NskryImageRecognitionServiceV1 recognitionService{};
 bool useOcrPlugin{};
+bool hasOfflineEngine{};
 HWND taskDispatch{}; // Exists only while a task needs completion delivery.
 void FinishTask();
 void CloseTaskDispatch() {
@@ -87,10 +89,23 @@ struct Task {
 };
 std::unique_ptr<Task> task;
 bool BeginTranslation();
+std::optional<Provider> SelectedProvider() {
+    const auto selected = SendMessageW(providerChoice, CB_GETCURSEL, 0, 0);
+    if (selected < 0 || selected > static_cast<int>(Provider::MyMemory) ||
+        (selected == 0 && !hasOfflineEngine))
+        return std::nullopt;
+    return static_cast<Provider>(selected);
+}
+const wchar_t *ChooseEngineHint() {
+    return nskry::plugin_ui::Text(L"Choose an online engine, then click Translate. MyMemory needs no setup.",
+                                  L"请选择在线引擎，再点击「翻译」。MyMemory 无需配置。");
+}
 void RefreshProviderControls() {
-    const bool offline = SendMessageW(providerChoice, CB_GETCURSEL, 0, 0) == 0;
+    const auto provider = SelectedProvider();
+    const bool offline = provider == Provider::Offline;
     EnableWindow(packEdit, !task && offline);
     EnableWindow(GetDlgItem(window, 4), !task && offline);
+    EnableWindow(GetDlgItem(window, 21), !task && provider.has_value());
     const bool hasResult = !task && GetWindowTextLengthW(resultEdit) > 0;
     EnableWindow(GetDlgItem(window, 3), hasResult);
     EnableWindow(GetDlgItem(window, 5), hasResult);
@@ -152,11 +167,14 @@ void FinishTask() {
     const bool canceled = WaitForSingleObject(task->cancel, 0) == WAIT_OBJECT_0;
     const bool autoTranslate = task->ocr && task->error.empty() && !canceled && !closing;
     std::wstring message =
-        canceled ? (task->online ? L"Canceled. A remote server may already have processed the submitted text."
-                                 : L"Canceled. No online fallback was used.")
+        canceled ? (task->online ? nskry::plugin_ui::Text(
+                                     L"Canceled. The server may already have processed the submitted text.",
+                                     L"已取消。服务端可能已处理发送的文字。")
+                                 : nskry::plugin_ui::Text(L"Canceled.", L"已取消。"))
                  : (task->error.empty() ? task->successMessage : task->error);
     if (!canceled && task->error.empty() && task->parts > 1)
-        message += L" (" + std::to_wstring(task->parts) + L" bounded parts)";
+        message += std::wstring(nskry::plugin_ui::Text(L" (", L"（")) + std::to_wstring(task->parts) +
+                   nskry::plugin_ui::Text(L" bounded parts)", L" 段）");
     SetWindowTextW(statusLabel, message.c_str());
     if (!canceled)
         SetWindowTextW(task->ocr ? sourceEdit : resultEdit, task->result.c_str());
@@ -192,7 +210,8 @@ template <class Work> void Start(bool ocr, Work work, bool online = false, uint6
         if (recognitionTicket)
             state->recognitionBuffer.resize(NSKRY_IMAGE_MAX_TEXT + 1);
         if (!recognitionTicket)
-            state->thread = std::thread([state, work = std::move(work)] {
+            state->thread = std::thread([state, work = std::move(work), ui = nskry::plugin_ui::preferences] {
+                nskry::plugin_ui::SetPreferences(&ui);
                 try {
                     winrt::init_apartment(winrt::apartment_type::multi_threaded);
                     struct Apartment {
@@ -208,8 +227,9 @@ template <class Work> void Start(bool ocr, Work work, bool online = false, uint6
                     state->error = error; // Only locally constructed, sanitized provider/transport messages.
                 } catch (const winrt::hresult_error &error) {
                     if (error.code() == HRESULT_FROM_WIN32(ERROR_TIMEOUT)) {
-                        state->error = L"Task timed out after 60 seconds. Select a smaller region; the "
-                                       L"worker was stopped.";
+                        state->error = nskry::plugin_ui::Text(
+                            L"The task timed out. Try a smaller region or shorter text.",
+                            L"任务超时。请缩小截图范围或减少原文字数。");
                     } else {
                         state->error =
                             (state->ocr ? L"Screenshot text recognition failed (code "
@@ -220,8 +240,9 @@ template <class Work> void Start(bool ocr, Work work, bool online = false, uint6
                                  : L"). Check the translation engine, language pack and input limits.");
                     }
                 } catch (...) {
-                    state->error =
-                        L"Task failed or canceled. Check the engine, language pack and input limits.";
+                    state->error = nskry::plugin_ui::Text(
+                        L"Task failed. Check the engine, language pack and input limits.",
+                        L"任务失败。请检查引擎、语言包和输入长度。");
                 }
                 state->done.store(true);
             });
@@ -257,6 +278,11 @@ bool BeginTranslation() {
     } guard;
     SetWindowTextW(resultEdit, L"");
     RefreshProviderControls();
+    const auto chosen = SelectedProvider();
+    if (!chosen) {
+        SetWindowTextW(statusLabel, ChooseEngineHint());
+        return false;
+    }
     auto text = Text(sourceEdit), root = Text(packEdit);
     if (ValidateText(text) != InputError::None) {
         SetWindowTextW(statusLabel, nskry::plugin_ui::Text(L"No valid text found. Edit the source (maximum 16000 UTF-16 units).", L"未找到有效文字。请编辑原文，最多 16000 个 UTF-16 代码单元。"));
@@ -267,14 +293,14 @@ bool BeginTranslation() {
     if (selection == 0) {
         const auto language = DetectSourceLanguage(text);
         if (language != SourceLanguage::Chinese && language != SourceLanguage::English) {
-            SetWindowTextW(statusLabel, L"Cannot choose an English/Chinese language pack for this text. "
-                                        L"Check the source or choose a direction manually.");
+            SetWindowTextW(statusLabel, nskry::plugin_ui::Text(
+                L"Could not detect Chinese or English. Review the source or choose a direction.",
+                L"无法识别中英文方向。请检查原文或手动选择方向。"));
             return false;
         }
         toChinese = language == SourceLanguage::English;
     }
-    const auto selected = SendMessageW(providerChoice, CB_GETCURSEL, 0, 0);
-    const auto provider = selected >= 0 && selected <= 3 ? Provider(selected) : Provider::Offline;
+    const auto provider = *chosen;
     if (provider == Provider::Offline) {
         Start(false, [text, root, toChinese](Task &work) {
             auto result = RunOffline(PluginDirectory(), work.cancel, text, root, toChinese);
@@ -288,14 +314,24 @@ bool BeginTranslation() {
             SetWindowTextW(statusLabel, error.c_str());
             return false;
         }
+        if (provider != Provider::MyMemory && config.endpoint.empty()) {
+            SetWindowTextW(statusLabel, nskry::plugin_ui::Text(
+                L"Open Configure engine to enter the provider's HTTPS endpoint.",
+                L"请打开「配置引擎」，填写服务提供的 HTTPS 端点。"));
+            return false;
+        }
         error = ValidateOnlineConfig(provider, config);
         if (!error.empty()) {
             SetWindowTextW(statusLabel, error.c_str());
             return false;
         }
         if (provider == Provider::MyMemory) {
-            SplitFreeOnlineText(
-                text); // Validate the complete request before asking permission or sending anything.
+            try {
+                SplitFreeOnlineText(text); // Validate before asking permission or sending anything.
+            } catch (const std::wstring &error) {
+                SetWindowTextW(statusLabel, error.c_str());
+                return false;
+            }
             config.endpoint = L"https://api.mymemory.translated.net/get";
         }
         const auto prompt =
@@ -336,9 +372,9 @@ bool BeginTranslation() {
             },
             true);
     }
-    task->successMessage = std::wstring(toChinese ? L"English → 中文: done." : L"中文 → English: done.") +
-                           (provider == Provider::Offline ? L" Review the experimental offline translation."
-                                                          : L" Review the online translation.");
+    task->successMessage = toChinese
+        ? nskry::plugin_ui::Text(L"English → Chinese complete.", L"英文 → 中文翻译完成。")
+        : nskry::plugin_ui::Text(L"Chinese → English complete.", L"中文 → 英文翻译完成。");
     return true;
 }
 
@@ -401,16 +437,17 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             const auto move = [&](HWND child, int x, int y, int w, int h, BOOL repaint) {
                 if (child) ::MoveWindow(child, dip(x), dip(y), dip(w), dip(h), repaint);
             };
+            const int packRow = hasOfflineEngine ? 36 : 0;
             move(providerChoice, 8, 8, 280, 180, TRUE);
             move(GetDlgItem(hwnd, 21), 300, 8, 180, 26, TRUE);
             move(packEdit, 8, 42, width - 160, 26, TRUE);
             move(GetDlgItem(hwnd, 4), width - 144, 42, 136, 26, TRUE);
-            move(GetDlgItem(hwnd, 22), 8, 78, width - 16, 26, TRUE);
-            move(GetDlgItem(hwnd, 23), 8, 106, width - 16, 24, TRUE);
-            move(GetDlgItem(hwnd, 24), 8, 136, (width - 24) / 2, 22, TRUE);
-            move(GetDlgItem(hwnd, 25), width / 2 + 4, 136, width / 2 - 12, 22, TRUE);
-            move(sourceEdit, 8, 158, (width - 24) / 2, height - 238, TRUE);
-            move(resultEdit, width / 2 + 4, 158, width / 2 - 12, height - 238, TRUE);
+            move(GetDlgItem(hwnd, 22), 8, 42 + packRow, width - 16, 26, TRUE);
+            move(GetDlgItem(hwnd, 23), 8, 70 + packRow, width - 16, 24, TRUE);
+            move(GetDlgItem(hwnd, 24), 8, 100 + packRow, (width - 24) / 2, 22, TRUE);
+            move(GetDlgItem(hwnd, 25), width / 2 + 4, 100 + packRow, width / 2 - 12, 22, TRUE);
+            move(sourceEdit, 8, 122 + packRow, (width - 24) / 2, height - 202 - packRow, TRUE);
+            move(resultEdit, width / 2 + 4, 122 + packRow, width / 2 - 12, height - 202 - packRow, TRUE);
             move(directionChoice, 8, height - 72, 120, 120, TRUE);
             move(GetDlgItem(hwnd, 1), 136, height - 72, 100, 26, TRUE);
             move(GetDlgItem(hwnd, 2), 244, height - 72, 100, 26, TRUE);
@@ -480,12 +517,19 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
                 RefreshProviderControls();
             }
             if (LOWORD(wp) == 20 && HIWORD(wp) == CBN_SELCHANGE && !task && !starting) {
-                const DWORD selected = DWORD(SendMessageW(providerChoice, CB_GETCURSEL, 0, 0));
-                if (selected <= 3 && RegSetKeyValueW(HKEY_CURRENT_USER, Key, L"PreferredProviderV1",
-                                                     REG_DWORD, &selected, sizeof(selected)) != ERROR_SUCCESS)
-                    SetWindowTextW(
-                        statusLabel,
-                        L"Engine selected for this window, but its preference could not be saved.");
+                const auto chosen = SelectedProvider();
+                if (chosen) {
+                    const DWORD selected = static_cast<DWORD>(*chosen);
+                    const bool saved = RegSetKeyValueW(HKEY_CURRENT_USER, Key, L"PreferredProviderV1",
+                                                       REG_DWORD, &selected, sizeof(selected)) == ERROR_SUCCESS;
+                    SetWindowTextW(statusLabel, saved
+                        ? nskry::plugin_ui::Text(L"Engine selected. Click Translate to use it.",
+                                                 L"已选择引擎。点击「翻译」开始。")
+                        : nskry::plugin_ui::Text(L"Engine selected for this window. Could not save preference.",
+                                                 L"引擎已在当前窗口切换，无法保存偏好。"));
+                } else {
+                    SetWindowTextW(statusLabel, ChooseEngineHint());
+                }
                 RefreshProviderControls();
             }
             if (LOWORD(wp) == 1 && !task) {
@@ -500,18 +544,20 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             if (LOWORD(wp) == 5)
                 SaveResult();
             if (LOWORD(wp) == 21 && !task && !starting) {
-                const auto provider = Provider(SendMessageW(providerChoice, CB_GETCURSEL, 0, 0));
+                const auto provider = SelectedProvider();
                 if (provider == Provider::OpenAI || provider == Provider::LibreTranslate)
-                    ShowOnlineSettings(module, hwnd, provider);
-                else
+                    ShowOnlineSettings(module, hwnd, *provider);
+                else if (provider)
                     SetWindowTextW(
                         statusLabel,
                         provider == Provider::Offline
-                            ? L"Offline: set/save the language-pack root folder below. No network is used."
-                            : L"MyMemory: free third-party API, quotas apply. Upload requires confirmation; "
-                              L"terms describe retention/sharing. See plugin README.");
+                            ? nskry::plugin_ui::Text(L"Set the offline language-pack folder below.",
+                                                     L"请在下方设置离线语言包目录。")
+                            : nskry::plugin_ui::Text(
+                                L"MyMemory requires no setup. Review its terms and confirm each upload.",
+                                L"MyMemory 无需配置。请阅读其条款，并逐次确认上传。"));
             }
-            if (LOWORD(wp) == 4) {
+            if (LOWORD(wp) == 4 && SelectedProvider() == Provider::Offline) {
                 const auto root = Text(packEdit);
                 if (RegSetKeyValueW(HKEY_CURRENT_USER, Key, L"ModelRoot", REG_SZ, root.c_str(),
                                     DWORD((root.size() + 1) * sizeof(wchar_t))) != ERROR_SUCCESS)
@@ -538,6 +584,8 @@ void Show(HWND owner) {
         SetForegroundWindow(window);
         return;
     }
+    std::error_code fileError;
+    hasOfflineEngine = std::filesystem::is_regular_file(OfflineWorkerPath(PluginDirectory()), fileError);
     WNDCLASSW wc{};
     wc.hInstance = module;
     wc.lpfnWndProc = Procedure;
@@ -573,16 +621,21 @@ void Show(HWND owner) {
     child(L"BUTTON", nskry::plugin_ui::Text(L"Save pack path", L"保存语言包路径"), WS_TABSTOP, 4);
     child(L"BUTTON", nskry::plugin_ui::Text(L"Save text", L"保存译文"), WS_TABSTOP, 5);
     providerChoice = child(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP, 20);
-    for (const auto *label : {nskry::plugin_ui::Text(L"Offline · English/Chinese", L"离线 · 英文／中文"), nskry::plugin_ui::Text(L"Online · OpenAI-compatible", L"在线 · OpenAI 兼容"),
-                              nskry::plugin_ui::Text(L"Online · LibreTranslate", L"在线 · LibreTranslate"), nskry::plugin_ui::Text(L"Free online · MyMemory (quotas)", L"免费在线 · MyMemory（有额度）")})
+    const auto *firstEngine = hasOfflineEngine
+        ? nskry::plugin_ui::Text(L"Offline · English/Chinese", L"离线 · 英文／中文")
+        : nskry::plugin_ui::Text(L"Choose an online engine", L"请选择在线引擎");
+    for (const auto *label : {firstEngine,
+                              nskry::plugin_ui::Text(L"OpenAI-compatible (experimental)", L"OpenAI 兼容（实验）"),
+                              nskry::plugin_ui::Text(L"LibreTranslate (experimental)", L"LibreTranslate（实验）"),
+                              nskry::plugin_ui::Text(L"MyMemory (free, quotas apply)", L"MyMemory（免费，有额度）")})
         SendMessageW(providerChoice, CB_ADDSTRING, 0, LPARAM(label));
     DWORD preferred{}, preferredSize = sizeof(preferred);
     if (RegGetValueW(HKEY_CURRENT_USER, Key, L"PreferredProviderV1", RRF_RT_REG_DWORD, nullptr, &preferred,
                      &preferredSize) != ERROR_SUCCESS ||
-        preferred > 3)
+        preferred > static_cast<DWORD>(Provider::MyMemory))
         preferred = 0;
-    // First run is offline. An explicit engine selection may be remembered;
-    // every online translation still requires a new upload confirmation.
+    // Index zero is Offline when installed and an explicit-choice prompt otherwise.
+    // This preserves persisted provider values across package variants.
     SendMessageW(providerChoice, CB_SETCURSEL, preferred, 0);
     child(L"BUTTON", nskry::plugin_ui::Text(L"Configure engine", L"配置引擎"), WS_TABSTOP, 21);
     child(L"BUTTON", nskry::plugin_ui::Text(L"Use installed OCR plugin for screenshot translation (optional)", L"使用已安装的文字识别插件处理截图（可选）"),
@@ -593,10 +646,10 @@ void Show(HWND owner) {
                                 &useProvider, &preferenceBytes) == ERROR_SUCCESS &&
                    useProvider == 1;
     SendMessageW(GetDlgItem(window, 22), BM_SETCHECK, useOcrPlugin ? BST_CHECKED : BST_UNCHECKED, 0);
-    statusLabel = child(L"STATIC",
-                        L"Select a region to recognize and translate automatically. You can edit the source "
-                        L"and translate again.",
-                        0, 14);
+    statusLabel = child(L"STATIC", SelectedProvider()
+        ? nskry::plugin_ui::Text(L"Select a region or paste source text to translate.",
+                                 L"框选截图区域或粘贴原文即可翻译。")
+        : ChooseEngineHint(), 0, 14);
     wchar_t saved[32768]{};
     DWORD bytes = sizeof(saved);
     auto root = (PluginDirectory() / L"languages").wstring();
@@ -612,6 +665,10 @@ void Show(HWND owner) {
         winrt::throw_hresult(E_OUTOFMEMORY);
     }
     closing = false;
+    if (!hasOfflineEngine) {
+        ShowWindow(packEdit, SW_HIDE);
+        ShowWindow(GetDlgItem(window, 4), SW_HIDE);
+    }
     RefreshProviderControls();
     RefreshFont(window);
     nskry::plugin_ui::AttachTabNavigation(window);
@@ -622,7 +679,7 @@ NskryPluginInfo info{sizeof(info),
                      NSKRY_PLUGIN_API_VERSION,
                      L"Translation",
                      L"nskry-translate",
-                     L"0.3.3",
+                     L"0.3.4",
                      L"Nskry Team",
                      L"Experimental on-demand Chinese/English translation with optional online engines.",
                      nullptr,
@@ -681,6 +738,10 @@ extern "C" NSKRY_API int32_t NSKRY_CALL nskry_plugin_translate_text_v1(const Nsk
                          ? HWND_TOPMOST
                          : HWND_NOTOPMOST,
                      0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        if (!SelectedProvider()) {
+            SetWindowTextW(statusLabel, ChooseEngineHint());
+            return NSKRY_TRANSLATION_ACCEPTED; // Source is ready for a user-selected engine.
+        }
         if (!BeginTranslation()) {
             if (uploadCanceled) {
                 NskryTranslationError(result, L"Online upload was not authorized; no request was sent.");

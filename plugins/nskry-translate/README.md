@@ -1,4 +1,11 @@
-# Translation 0.3.3 — experimental offline and optional online translation
+# Translation 0.3.4 — online preview candidate and experimental offline translation
+
+The online-only package asks you to choose an engine on first use. Screenshot
+recognition still happens locally and the recognized text is available before
+you choose. Select MyMemory for a no-setup online option, or configure one of
+the experimental OpenAI-compatible or LibreTranslate adapters. Every online
+translation requires confirmation. The offline-enabled package still starts
+in Offline mode on a fresh profile.
 
 0.3.3 removes the temporary GDI bitmap roundtrip from built-in native image
 recognition and separates the bounded offline process runner from the window.
@@ -39,8 +46,8 @@ sample-specific spelling repair is used. This reduces tested repetition but is
 not a guarantee of faithful translation, correct proper names or punctuation.
 
 0.3.0 adds configured OpenAI-compatible/LibreTranslate engines and an optional
-free MyMemory engine. First run is offline; an explicit engine choice can be
-remembered, but **every online task requires text-upload confirmation**.
+free MyMemory engine. An explicit engine choice can be remembered, but
+**every online task requires text-upload confirmation**.
 Read [ONLINE_ENGINES.md](ONLINE_ENGINES.md) for setup, privacy, limits and sources.
 MyMemory has quotas and its terms describe retention/sharing: do not send it
 confidential text. No automatic fallback or background network is introduced.

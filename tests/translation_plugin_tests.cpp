@@ -81,10 +81,31 @@ void CALLBACK RejectUpload(HWND, UINT, UINT_PTR, DWORD) {
         },
         0);
 }
+HBITMAP SyntheticScreenshot() {
+    HDC screen = GetDC(nullptr), dc = CreateCompatibleDC(screen);
+    HBITMAP bitmap = CreateCompatibleBitmap(screen, 480, 100);
+    auto old = SelectObject(dc, bitmap);
+    RECT area{0, 0, 480, 100};
+    FillRect(dc, &area, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+    SetTextColor(dc, RGB(0, 0, 0));
+    SetBkColor(dc, RGB(255, 255, 255));
+    HFONT font =
+        CreateFontW(32, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                    CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    auto oldFont = SelectObject(dc, font);
+    TextOutW(dc, 10, 20, L"Hello world", 11);
+    SelectObject(dc, oldFont);
+    DeleteObject(font);
+    SelectObject(dc, old);
+    DeleteDC(dc);
+    ReleaseDC(nullptr, screen);
+    return bitmap;
+}
 int wmain(int argc, wchar_t **argv) {
     if (argc != 2 && argc != 3 && argc != 4)
         return 2;
     const bool liveFree = argc == 4 && !wcscmp(argv[3], L"--live-free");
+    const bool onlineCandidate = argc >= 3 && !wcscmp(argv[2], L"--online-candidate");
     struct Registry {
         HKEY key{};
         std::wstring path;
@@ -134,6 +155,76 @@ int wmain(int argc, wchar_t **argv) {
     };
     HWND window = OwnWindow();
     ok = window && ok;
+    if (onlineCandidate) {
+        constexpr wchar_t key[] = L"Software\\Nskry\\Plugins\\nskry-translate";
+        const auto selection = [&] { return SendDlgItemMessageW(window, 20, CB_GETCURSEL, 0, 0); };
+        const auto checkChoice = [&] {
+            wchar_t hint[200]{};
+            GetDlgItemTextW(window, 14, hint, 200);
+            return window && selection() == 0 && !IsWindowVisible(GetDlgItem(window, 12)) &&
+                   !IsWindowEnabled(GetDlgItem(window, 21)) && wcsstr(hint, L"Choose an online engine");
+        };
+        ok = checkChoice() && ok;
+        SendMessageW(window, WM_CLOSE, 0, 0);
+        const DWORD offline = 0;
+        ok = RegSetKeyValueW(HKEY_CURRENT_USER, key, L"PreferredProviderV1", REG_DWORD, &offline,
+                             sizeof(offline)) == ERROR_SUCCESS && settings(nullptr) && ok;
+        window = OwnWindow();
+        ok = checkChoice() && ok;
+        checkpoint("online package first use and saved offline preference");
+        const auto translate = [&](const wchar_t *source) {
+            NskryTextTranslationV1 request{sizeof(request), 1, nullptr, source, uint32_t(wcslen(source))};
+            return translateText(&request, nullptr);
+        };
+        ok = translate(L"Hello world.") == NSKRY_TRANSLATION_ACCEPTED && uploadDialogs == 0 &&
+             GetWindowTextLengthW(GetDlgItem(window, 10)) == 12 &&
+             !GetWindowTextLengthW(GetDlgItem(window, 11)) && ok;
+        NskryHostContext context{sizeof(context), NSKRY_PLUGIN_API_VERSION};
+        context.capturedBitmap = SyntheticScreenshot();
+        execute(&context);
+        DeleteObject(context.capturedBitmap);
+        ok = Pump([&] { return IsWindowEnabled(GetDlgItem(window, 1)); }) && ok;
+        wchar_t recognized[128]{};
+        GetDlgItemTextW(window, 10, recognized, 128);
+        ok = wcsstr(recognized, L"world") && uploadDialogs == 0 &&
+             !GetWindowTextLengthW(GetDlgItem(window, 11)) && ok;
+        checkpoint("local screenshot OCR before engine choice");
+        SendDlgItemMessageW(window, 20, CB_SETCURSEL, 3, 0);
+        SendMessageW(window, WM_COMMAND, MAKEWPARAM(20, CBN_SELCHANGE), LPARAM(GetDlgItem(window, 20)));
+        ok = uploadDialogs == 0 && ok;
+        allowPublicUpload = false;
+        const auto timer = SetTimer(nullptr, 0, 20, RejectUpload);
+        if (!timer)
+            return 7;
+        ok = translate(L"Hello world.") == NSKRY_TRANSLATION_CANCELED && uploadDialogs == 1 &&
+             !GetWindowTextLengthW(GetDlgItem(window, 11)) && ok;
+        checkpoint("online package requires upload consent");
+        if (liveFree) {
+            allowPublicUpload = true;
+            for (const auto toChinese : {true, false}) {
+                const auto *source = toChinese ? L"Hello world." : L"你好，世界。";
+                const bool finished = translate(source) == NSKRY_TRANSLATION_ACCEPTED &&
+                    Pump([&] { return IsWindowEnabled(GetDlgItem(window, 1)); }, 65000);
+                wchar_t result[256]{};
+                const int units = GetDlgItemTextW(window, 11, result, 256);
+                CharLowerBuffW(result, DWORD(units));
+                std::cout << "MyMemory " << (toChinese ? "en-zh" : "zh-en") << " result units=" << units << '\n';
+                ok = finished && wcsstr(result, toChinese ? L"世界" : L"world") && ok;
+            }
+            ok = uploadDialogs == 3 && ok;
+            checkpoint("MyMemory bidirectional live translation");
+        }
+        KillTimer(nullptr, timer);
+        SendMessageW(window, WM_CLOSE, 0, 0);
+        ok = settings(nullptr) && ok;
+        window = OwnWindow();
+        ok = window && selection() == 3 && ok;
+        checkpoint("explicit online choice persists after reopen");
+        shutdown();
+        FreeLibrary(dll);
+        std::cout << "Online package first use, upgrade preference, consent and persistence=" << ok << '\n';
+        return ok ? 0 : 1;
+    }
     if (window) {
         ok = SendDlgItemMessageW(window, 20, CB_GETCURSEL, 0, 0) == 0 && ok;
         // Explicit online choice still requires per-request upload authorization.
@@ -192,23 +283,7 @@ int wmain(int argc, wchar_t **argv) {
             checkpoint("real long paragraph");
         }
         // Independent screenshot OCR path: only this test's synthetic bitmap.
-        HDC screen = GetDC(nullptr), dc = CreateCompatibleDC(screen);
-        HBITMAP bitmap = CreateCompatibleBitmap(screen, 480, 100);
-        auto old = SelectObject(dc, bitmap);
-        RECT area{0, 0, 480, 100};
-        FillRect(dc, &area, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-        SetTextColor(dc, RGB(0, 0, 0));
-        SetBkColor(dc, RGB(255, 255, 255));
-        HFONT font =
-            CreateFontW(32, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                        CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-        auto oldFont = SelectObject(dc, font);
-        TextOutW(dc, 10, 20, L"Hello world", 11);
-        SelectObject(dc, oldFont);
-        DeleteObject(font);
-        SelectObject(dc, old);
-        DeleteDC(dc);
-        ReleaseDC(nullptr, screen);
+        HBITMAP bitmap = SyntheticScreenshot();
         NskryHostContext context{sizeof(context), NSKRY_PLUGIN_API_VERSION};
         context.capturedBitmap = bitmap;
         if (execute)

@@ -29,7 +29,8 @@ Helsinki-NLP/opus-mt-zh-en (CC-BY-4.0 per original card). The developer converte
 changes weight storage to CTranslate2 INT8; no claim of original unmodified weights.
 
 0.3.0 adds explicitly selected OpenAI-compatible, LibreTranslate and MyMemory
-online adapters. Each task requires a text-upload confirmation; first run is
-offline. MyMemory's terms describe retention/sharing and impose quotas. Read
+online adapters. Each online task requires a text-upload confirmation. The
+online-only package asks for an explicit engine choice on first use.
+MyMemory's terms describe retention/sharing and impose quotas. Read
 ONLINE_ENGINES.md before enabling it; sensitive text should remain offline.
 No user screenshots/content are uploaded during ordinary build/CTest.
