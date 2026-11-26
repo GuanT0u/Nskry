@@ -2,6 +2,7 @@
 #include "test_artifacts.h"
 #include <array>
 #include <thread>
+#include <string_view>
 
 int wmain(int argc, wchar_t **argv) {
     if (argc != 5)
@@ -51,6 +52,29 @@ int wmain(int argc, wchar_t **argv) {
          ok;
     ok = service.available(provider.id.c_str()) && !runtime.IsLoaded(provider.id) &&
          !GetModuleHandleW(providerDll.filename().c_str()) && ok;
+    provider.ocrLayoutApi = 1;
+    ok &= registry.UpsertInstalled(provider, providerDll.parent_path().wstring(), nskry::PluginSource::ThirdParty);
+    NskryOcrLeaseV1 first{}, secondLease{};
+    ok &= runtime.AcquireOcr(L"unavailable", &first) == NSKRY_OCR_UNAVAILABLE;
+    if (runtime.AcquireOcr(nullptr, &first) != NSKRY_OCR_OK ||
+        runtime.AcquireOcr(provider.id.c_str(), &secondLease) != NSKRY_OCR_OK) return 7;
+    ok &= first.module == secondLease.module && !runtime.IsLoaded(provider.id);
+    FreeLibrary(first.module);
+    bool received = false;
+    NskryOcrRequestV1 request{sizeof(request), 1, nullptr, 0, &received,
+        [](void *) -> int32_t { return 0; },
+        [](void *context, const NskryOcrLayoutV1 *layout) -> int32_t {
+            return *static_cast<bool *>(context) = std::wstring_view(layout->text, layout->length) == L"fixture" &&
+                layout->wordCount == 1 && layout->lineCount == 1 && layout->words[0].bounds.left == 3;
+        }};
+    std::thread layoutWorker([&] {
+        ok &= secondLease.recognize(&request) == NSKRY_OCR_OK && received;
+        request.canceled = [](void *) -> int32_t { return 1; };
+        ok &= secondLease.recognize(&request) == NSKRY_OCR_CANCELED;
+    });
+    layoutWorker.join();
+    FreeLibrary(secondLease.module);
+    ok &= !GetModuleHandleW(providerDll.filename().c_str());
     auto bitmap = CreateBitmap(40, 30, 1, 32, nullptr);
     struct Image {
         HBITMAP value;

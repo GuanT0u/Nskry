@@ -46,7 +46,7 @@ cmd /c "`"$vcvars`" > nul 2>&1 && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Rel
 
 如需构建安装器，先完成上述 CMake 构建。构建过程会生成官方插件包：
 `installer/bundled/nskry-scroll.nskryplugin` 和
-`installer/bundled/nskry-ocr.nskryplugin`、`installer/bundled/nskry-record.nskryplugin`。再运行 Inno Setup：
+`installer/bundled/nskry-ocr.nskryplugin`、`installer/bundled/nskry-ocr-provider.nskryplugin`、`installer/bundled/nskry-record.nskryplugin`。再运行 Inno Setup：
 
 ```powershell
 iscc installer/NskrySetup.iss

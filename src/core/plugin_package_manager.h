@@ -13,6 +13,7 @@ struct PluginPackageResult {
     bool restartRequired = false;
     std::wstring pluginId;
     std::wstring message;
+    bool needsOcrProvider = false;
 };
 enum class PluginRestartAction { Update, Remove };
 
@@ -40,6 +41,7 @@ class PluginPackageManager {
                                                                  const std::wstring &appRoot, std::wstring *error,
                                                                  std::stop_token stop = {});
     PluginPackageResult InstallPrepared(const std::shared_ptr<PreparedPluginPackage> &package, PluginSource source);
+    PluginPackageResult InstallWithOcrProvider(const std::wstring &path, PluginSource source);
     PluginPackageResult Uninstall(const std::wstring &pluginId);
 
   private:
@@ -57,6 +59,7 @@ class PluginPackageManager {
     static bool ExtractToStaging(const std::wstring &packagePath, const std::wstring &destination, std::wstring *error,
                                  std::stop_token stop = {});
     static bool ValidateExtractedTree(const std::wstring &root, std::wstring *error);
+    bool CheckOcrChange(const std::wstring &id, const PluginManifest *next, const std::vector<PendingOperation> &pending, PluginPackageResult &result) const;
     bool ReadPending(std::vector<PendingOperation> &operations) const;
     bool WritePending(const std::vector<PendingOperation> &operations) const;
     bool ApplyUpdate(const PendingOperation &operation, std::wstring *error);

@@ -1,0 +1,19 @@
+{
+  "manifest_version": 1,
+  "id": "nskry-ocr-provider",
+  "name": "Local OCR provider",
+  "version": "1.0.0",
+  "author": "Nskry Team",
+  "description": "Local recognition with word geometry",
+  "runtime": {
+    "entry": "nskry-ocr-provider.dll",
+    "architecture": "x64",
+    "api_version": 2,
+    "load_policy": "on_demand"
+  },
+  "compatibility": {"nskry_min":"0.5.1"},
+  "extensions": {
+    "ocr_layout": 1, "image_recognition": 1
+  },
+  "capabilities": []
+}

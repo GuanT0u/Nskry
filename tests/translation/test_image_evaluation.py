@@ -40,6 +40,12 @@ class EvaluationTests(unittest.TestCase):
         self.assertFalse(evaluation.image_ocr_gate([{"runs": [good, bad]}]))
         self.assertFalse(evaluation.image_ocr_gate([{"runs": [good]}]))
 
+    def test_ocr_only_images_are_graded(self):
+        image = {"path": "image_ocr_only", "ocr_comparison": evaluation.source_metrics("15号", "15号")}
+        self.assertTrue(evaluation.image_ocr_gate([{"runs": [image]}]))
+        image["ocr_comparison"] = evaluation.source_metrics("15号", "1 5号")
+        self.assertFalse(evaluation.image_ocr_gate([{"runs": [image]}]))
+
 
 if __name__ == "__main__":
     unittest.main()

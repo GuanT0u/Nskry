@@ -133,7 +133,7 @@ static ModelResult RunModelInput(HBITMAP bitmap, std::span<const uint8_t> bgra, 
     for (;;) {
         if (isCanceled()) { result.status = ModelStatus::Canceled; return finish(std::move(result)); }
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - started).count();
-        if (elapsed >= timeoutMs) { result.reply.error = L"Offline OCR timed out. Try a smaller area or select Fast OCR."; return finish(std::move(result)); }
+        if (elapsed >= timeoutMs) { result.status = ModelStatus::Timeout; result.reply.error = L"Offline OCR timed out. Try a smaller area or select Fast OCR."; return finish(std::move(result)); }
         DWORD available{};
         if (PeekNamedPipe(read.Get(), nullptr, 0, nullptr, &available, nullptr) && available) {
             if (available > wire::MaxReplyBytes - bytes.size()) { result.reply.error = L"The OCR process returned too much data."; return finish(std::move(result)); }

@@ -10,8 +10,10 @@
 区域/窗口跟随采集v2、额外capture动作与设置UI见 [录屏扩展v2](recording_extensions_v2.md)。
 用户主动发起的 OCR→翻译交接见 [文字翻译扩展v1](text_translation_extension_v1.md)；
 它不是任意跨插件服务或前置依赖解析，不允许直接调用另一个包的私有 DLL。
-用户显式启用的截图识别联动见 [可选本地图像识别v1](image_recognition_extension_v1.md)：
-由宿主复制/限额调度并在 UI 线程领取结果，不把 OCR 变成翻译的必装前置，不替代通用依赖解析。
+跨功能共享的识别能力见 [布局 OCR v1](ocr_layout_extension_v1.md)。
+Provider 可独立安装，并在请求时加载。功能包声明所需契约，通过宿主取得能力。
+既有 [纯文本识别 v1](image_recognition_extension_v1.md) 继续支持 API 2 客户端。
+拆分前应确认独立的安装与生命周期收益，遵循 [能力架构](../nskry_plugin_capability_architecture.md)。
 
 适用官方及独立第三方作者。先阅读 [基础能力契约](../architecture/core_plugin_contract.md)
 与 [第三方安全政策](third_party_policy.md)。官方身份不改变 SDK 约束。

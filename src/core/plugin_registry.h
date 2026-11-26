@@ -29,6 +29,8 @@ public:
     std::vector<const PluginRecord*> GetAll() const;
     bool UpsertInstalled(PluginManifest manifest, const std::wstring& installPath,
                          PluginSource source, bool enabled = true);
+    const PluginRecord* ResolveOcr(const wchar_t* preferred = nullptr, const std::wstring& exclude = {}) const;
+    bool OcrRequired() const;
     bool SetEnabled(const std::wstring& pluginId, bool enabled);
     void SetLoaded(const std::wstring& pluginId, bool loaded);
 

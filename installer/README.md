@@ -12,15 +12,15 @@ the executable under `%LOCALAPPDATA%\\Programs\\Nskry`; runtime data remains in
 
 1. From the repository root, configure and build with CMake/Ninja in Release
    mode. This builds `..\\build\\Nskry.exe` and generates the official bundled
-   packages under `installer\\bundled` (currently `nskry-scroll.nskryplugin` and
-   `nskry-ocr.nskryplugin` and `nskry-record.nskryplugin`).
+   packages under `installer\\bundled` (currently `nskry-scroll.nskryplugin`,
+   `nskry-ocr.nskryplugin`, `nskry-ocr-provider.nskryplugin` and `nskry-record.nskryplugin`).
 2. Optionally place additional official signed/hashed `.nskryplugin` files in
    `installer\\bundled` using the names in the script.
 3. Run `ISCC.exe installer\\NskrySetup.iss` only after the CMake build has
    completed.
 
 The optional packages are not copied directly into the plugin directory.
-Setup invokes `Nskry.exe --install-plugin ... --silent --source official`, so
+Setup invokes `Nskry.exe --install-plugin ... --silent --source official --with-ocr-provider`, so
 Setup, Settings, drag/drop, and updates share exactly one package-validation
 and staging pipeline. Setup offers a retry if an optional plugin fails. Silent setup logs the failure and continues with the core installation.
 

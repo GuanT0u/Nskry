@@ -1,3 +1,5 @@
+#include "test_ocr_provider.h"
+#include <thread>
 #include "core/plugin_manager.h"
 #include "test_artifacts.h"
 #include <functional>
@@ -81,6 +83,10 @@ int wmain(int argc, wchar_t **argv) {
                                   nskry::PluginSource::ThirdParty) ||
         !registry.UpsertInstalled(ocr, recognizer.parent_path().wstring(), nskry::PluginSource::ThirdParty))
         return 5;
+    nskry::PluginManifest provider;
+    auto providerDir = TestOcrProvider().parent_path();
+    if (!nskry::PluginManifest::LoadFromFile((providerDir / L"manifest.json").wstring(), provider) ||
+        !registry.UpsertInstalled(provider, providerDir.wstring(), nskry::PluginSource::Local)) return 7;
     NskryHostContext context{sizeof(context), NSKRY_PLUGIN_API_VERSION};
     auto &runtime = nskry::PluginManager::Instance();
     runtime.Initialize(registry, context);
@@ -117,9 +123,43 @@ int wmain(int argc, wchar_t **argv) {
     SelectObject(dc, previous);
     DeleteDC(dc);
     ReleaseDC(nullptr, screen);
+    // Hold one real request at the cancel checkpoint while the other caller
+    // invokes the same module. The rejected caller must not cancel the first.
+    NskryOcrLeaseV1 first{}, second{};
+    if (GetModuleHandleW(L"nskry-ocr-provider.dll") ||
+        runtime.AcquireOcr(nullptr, &first) != NSKRY_OCR_OK ||
+        runtime.AcquireOcr(nullptr, &second) != NSKRY_OCR_OK) return 9;
+    struct Gate {
+        HANDLE entered = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        HANDLE proceed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        ~Gate() { CloseHandle(entered); CloseHandle(proceed); }
+    } gate;
+    wchar_t firstError[256]{}, secondError[256]{};
+    const auto receive = [](void *, const NskryOcrLayoutV1 *layout) -> int32_t {
+        return std::wstring_view(layout->text, layout->length).find(L"world") != std::wstring_view::npos;
+    };
+    NskryOcrRequestV1 firstRequest{sizeof(firstRequest), 1, bitmap, 0, &gate,
+        [](void *data) -> int32_t {
+            const auto &gate = *static_cast<Gate *>(data);
+            SetEvent(gate.entered);
+            return WaitForSingleObject(gate.proceed, 5000) != WAIT_OBJECT_0;
+        }, receive, firstError, 256, 0};
+    NskryOcrRequestV1 secondRequest{sizeof(secondRequest), 1, bitmap, 0, nullptr,
+        [](void *) -> int32_t { return 0; }, receive, secondError, 256, 0};
+    int32_t firstStatus{};
+    std::thread background([&] { firstStatus = first.recognize(&firstRequest); });
+    const bool entered = WaitForSingleObject(gate.entered, 5000) == WAIT_OBJECT_0;
+    const auto secondStatus = entered ? second.recognize(&secondRequest) : NSKRY_OCR_FAILED;
+    FreeLibrary(second.module);
+    SetEvent(gate.proceed);
+    background.join();
+    FreeLibrary(first.module);
+    const bool shared = entered && firstStatus == NSKRY_OCR_OK && secondStatus == NSKRY_OCR_BUSY &&
+                        !GetModuleHandleW(L"nskry-ocr-provider.dll");
+    std::cout << "Real provider shared module, bounded concurrent request and release=" << shared << '\n';
     context.capturedBitmap = bitmap;
     bool ok = runtime.ExecutePlugin(ocr.id, context);
-    ok = Pump([] { return Own(L"NskryOcrResult") != nullptr; }) && ok;
+    ok = shared && Pump([] { return Own(L"NskryOcrResult") != nullptr; }) && ok;
     const auto result = Own(L"NskryOcrResult");
     ok = result && !IsWindowEnabled(GetDlgItem(result, 1011)) && ok;
     if (result) {
@@ -182,9 +222,16 @@ int wmain(int argc, wchar_t **argv) {
     SendMessageW(translated, WM_COMMAND, 2, 0);
     ok = Pump([&] { return IsWindowEnabled(GetDlgItem(translated, 1)); }) &&
          Text(GetDlgItem(translated, 11)).empty() && ok;
-    registry.SetEnabled(ocr.id, false);
-    ok = runtime.ExecutePlugin(translation.id, context) && Text(GetDlgItem(translated, 10)).empty() &&
-         Text(GetDlgItem(translated, 14)).find(L"No fallback") != std::wstring::npos && ok;
+    // With the extraction feature disabled, both interfaces must still translate.
+    ok = registry.SetEnabled(ocr.id, false) && ok;
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        if (attempt) SendMessageW(GetDlgItem(translated, 22), BM_CLICK, 0, 0);
+        ok = runtime.ExecutePlugin(translation.id, context) &&
+             Pump([&] { return IsWindowEnabled(GetDlgItem(translated, 1)); }) &&
+             Text(GetDlgItem(translated, 10)).find(L"world") != std::wstring::npos &&
+             !Text(GetDlgItem(translated, 11)).empty() && ok;
+    }
+    SendMessageW(GetDlgItem(translated, 22), BM_CLICK, 0, 0);
     SendMessageW(translated, WM_CLOSE, 0, 0);
     ok = runtime.ShowPluginSettings(translation.id, nullptr) && ok;
     const auto reopened = Own(L"NskryTranslateV1");

@@ -113,6 +113,8 @@ bool PluginRegistry::DiscoverPluginDirectories() {
         record.manifest = std::move(manifest);
         record.installPath = installPath;
         record.source = PluginSource::Local;
+        // A manually copied provider receives screenshots only after explicit enablement.
+        record.enabled = !record.manifest.ocrLayoutApi;
         m_plugins.emplace(record.manifest.id, std::move(record));
         changed = true;
     } while (::FindNextFileW(find, &data));
@@ -167,13 +169,42 @@ bool PluginRegistry::UpsertInstalled(PluginManifest manifest, const std::wstring
     record.installPath = installPath;
     record.source = source;
     record.enabled = enabled;
-    m_plugins[record.manifest.id] = std::move(record);
-    return Save();
+    const auto id = record.manifest.id;
+    auto previous = m_plugins.extract(id);
+    m_plugins.emplace(id, std::move(record));
+    if (Save()) return true;
+    m_plugins.erase(id);
+    if (previous) m_plugins.insert(std::move(previous));
+    return false;
+}
+
+const PluginRecord* PluginRegistry::ResolveOcr(const wchar_t* preferred, const std::wstring& exclude) const {
+    const PluginRecord* candidate = nullptr;
+    unsigned matches = 0;
+    for (const auto& [id, record] : m_plugins) {
+        if (id == exclude || !record.enabled || record.source == PluginSource::Legacy ||
+            record.manifest.ocrLayoutApi != 1 || !record.manifest.IsCompatibleWithHost()) continue;
+        if (preferred) {
+            if (id == preferred) return &record;
+            continue;
+        }
+        if (id == L"nskry-ocr-provider") return &record;
+        candidate = &record;
+        ++matches;
+    }
+    return matches == 1 ? candidate : nullptr;
+}
+
+bool PluginRegistry::OcrRequired() const {
+    return std::any_of(m_plugins.begin(), m_plugins.end(),
+        [](const auto& item) { return item.second.manifest.ocrLayoutClientApi == 1; });
 }
 
 bool PluginRegistry::SetEnabled(const std::wstring& pluginId, bool enabled) {
     PluginRecord* record = Find(pluginId);
     if (!record) return false;
+    if (!enabled && record->manifest.ocrLayoutApi && OcrRequired() && !ResolveOcr(nullptr, pluginId))
+        return false;
     const bool previous = record->enabled;
     record->enabled = enabled;
     if (Save()) return true;

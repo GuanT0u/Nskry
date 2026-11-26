@@ -29,8 +29,17 @@ each desired `.nskryplugin` into a NEW independent build directory; do not insta
 it into Nskry's registry. Example arguments (all paths should be absolute):
 
 ```text
-NskryTranslationImageAudit.exe <packaged-DLL> <public-images-dir> <review.json> <external-language-root-or-dash> offline|mymemory <1..3> <NEW-result.json> [--allow-public-network] [--gold-soft-wrap-control]
+NskryTranslationImageAudit.exe <packaged-DLL> <public-images-dir> <review.json> <external-language-root-or-dash> offline|mymemory|ocr-only <1..3> <NEW-result.json> [--allow-public-network] [--gold-soft-wrap-control]
 ```
+
+For Translation 0.4.0+, set `NSKRY_TEST_OCR_PROVIDER` to the absolute path of the
+extracted Provider DLL when testing installed archives. The standalone harness
+otherwise uses the Provider stage from its own build.
+
+For an online-only candidate, use `-` for the language root and `ocr-only`
+for the engine. The audit leaves engine selection pending and checks the source
+captured by local OCR. This mode records image runs without translation or
+manual text controls and requires zero upload dialogs.
 
 The normal audit does N image captures and one **separate** manual-gold text
 control per image. The gold control is not image recognition and never counts as

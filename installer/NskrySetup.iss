@@ -3,7 +3,7 @@
 ; through Nskry.exe's PackageManager CLI, never installed by Setup itself.
 
 #define AppName "Nskry"
-#define AppVersion "0.5.0"
+#define AppVersion "0.5.1"
 #define AppPublisher "Nskry"
 #define AppExeName "Nskry.exe"
 #ifndef CoreExePath
@@ -94,6 +94,7 @@ Source: "..\docs\plugins\third_party_policy.md"; DestDir: "{app}\docs"; Flags: i
 Source: "bundled\nskry-scroll.nskryplugin"; DestDir: "{app}\bundled"; Components: plugin_scroll; Flags: ignoreversion skipifsourcedoesntexist
 #endif
 #ifexist "bundled\nskry-ocr.nskryplugin"
+Source: "bundled\nskry-ocr-provider.nskryplugin"; DestDir: "{app}\bundled"; Components: plugin_ocr; Flags: ignoreversion
 Source: "bundled\nskry-ocr.nskryplugin"; DestDir: "{app}\bundled"; Components: plugin_ocr; Flags: ignoreversion skipifsourcedoesntexist
 #endif
 #ifexist "bundled\nskry-record.nskryplugin"
@@ -121,7 +122,7 @@ begin
     ResultCode := 0;
     Installed := FileExists(PackagePath) and
       Exec(ExpandConstant('{app}\{#AppExeName}'), '--install-plugin "' + PackagePath +
-        '" --silent --source official', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and
+        '" --silent --source official --with-ocr-provider', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and
       (ResultCode = 0);
     if Installed then
       Exit;

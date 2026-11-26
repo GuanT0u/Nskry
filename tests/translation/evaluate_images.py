@@ -57,7 +57,7 @@ def evaluate(review_path, reports):
 
 def image_ocr_gate(evaluations):
     image_rows = [row for report in evaluations for row in report["runs"]
-                  if row["path"] == "image_end_to_end"]
+                  if row["path"] in {"image_end_to_end", "image_ocr_only"}]
     return bool(image_rows) and all(
         row["ocr_comparison"]["exact_ignoring_whitespace"]
         and row["ocr_comparison"]["expected_digit_groups"] == row["ocr_comparison"]["actual_digit_groups"]

@@ -5,6 +5,7 @@
 #include "nskry_text_translation.h"
 #include "nskry_ui_preferences.h"
 #include "nskry_image_recognition.h"
+#include "nskry_ocr_layout.h"
 #include <string>
 #include <stdexcept>
 namespace {
@@ -53,6 +54,14 @@ NSKRY_API void NSKRY_CALL nskry_plugin_shutdown() { ++shutdowns; }
 #ifndef NSKRY_TEST_NO_TEXT
 NSKRY_API void NSKRY_CALL nskry_plugin_set_ui_preferences_v1(const NskryUiPreferencesV1* ui) {
     nskry::plugin_ui::SetPreferences(ui);
+}
+NSKRY_API int32_t NSKRY_CALL nskry_plugin_ocr_layout_v1(const NskryOcrRequestV1 *request) {
+    if (initThread || !request || !request->receive) return NSKRY_OCR_INVALID;
+    if (request->canceled(request->context)) return NSKRY_OCR_CANCELED;
+    constexpr RECT line{3, 4, 27, 18};
+    constexpr NskryOcrWordV1 word{line, 0, 7, 0, 0};
+    const NskryOcrLayoutV1 result{L"fixture", 7, &line, 1, &word, 1};
+    return request->receive(request->context, &result) ? NSKRY_OCR_OK : NSKRY_OCR_FAILED;
 }
 NSKRY_API int32_t NSKRY_CALL nskry_plugin_connect_image_recognition_v1(const NskryImageRecognitionServiceV1* service) {
     if (!service || service->version != 1 || service->structSize < sizeof(*service)) return 0;

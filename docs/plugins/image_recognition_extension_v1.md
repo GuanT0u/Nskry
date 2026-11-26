@@ -16,10 +16,12 @@ table before init; connection must not start work. A declared but missing export
 fails loading cleanly. Metadata discovery checks enabled/compatible manifests
 only: opening settings or checking availability must not load a DLL/model.
 
-Clients explicitly name a provider ID; there is no automatic provider selection
-or fallback. Translation currently offers an OFF-by-default checkbox for
-`nskry-ocr`. It is optional, not an installation prerequisite. Missing, disabled,
-old or busy providers are explained; no second engine is silently run.
+Clients explicitly name a provider ID. For new clients that share OCR or need
+word coordinates, use [layout OCR v1](ocr_layout_extension_v1.md). The official
+provider now has its own ID, `nskry-ocr-provider`. A request to the historical
+`nskry-ocr` ID still reaches a legacy package, or the independent official
+provider when the new Text Recognition feature is installed and enabled.
+Translation uses the layout extension by default and retains its opt-in for v1.
 
 ## Ownership and threads
 
@@ -66,8 +68,8 @@ including shutdown of owned processes. There is no safe host thread-kill for an
 uncooperative native DLL: native plugins are trusted code, not a sandbox. Host
 cannot enforce a hard timeout inside arbitrary third-party native code.
 
-The official OCR provider reuses its selected Accurate/Fast pipeline without
-opening its result/progress UI or sharing cancellation generations with OCR UI.
+The official OCR provider uses Accurate for this text-only interface. Windows OCR
+is available via the layout extension when a caller requests Fast.
 Accurate is one owned native process, <=4 inference threads, 20s timeout, 1GiB
 process memory cap; the process exits before returning. Fast retains conditional
 Windows OCR arbitration, at most 3 passes, with one request deadline and status

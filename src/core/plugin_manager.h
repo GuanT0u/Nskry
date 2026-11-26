@@ -1,4 +1,5 @@
 #pragma once
+#include "sdk/nskry_ocr_layout.h"
 #include "nskry_ui_preferences.h"
 
 #include "core/plugin_registry.h"
@@ -77,6 +78,7 @@ class PluginManager {
     bool ShowPluginSettings(const std::wstring &pluginId, HWND owner);
     bool HasTextTranslation() const; // Metadata discovery only, UI thread.
     int32_t TranslateText(const NskryTextTranslationV1 *, NskryTranslationResultV1 *);
+    int32_t AcquireOcr(const wchar_t *preferredId, NskryOcrLeaseV1 *lease);
     bool HasImageRecognition(const wchar_t* providerId) const;
     int32_t BeginImageRecognition(const wchar_t*, HBITMAP, uint64_t*);
     int32_t PollImageRecognition(uint64_t, NskryImageTextV1*);

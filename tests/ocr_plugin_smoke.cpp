@@ -1,3 +1,4 @@
+#include "test_ocr_provider.h"
 #include "nskry_plugin.h"
 
 #include <algorithm>
@@ -144,7 +145,7 @@ int wmain(int argc, wchar_t** argv) {
     ULONG_PTR gdiplusToken{};
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) return 2;
     HMODULE module = ::LoadLibraryW(argv[1]);
-    if (!module) return 3;
+    if (!module || !ConnectTestOcr(module)) return 3;
     const auto init = reinterpret_cast<PluginInit>(::GetProcAddress(module, "nskry_plugin_init"));
     const auto execute = reinterpret_cast<PluginExecute>(::GetProcAddress(module, "nskry_plugin_execute"));
     const auto shutdown = reinterpret_cast<PluginShutdown>(::GetProcAddress(module, "nskry_plugin_shutdown"));

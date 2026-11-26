@@ -139,6 +139,13 @@ bool PluginManager::LoadPlugin(const PluginRecord &record) {
             if (m_graphicsProvider)
                 m_graphicsProvider(m_hostContext);
             initAttempted = true;
+            if (record.manifest.ocrLayoutClientApi) {
+                const auto connect = reinterpret_cast<NskryConnectOcrV1>(
+                    GetProcAddress(module, "nskry_plugin_connect_ocr_layout_v1"));
+                if (!connect || !connect([](const wchar_t *id, NskryOcrLeaseV1 *lease) {
+                        return PluginManager::Instance().AcquireOcr(id, lease);
+                    })) throw std::runtime_error("OCR layout extension rejected");
+            }
             if (record.manifest.imageRecognitionClientApi) {
                 const NskryImageRecognitionServiceV1 service{sizeof(service), 1,
                     [](const wchar_t* id) -> int32_t { return PluginManager::Instance().HasImageRecognition(id); },

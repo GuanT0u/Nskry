@@ -4,7 +4,7 @@
 #include "nskry_plugin.h"
 #include "nskry_text_translation.h"
 #include "nskry_image_recognition.h"
-#include "image_recognition.h"
+#include "../../common/ocr_client.h"
 #include "online_settings.h"
 #include "online_translation.h"
 #include "translation_policy.h"
@@ -28,8 +28,14 @@ bool closing{};
 bool starting{}, uploadCanceled{};
 NskryImageRecognitionServiceV1 recognitionService{};
 bool useOcrPlugin{};
+NskryAcquireOcrV1 acquireOcr{};
 bool hasOfflineEngine{};
 HWND taskDispatch{}; // Exists only while a task needs completion delivery.
+const wchar_t *TextOnlyProvider() {
+    if (recognitionService.available && recognitionService.available(L"nskry-ocr-provider"))
+        return L"nskry-ocr-provider";
+    return L"nskry-ocr";
+}
 void FinishTask();
 void CloseTaskDispatch() {
     if (taskDispatch) {
@@ -109,16 +115,10 @@ void RefreshProviderControls() {
     const bool hasResult = !task && GetWindowTextLengthW(resultEdit) > 0;
     EnableWindow(GetDlgItem(window, 3), hasResult);
     EnableWindow(GetDlgItem(window, 5), hasResult);
-    // An older Core must still let a persisted opt-in be switched OFF.
     EnableWindow(GetDlgItem(window, 22), !task && (recognitionService.available || useOcrPlugin));
-    const bool available = recognitionService.available && recognitionService.available(L"nskry-ocr");
-    SetWindowTextW(GetDlgItem(window, 23),
-                   !recognitionService.available ? L"OCR integration requires an updated Core. Built-in "
-                                                   L"recognition still works when this option is off."
-                   : available ? L"OCR plugin available. Uses its selected mode; review recognition before "
-                                 L"relying on a translation."
-                               : L"For another recognition option, install/enable an updated OCR plugin. "
-                                 L"Translation also works without it.");
+    SetWindowTextW(GetDlgItem(window, 23), nskry::plugin_ui::Text(
+        L"The default uses the local layout provider. The optional text-only interface supports older OCR integrations.",
+        L"默认使用本地布局识别接口。可选的纯文本接口供兼容旧版 OCR 集成使用。"));
 }
 std::wstring Text(HWND control) {
     const auto size = GetWindowTextLengthW(control);
@@ -151,7 +151,7 @@ void FinishTask() {
         else
             task->error = error[0] ? error
                                    : L"OCR plugin unavailable or failed. No fallback was used. Uncheck the "
-                                     L"OCR option to use built-in recognition.";
+                                     L"OCR option to use shared OCR.";
         task->done.store(true);
     }
     if (!task || !task->done.load())
@@ -493,7 +493,7 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             if (LOWORD(wp) == 22 && !task) {
                 const DWORD enabled = SendMessageW(GetDlgItem(hwnd, 22), BM_GETCHECK, 0, 0) == BST_CHECKED;
                 if (enabled &&
-                    (!recognitionService.available || !recognitionService.available(L"nskry-ocr"))) {
+                    (!recognitionService.available || !recognitionService.available(TextOnlyProvider()))) {
                     SendMessageW(GetDlgItem(hwnd, 22), BM_SETCHECK,
                                  useOcrPlugin ? BST_CHECKED : BST_UNCHECKED, 0);
                     SetWindowTextW(statusLabel,
@@ -638,7 +638,7 @@ void Show(HWND owner) {
     // This preserves persisted provider values across package variants.
     SendMessageW(providerChoice, CB_SETCURSEL, preferred, 0);
     child(L"BUTTON", nskry::plugin_ui::Text(L"Configure engine", L"配置引擎"), WS_TABSTOP, 21);
-    child(L"BUTTON", nskry::plugin_ui::Text(L"Use installed OCR plugin for screenshot translation (optional)", L"使用已安装的文字识别插件处理截图（可选）"),
+    child(L"BUTTON", nskry::plugin_ui::Text(L"Use the legacy text-only OCR interface (optional)", L"使用兼容旧版的纯文本 OCR 接口（可选）"),
           BS_AUTOCHECKBOX | WS_TABSTOP, 22);
     child(L"STATIC", L"", 0, 23);
     DWORD useProvider{}, preferenceBytes = sizeof(useProvider);
@@ -679,7 +679,7 @@ NskryPluginInfo info{sizeof(info),
                      NSKRY_PLUGIN_API_VERSION,
                      L"Translation",
                      L"nskry-translate",
-                     L"0.3.4",
+                     L"0.4.0",
                      L"Nskry Team",
                      L"Experimental on-demand Chinese/English translation with optional online engines.",
                      nullptr,
@@ -698,6 +698,10 @@ NSKRY_API const NskryPluginInfo *NSKRY_CALL nskry_plugin_info() {
 }
 NSKRY_API int32_t NSKRY_CALL nskry_plugin_init(const NskryHostContext *) {
     return 1;
+}
+extern "C" NSKRY_API int32_t NSKRY_CALL nskry_plugin_connect_ocr_layout_v1(NskryAcquireOcrV1 acquire) {
+    acquireOcr = acquire;
+    return acquire != nullptr;
 }
 extern "C" NSKRY_API int32_t NSKRY_CALL
 nskry_plugin_connect_image_recognition_v1(const NskryImageRecognitionServiceV1 *service) {
@@ -774,8 +778,8 @@ NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext *context) 
         SetWindowTextW(resultEdit, L"");
         if (useOcrPlugin) {
             uint64_t ticket{};
-            if (!recognitionService.available || !recognitionService.available(L"nskry-ocr") ||
-                recognitionService.begin(L"nskry-ocr", context->capturedBitmap, &ticket) !=
+            if (!recognitionService.available || !recognitionService.available(TextOnlyProvider()) ||
+                recognitionService.begin(TextOnlyProvider(), context->capturedBitmap, &ticket) !=
                     NSKRY_IMAGE_PENDING) {
                 SetWindowTextW(statusLabel,
                                L"Selected OCR plugin is missing, disabled, busy or incompatible. "
@@ -795,19 +799,28 @@ NSKRY_API void NSKRY_CALL nskry_plugin_execute(const NskryHostContext *context) 
             bitmap.bmHeight < 1 || bitmap.bmWidth > 4096 || bitmap.bmHeight > 4096 ||
             uint64_t(bitmap.bmWidth) * bitmap.bmHeight > 4194304)
             winrt::throw_hresult(E_BOUNDS);
-        std::vector<uint8_t> pixels(size_t(bitmap.bmWidth) * bitmap.bmHeight * 4);
-        BITMAPINFO description{};
-        description.bmiHeader = {sizeof(BITMAPINFOHEADER), bitmap.bmWidth, -bitmap.bmHeight, 1, 32, BI_RGB};
-        HDC dc = GetDC(nullptr);
-        if (!dc)
-            winrt::throw_last_error();
-        const auto rows = GetDIBits(dc, context->capturedBitmap, 0, bitmap.bmHeight, pixels.data(),
-                                    &description, DIB_RGB_COLORS);
-        ReleaseDC(nullptr, dc);
-        if (rows != bitmap.bmHeight)
-            winrt::throw_hresult(E_FAIL);
-        Start(true, [pixels = std::move(pixels), w = bitmap.bmWidth, h = bitmap.bmHeight](Task &work) {
-            return RecognizeImage(pixels, w, h, PluginDirectory(), work.cancel);
+        auto lease = nskry::ocr_client::Acquire(acquireOcr);
+        if (!lease) {
+            SetWindowTextW(statusLabel, nskry::plugin_ui::Text(
+                L"Install or enable a compatible OCR provider, or paste source text.",
+                L"请安装或启用兼容的 OCR 能力组件，也可以直接粘贴原文。"));
+            return;
+        }
+        auto copy = std::shared_ptr<void>(CopyImage(context->capturedBitmap, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION),
+                                          [](void *value) { if (value) DeleteObject(value); });
+        if (!copy) winrt::throw_last_error();
+        Start(true, [copy, lease](Task &work) {
+            wchar_t error[256]{};
+            NskryOcrRequestV1 input{sizeof(input), 1, static_cast<HBITMAP>(copy.get()), NSKRY_TRANSLATE_FAST_OCR, &work,
+                [](void *ctx) -> int32_t { return WaitForSingleObject(static_cast<Task*>(ctx)->cancel, 0) == WAIT_OBJECT_0; },
+                [](void *ctx, const NskryOcrLayoutV1 *out) -> int32_t {
+                    if (!nskry::ocr_client::Valid(out) || out->length > MaxTextUnits) return 0;
+                    static_cast<Task*>(ctx)->result.assign(out->text, out->length);
+                    return 1;
+                }, error, 256, 0};
+            const auto status = lease->api.recognize(&input);
+            if (status != NSKRY_OCR_OK) throw TranslationFailure{error[0] ? error : nskry::ocr_client::Message(status)};
+            return std::move(work.result);
         });
     } catch (...) {
         if (statusLabel)

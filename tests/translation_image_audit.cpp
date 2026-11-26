@@ -1,9 +1,11 @@
+#include "test_ocr_provider.h"
 // Explicit, opt-in audit of already packaged DLLs and reviewed PUBLIC images.
 // Not a production feature; never added as an online CTest or installed plugin.
 #include "core/json.h"
 #include "nskry_actions.h"
 #include "nskry_plugin.h"
 #include "nskry_text_translation.h"
+#include "nskry_ui_preferences.h"
 #include <algorithm>
 #include <bcrypt.h>
 #include <filesystem>
@@ -120,7 +122,14 @@ uint64_t Cpu(HANDLE process) {
     return ((uint64_t(kernel.dwHighDateTime) << 32) | kernel.dwLowDateTime) +
            ((uint64_t(user.dwHighDateTime) << 32) | user.dwLowDateTime);
 }
+size_t CurrentPrivateBytes() {
+    PROCESS_MEMORY_COUNTERS_EX memory{};
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory), sizeof(memory)))
+        throw std::runtime_error("Cannot sample audit process memory");
+    return memory.PrivateUsage;
+}
 struct Sampling {
+    const size_t idleBefore = CurrentPrivateBytes();
     HANDLE stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     std::thread thread;
     size_t hostPrivate{}, hostWorking{}, childPrivate{}, childWorking{}, ocrPrivate{}, ocrWorking{};
@@ -203,6 +212,8 @@ struct Sampling {
             exited &= WaitForSingleObject(handle, 0) == WAIT_OBJECT_0;
         }
         return Value(Value::Object{
+            {L"host_idle_before_private_bytes", Value(double(idleBefore))},
+            {L"host_finished_private_bytes", Value(double(CurrentPrivateBytes()))},
             {L"host_cpu_ms", Value((Cpu(GetCurrentProcess()) - cpuStart) / 10000.0)},
             {L"host_private_sampled_bytes", Value(double(hostPrivate))},
             {L"host_working_sampled_bytes", Value(double(hostWorking))},
@@ -246,6 +257,7 @@ int wmain(int argc, wchar_t **argv) {
     if (argc < 8 || argc > 10)
         return 2;
     const bool online = !wcscmp(argv[5], L"mymemory");
+    const bool ocrOnly = !wcscmp(argv[5], L"ocr-only");
     bool consent{}, joinGoldEnglish{};
     for (int i = 8; i < argc; ++i) {
         if (!wcscmp(argv[i], L"--allow-public-network"))
@@ -256,7 +268,7 @@ int wmain(int argc, wchar_t **argv) {
             return 2;
     }
     const auto repetitions = wcstoul(argv[6], nullptr, 10);
-    if ((!online && wcscmp(argv[5], L"offline")) || repetitions < 1 || repetitions > 3 ||
+    if ((!online && !ocrOnly && wcscmp(argv[5], L"offline")) || repetitions < 1 || repetitions > 3 ||
         (online && !consent))
         return 2;
     try {
@@ -298,7 +310,7 @@ int wmain(int argc, wchar_t **argv) {
         Plugin plugin;
         plugin.dll = LoadLibraryExW(argv[1], nullptr,
                                     LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-        if (!plugin.dll)
+        if (!plugin.dll || !ConnectTestOcr(plugin.dll))
             throw std::runtime_error("Packaged DLL failed to load");
         const auto init =
             reinterpret_cast<decltype(&nskry_plugin_init)>(GetProcAddress(plugin.dll, "nskry_plugin_init"));
@@ -310,11 +322,21 @@ int wmain(int argc, wchar_t **argv) {
             GetProcAddress(plugin.dll, "nskry_plugin_show_settings_v1"));
         const auto translate = reinterpret_cast<NskryTranslateTextV1>(
             GetProcAddress(plugin.dll, "nskry_plugin_translate_text_v1"));
-        if (!init || !plugin.shutdown || !execute || !show || !translate || !init(nullptr) || !show(nullptr))
+        const auto setUi = reinterpret_cast<NskrySetUiPreferencesV1>(
+            GetProcAddress(plugin.dll, kNskrySetUiPreferencesV1));
+        if (!init || !plugin.shutdown || !execute || !show || !translate || !init(nullptr))
             throw std::runtime_error("Packaged plugin could not initialize its UI");
+        const NskryUiPreferencesV1 english{sizeof(english), MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
+                                           NSKRY_UI_THEME_SYSTEM};
+        if (setUi)
+            setUi(&english);
+        if (!show(nullptr))
+            throw std::runtime_error("Packaged plugin could not open its UI");
         const HWND window = Window();
         if (!window)
             throw std::runtime_error("No result window");
+        if (ocrOnly && IsWindowVisible(GetDlgItem(window, 12)))
+            throw std::runtime_error("OCR-only mode requires the online-only package");
         SetWindowTextW(GetDlgItem(window, 12), argv[4]);
         SendDlgItemMessageW(window, 20, CB_SETCURSEL, online ? 3 : 0, 0);
         Value::Array results;
@@ -325,7 +347,7 @@ int wmain(int argc, wchar_t **argv) {
             fixture.GetString(L"file", file);
             fixture.GetString(L"expected_source", expected);
             fixture.GetString(L"target_language", target);
-            for (unsigned index = 0; index <= repetitions; ++index) {
+            for (unsigned index = 0; index < repetitions + (ocrOnly ? 0u : 1u); ++index) {
                 if (quotaReached)
                     break;
                 const bool control = index == repetitions;
@@ -383,7 +405,9 @@ int wmain(int argc, wchar_t **argv) {
                 const auto source = Text(GetDlgItem(window, 10)), output = Text(GetDlgItem(window, 11)),
                            status = Text(GetDlgItem(window, 14));
                 const bool done = IsWindowEnabled(GetDlgItem(window, 1));
-                const bool success = done && !output.empty() && status.find(L": done.") != status.npos;
+                const bool translated = !output.empty() &&
+                    (status.find(L" complete.") != status.npos || status.find(L": done.") != status.npos);
+                const bool success = done && (ocrOnly ? !source.empty() && output.empty() && !dialogs : translated);
                 allWorkflows &= success;
                 quotaReached = status.find(L"quota") != status.npos && !success;
                 results.emplace_back(Value::Object{
@@ -391,7 +415,7 @@ int wmain(int argc, wchar_t **argv) {
                     {L"path", Value(std::wstring(control ? (joinGoldEnglish && id == L"english_phototest"
                                                                 ? L"manual_gold_soft_wrap_control"
                                                                 : L"manual_gold_text_control")
-                                                         : L"image_end_to_end"))},
+                                                         : ocrOnly ? L"image_ocr_only" : L"image_end_to_end"))},
                     {L"run", Value(double(control ? 1 : index + 1))},
                     {L"completed", Value(done)},
                     {L"workflow_success", Value(success)},
@@ -404,8 +428,9 @@ int wmain(int argc, wchar_t **argv) {
                     {L"translation", Value(output)},
                     {L"status", Value(status)},
                     {L"direction_matches_reference",
-                     Value(status.find(target == L"zh" ? L"English → 中文" : L"中文 → English") !=
-                           status.npos)},
+                     Value(!ocrOnly &&
+                           (status.find(target == L"zh" ? L"English → Chinese" : L"Chinese → English") != status.npos ||
+                            status.find(target == L"zh" ? L"English → 中文" : L"中文 → English") != status.npos))},
                     {L"resources", sampling.Metrics()}});
                 std::cout << "Fixture=" << (id == L"english_phototest" ? "English" : "Chinese")
                           << " path=" << (control ? "gold-control" : "image")

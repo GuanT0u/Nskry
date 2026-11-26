@@ -250,11 +250,15 @@ int WINAPI wWinMain(
     nskry::UpdateTask updateTask;
     std::wstring packageError;
     if (!pluginRegistry.Initialize() || !packageManager.Initialize() ||
-        !packageManager.ApplyPendingOperations(&packageError) || !pluginRegistry.Load()) {
+        !pluginRegistry.Load()) {
         std::wstring registryError = L"Plugin registry could not be initialized. Plugins will be unavailable this session.";
         if (!packageError.empty()) registryError += L"\n\n" + packageError;
         ::MessageBoxW(nullptr, registryError.c_str(), L"Nskry", MB_ICONWARNING);
     } else {
+        if (!packageManager.ApplyPendingOperations(&packageError))
+            ::MessageBoxW(nullptr, packageError.empty() ? L"A pending plugin change could not be applied." : packageError.c_str(),
+                          L"Nskry", MB_ICONWARNING);
+        pluginRegistry.Load();
         nskry::PluginManager::Instance().SetUiPreferencesProvider(nskry::DesktopUiPreferences);
         nskry::PluginManager::Instance().Initialize(pluginRegistry, hostCtx);
     }
@@ -367,7 +371,13 @@ int WINAPI wWinMain(
         return packageManager.InspectPackage(path, manifest, &error);
     };
     settingsServices.installThirdPartyPlugin = [&packageManager](const std::wstring& path) {
-        return packageManager.InstallPackage(path, nskry::PluginSource::ThirdParty);
+        auto result = packageManager.InstallPackage(path, nskry::PluginSource::ThirdParty);
+        if (result.needsOcrProvider && MessageBoxW(g_mainHwnd, nskry::UiText(
+            L"Install the companion nskry-ocr-provider.nskryplugin from the same folder? It runs native code and receives screenshots for recognition.",
+            L"同时安装同目录的 nskry-ocr-provider.nskryplugin 吗？它会运行本地代码，并接收需要识别的截图。"),
+            L"Nskry", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES)
+            return packageManager.InstallWithOcrProvider(path, nskry::PluginSource::ThirdParty);
+        return result;
     };
     settingsServices.checkPluginUpdates = [&pluginUpdateManager, &settings, &updateTask](nskry::UpdateTask::Completion completion) {
         return updateTask.Start(pluginUpdateManager.MakeCheckWork(settings.GetOfficialPluginCatalogUrl()),std::move(completion));
@@ -461,10 +471,11 @@ static bool RunPluginPackageCli(int& exitCode) {
 
     std::wstring packagePath;
     nskry::PluginSource source = nskry::PluginSource::Local;
-    bool silent = false;
+    bool silent = false, withOcr = false;
     for (int i = 1; i < argc; ++i) {
         const std::wstring arg = argv[i];
         if (arg == L"--install-plugin" && i + 1 < argc) packagePath = argv[++i];
+        else if (arg == L"--with-ocr-provider") withOcr = true;
         else if (arg == L"--source" && i + 1 < argc) {
             const std::wstring value = argv[++i];
             if (value == L"official") source = nskry::PluginSource::Official;
@@ -482,7 +493,7 @@ static bool RunPluginPackageCli(int& exitCode) {
     if (!registry.Initialize() || !packageManager.Initialize() || !registry.Load()) {
         result.message = L"Plugin package service could not be initialized.";
     } else {
-        result = packageManager.InstallPackage(packagePath, source);
+        result = withOcr ? packageManager.InstallWithOcrProvider(packagePath, source) : packageManager.InstallPackage(packagePath, source);
     }
     exitCode = result.success ? 0 : 1;
     if (!silent) {

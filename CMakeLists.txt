@@ -99,6 +99,7 @@ target_precompile_headers(Nskry PRIVATE src/pch.h)
 # Official plugins use the same packaged form that Settings and Setup consume.
 add_subdirectory(plugins/nskry-scroll)
 add_subdirectory(plugins/nskry-ocr)
+add_subdirectory(plugins/nskry-ocr-provider)
 add_subdirectory(plugins/nskry-record)
 add_subdirectory(plugins/nskry-translate)
 foreach(plugin nskry_scroll nskry_ocr nskry_record nskry_translate)
@@ -321,6 +322,20 @@ if (BUILD_TESTING)
     add_dependencies(NskryUpdateBackendTests NskryUpdatePackageFixture)
     add_test(NAME NskryUpdateBackendTests COMMAND NskryUpdateBackendTests "${update_fixture_dir}/fixture.nskryplugin" "${CMAKE_BINARY_DIR}")
     set_tests_properties(NskryUpdateBackendTests PROPERTIES TIMEOUT 20)
+    set(ocr_bundle_dir "${CMAKE_SOURCE_DIR}/installer/bundled")
+    set(translation_fixture_dir "${CMAKE_BINARY_DIR}/plugins/nskry-translate/package")
+    add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/translation-package-fixture.nskryplugin"
+        COMMAND ${CMAKE_COMMAND} -E tar cf "${CMAKE_BINARY_DIR}/translation-package-fixture.nskryplugin"
+            --format=zip manifest.json nskry-translate.dll
+        WORKING_DIRECTORY "${translation_fixture_dir}"
+        DEPENDS nskry_translate "$<TARGET_FILE:nskry_translate>" plugins/nskry-translate/manifest.json
+        VERBATIM)
+    add_custom_target(NskryTranslationPackageFixture DEPENDS "${CMAKE_BINARY_DIR}/translation-package-fixture.nskryplugin")
+    add_dependencies(NskryUpdateBackendTests nskry_ocr_package nskry_ocr_provider_package NskryTranslationPackageFixture)
+    add_test(NAME NskryOcrPackageLifecycle COMMAND NskryUpdateBackendTests
+        "${ocr_bundle_dir}/nskry-ocr.nskryplugin" "${CMAKE_BINARY_DIR}"
+        "${ocr_bundle_dir}/nskry-ocr-provider.nskryplugin" "${CMAKE_BINARY_DIR}/translation-package-fixture.nskryplugin")
+    set_tests_properties(NskryOcrPackageLifecycle PROPERTIES TIMEOUT 40)
     add_dependencies(NskryPluginRuntimeTests NskryPluginInputV2Fixture NskryPluginLegacyInputFixture)
     add_test(NAME NskryPluginRuntimeTests COMMAND NskryPluginRuntimeTests $<TARGET_FILE:NskryPluginRuntimeFixture> "${CMAKE_BINARY_DIR}")
     add_test(NAME NskryPluginInputV2Tests COMMAND NskryPluginRuntimeTests $<TARGET_FILE:NskryPluginInputV2Fixture> "${CMAKE_BINARY_DIR}" v2)
@@ -334,7 +349,7 @@ if (BUILD_TESTING)
         target_compile_options(NskryOcrSmokeTests PRIVATE /utf-8)
     endif()
     target_link_libraries(NskryOcrSmokeTests PRIVATE gdi32 user32 gdiplus)
-    add_dependencies(NskryOcrSmokeTests nskry_ocr)
+    add_dependencies(NskryOcrSmokeTests nskry_ocr nskry_ocr_provider_package)
     add_test(NAME NskryOcrSmokeTests
         COMMAND NskryOcrSmokeTests $<TARGET_FILE:nskry_ocr>)
     set_tests_properties(NskryOcrSmokeTests PROPERTIES TIMEOUT 25)

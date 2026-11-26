@@ -3,6 +3,7 @@
 #include "pch.h"
 #include "update/package_verifier.h"
 
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -251,6 +252,30 @@ PluginPackageResult PluginPackageManager::InstallPackage(const std::wstring &pac
     auto prepared = PreparePackage(packagePath, m_registry.AppRoot(), &result.message);
     return prepared ? InstallPrepared(prepared, source) : result;
 }
+PluginPackageResult PluginPackageManager::InstallWithOcrProvider(const std::wstring &path, PluginSource source) {
+    PluginPackageResult result;
+    auto feature = PreparePackage(path, m_registry.AppRoot(), &result.message);
+    if (!feature) return result;
+    if (feature->manifest.ocrLayoutClientApi && !m_registry.ResolveOcr()) {
+        if (m_registry.Find(L"nskry-ocr-provider")) {
+            result.message = L"Enable or repair the installed OCR provider, then retry.";
+            return result;
+        }
+        const auto companion = std::filesystem::path(path).parent_path() / L"nskry-ocr-provider.nskryplugin";
+        auto provider = PreparePackage(companion.wstring(), m_registry.AppRoot(), &result.message);
+        if (!provider || provider->manifest.id != L"nskry-ocr-provider" || provider->manifest.ocrLayoutApi != 1 ||
+            provider->manifest.ocrLayoutClientApi || provider->manifest.loadPolicy != PluginLoadPolicy::OnDemand ||
+            provider->manifest.toolbarAction || provider->manifest.postCapture || !provider->manifest.shortcuts.empty()) {
+            result.message = L"Provide the matching nskry-ocr-provider.nskryplugin next to the feature package.";
+            return result;
+        }
+        result = InstallPrepared(provider, source);
+        if (!result.success) return result;
+        // Retain the valid dependency if committing the feature fails. A retry reuses it.
+    }
+    return InstallPrepared(feature, source);
+}
+
 std::shared_ptr<PreparedPluginPackage> PluginPackageManager::PreparePackage(const std::wstring &packagePath,
                                                                             const std::wstring &appRoot,
                                                                             std::wstring *error, std::stop_token stop) {
@@ -312,6 +337,12 @@ PluginPackageResult PluginPackageManager::InstallPrepared(const std::shared_ptr<
     }
     result.pluginId = manifest.id;
 
+    std::vector<PendingOperation> pending;
+    if (!ReadPending(pending)) {
+        result.message = L"Unable to read pending plugin operations.";
+        return result;
+    }
+    if (!CheckOcrChange(manifest.id, &manifest, pending, result)) return result;
     const std::wstring target = TargetPathForId(manifest.id);
     if (m_registry.Find(manifest.id)) {
         const std::wstring updateStage = CreateStagingDirectory(m_updatesRoot, L"upd");
@@ -385,6 +416,7 @@ PluginPackageResult PluginPackageManager::Uninstall(const std::wstring &pluginId
         result.message = L"Unable to read pending plugin operations.";
         return result;
     }
+    if (!CheckOcrChange(pluginId, nullptr, operations, result)) return result;
     operations.push_back({PendingType::Delete, pluginId, {}});
     if (!WritePending(operations)) {
         result.message = L"Unable to record pending plugin removal.";
@@ -394,6 +426,40 @@ PluginPackageResult PluginPackageManager::Uninstall(const std::wstring &pluginId
     result.restartRequired = true;
     result.message = L"Plugin removal is scheduled for the next Nskry restart.";
     return result;
+}
+
+// Check both the live dependency and the packages that will exist after restart.
+bool PluginPackageManager::CheckOcrChange(const std::wstring &id, const PluginManifest *next,
+        const std::vector<PendingOperation> &pending, PluginPackageResult &result) const {
+    const auto *old = m_registry.Find(id);
+    const bool needs = next && next->ocrLayoutClientApi;
+    const bool drops = old && old->manifest.ocrLayoutApi && (!next || !next->ocrLayoutApi);
+    if (!needs && !drops) return true;
+    if (needs && !m_registry.ResolveOcr()) {
+        result.needsOcrProvider = true;
+        result.message = L"Install or enable a compatible OCR provider before installing this feature.";
+        return false;
+    }
+    bool required = needs || m_registry.OcrRequired();
+    const auto *provider = m_registry.ResolveOcr(nullptr, drops ? id : std::wstring{});
+    for (const auto &op : pending) {
+        if (op.pluginId == id) continue;
+        PluginManifest staged;
+        if (op.type == PendingType::Update) {
+            const auto path = std::filesystem::path(m_registry.AppRoot()) / op.stagedPath / L"manifest.json";
+            if (!PluginManifest::LoadFromFile(path.wstring(), staged) || staged.id != op.pluginId) {
+                result.message = L"Repair the pending plugin update before changing OCR dependencies.";
+                return false;
+            }
+            required |= staged.ocrLayoutClientApi != 0;
+        }
+        if (provider && op.pluginId == provider->manifest.id && !staged.ocrLayoutApi) provider = nullptr;
+    }
+    if (required && !provider) {
+        result.message = L"Installed or pending features require a compatible OCR provider. Remove the dependent features or enable a replacement first.";
+        return false;
+    }
+    return true;
 }
 
 bool PluginPackageManager::ReadPending(std::vector<PendingOperation> &operations) const {
@@ -463,6 +529,19 @@ bool PluginPackageManager::ApplyPendingOperations(std::wstring *error) {
     std::vector<PendingOperation> remaining;
     bool success = true;
     for (const PendingOperation &operation : operations) {
+        if (!m_registry.Load()) return false;
+        PluginPackageResult dependency;
+        PluginManifest staged;
+        const bool updating = operation.type == PendingType::Update;
+        if ((updating && (!PluginManifest::LoadFromFile(
+                (std::filesystem::path(m_registry.AppRoot()) / operation.stagedPath / L"manifest.json").wstring(),
+                staged, &dependency.message) || staged.id != operation.pluginId || !staged.IsCompatibleWithHost(&dependency.message))) ||
+            !CheckOcrChange(operation.pluginId, updating ? &staged : nullptr, {}, dependency)) {
+            if (error && error->empty()) *error = dependency.message;
+            remaining.push_back(operation);
+            success = false;
+            continue;
+        }
         std::wstring operationError;
         const bool applied = operation.type == PendingType::Update ? ApplyUpdate(operation, &operationError)
                                                                    : ApplyDelete(operation, &operationError);

@@ -4,6 +4,30 @@
 #include <thread>
 
 namespace nskry {
+int32_t PluginManager::AcquireOcr(const wchar_t *preferredId, NskryOcrLeaseV1 *lease) {
+    if (!lease) return NSKRY_OCR_INVALID;
+    *lease = {};
+    if (!m_initialized || GetCurrentThreadId() != m_uiThread || !m_registry) return NSKRY_OCR_UNAVAILABLE;
+    const auto *record = m_registry->ResolveOcr(preferredId);
+    if (!record || !record->enabled || record->source == PluginSource::Legacy ||
+        record->manifest.ocrLayoutApi != 1 || !record->manifest.IsCompatibleWithHost()) return NSKRY_OCR_UNAVAILABLE;
+    const auto path = record->installPath + L"/" + record->manifest.entry;
+    const auto module = LoadLibraryExW(path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if (!module) return NSKRY_OCR_UNAVAILABLE;
+    const auto info = reinterpret_cast<decltype(&nskry_plugin_info)>(GetProcAddress(module, "nskry_plugin_info"));
+    const auto recognize = reinterpret_cast<NskryRecognizeLayoutV1>(GetProcAddress(module, "nskry_plugin_ocr_layout_v1"));
+    try {
+        const auto *meta = info ? info() : nullptr;
+        if (recognize && meta && meta->structSize >= sizeof(*meta) && meta->apiVersion == 2 &&
+            meta->id && record->manifest.id == meta->id && meta->version && record->manifest.version == meta->version) {
+            *lease = {module, recognize};
+            return NSKRY_OCR_OK;
+        }
+    } catch (...) {}
+    FreeLibrary(module);
+    return NSKRY_OCR_UNAVAILABLE;
+}
+
 struct PluginManager::ImageJob {
     HBITMAP bitmap{};
     HANDLE cancel = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -24,11 +48,21 @@ struct PluginManager::ImageJob {
             DeleteObject(bitmap);
     }
 };
+// API 0.6.x OCR acted as a v1 provider. Retain its identifier for legacy clients
+// only while its replacement feature is installed and enabled.
+static const wchar_t *LegacyImageProvider(const PluginRegistry &registry, const wchar_t *id) {
+    if (id && !wcscmp(id, L"nskry-ocr")) {
+        const auto *feature = registry.Find(id);
+        if (feature && feature->enabled && feature->manifest.ocrLayoutClientApi && !feature->manifest.imageRecognitionApi)
+            return L"nskry-ocr-provider";
+    }
+    return id;
+}
 bool PluginManager::HasImageRecognition(const wchar_t *id) const {
     if (GetCurrentThreadId() != m_uiThread.load() || !m_initialized || !m_registry || !id)
         return false;
     try {
-        const auto *record = m_registry->Find(id);
+        const auto *record = m_registry->Find(LegacyImageProvider(*m_registry, id));
         return record && record->enabled && record->manifest.IsCompatibleWithHost() &&
                record->manifest.imageRecognitionApi == 1;
     } catch (...) {
@@ -43,6 +77,7 @@ int32_t PluginManager::BeginImageRecognition(const wchar_t *id, HBITMAP bitmap, 
     *ticket = 0;
     if (!HasImageRecognition(id))
         return NSKRY_IMAGE_UNAVAILABLE;
+    id = LegacyImageProvider(*m_registry, id);
     if (m_imageJob)
         return NSKRY_IMAGE_BUSY; // Bounded: one job, no waiting queue.
     BITMAP info{};

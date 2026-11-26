@@ -1,4 +1,4 @@
-# Offline OCR plugin 0.6.4
+# Text Recognition 0.7.0
 
 精确模式默认使用 PP-OCRv4 检测/识别模型与 ONNX Runtime CPU，快速模式保留
 Windows OCR 的按需 A/B/C 流程（最多三轮）。本次没有在线 OCR、LLM、词典纠错，
@@ -6,9 +6,11 @@ Windows OCR 的按需 A/B/C 流程（最多三轮）。本次没有在线 OCR、
 
 ## 安装和使用
 
-构建生成 `installer/bundled/nskry-ocr.nskryplugin`。在 Settings → Plugins 导入
-完整包，确认更新后完全退出并重启 Nskry。不能只替换 DLL：包内的 `engine/`
-含 EXE、运行库、两个模型及第三方声明。本次开发不会自动安装到用户目录。
+在 Nskry 0.5.1 或更新版本的 Settings → Plugins 导入
+`installer/bundled/nskry-ocr.nskryplugin`。若尚无兼容 Provider，将
+`nskry-ocr-provider.nskryplugin` 放在同一目录，并确认同时安装。
+Provider 包的 `engine/` 提供原生 EXE、运行库、两个模型和第三方声明。
+更新文字提取后按提示重启。两个功能共享该 Provider，单独移除任一功能时可保留它。
 
 结果页的 Accurate/Fast OCR 按钮可重新识别原图；旋转后保留所选模式。
 选择仅在当前运行会话中保留。精确识别时显示可取消的进度窗；引擎缺失或失败会

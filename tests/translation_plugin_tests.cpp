@@ -1,3 +1,4 @@
+#include "test_ocr_provider.h"
 #include "nskry_actions.h"
 #include "nskry_ui_preferences.h"
 #include "nskry_plugin.h"
@@ -130,7 +131,7 @@ int wmain(int argc, wchar_t **argv) {
     winrt::init_apartment(winrt::apartment_type::single_threaded);
     HMODULE dll =
         LoadLibraryExW(argv[1], nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-    if (!dll)
+    if (!dll || !ConnectTestOcr(dll))
         return 3;
     const auto settings =
         reinterpret_cast<NskryShowSettingsV1>(GetProcAddress(dll, "nskry_plugin_show_settings_v1"));

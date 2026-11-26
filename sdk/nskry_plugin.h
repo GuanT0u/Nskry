@@ -35,7 +35,7 @@
 #include <windows.h>
 #include <d3d11.h>
 
-#define NSKRY_VERSION L"0.5.0"
+#define NSKRY_VERSION L"0.5.1"
 #define NSKRY_PLUGIN_API_VERSION 2
 #define NSKRY_CALL __cdecl
 

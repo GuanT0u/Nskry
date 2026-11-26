@@ -40,12 +40,12 @@ int wmain(int argc, wchar_t** argv) {
     }
     SetEnvironmentVariableW(L"NSKRY_OCR_FAKE_MODE", L"hang");
     rawResult = RunModelPixels(pixels, 64, 32, argv[1], [] { return false; }, 120);
-    okay &= Check(rawResult.status == ModelStatus::Failed && rawResult.workerExited && Exited(rawResult.processId),
+    okay &= Check(rawResult.status == ModelStatus::Timeout && rawResult.workerExited && Exited(rawResult.processId),
                   "raw pixel timeout reaps owned worker");
     auto start = std::chrono::steady_clock::now();
     result = RunModelProcess(bitmap, 64, 32, argv[1], [] { return false; }, 120);
     auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-    okay &= Check(result.status == ModelStatus::Failed && result.processId && Exited(result.processId) && ms < 2000,
+    okay &= Check(result.status == ModelStatus::Timeout && result.processId && Exited(result.processId) && ms < 2000,
                   "timeout kills and reaps worker");
     start = std::chrono::steady_clock::now();
     result = RunModelProcess(bitmap, 64, 32, argv[1], [&] {

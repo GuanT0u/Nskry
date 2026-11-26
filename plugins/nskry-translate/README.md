@@ -1,4 +1,4 @@
-# Translation 0.3.4 — online preview candidate and experimental offline translation
+# Translation 0.4.0
 
 The online-only package asks you to choose an engine on first use. Screenshot
 recognition still happens locally and the recognized text is available before
@@ -27,16 +27,13 @@ Copy result copies all translated text; normal text selection also works.
 Save text exports UTF-8. Editing the source invalidates the previous result.
 Settings opens the same window without OCR, model loading or networking.
 
-0.3.1 fixes the direct-image path: default builds ship their OWN on-demand native
-PP-OCRv4 worker/model/notices under `ocr/`, reusing source/static code and pinned
-assets at build time, not another installed plugin's DLL or directory. A single
-recognition process exits before translation starts. Geometric row/paragraph
-reconstruction preserves nearby wrapped text without blindly joining columns.
-Both online-only and offline-enabled packages include this local OCR runtime;
-"online-only" now means no offline TRANSLATION runtime, not no local OCR model.
-Model-free builds remain possible with `NSKRY_OCR_MODEL_ENGINE=OFF`; these use
-Windows OCR explicitly and have different accuracy, not silent runtime fallback.
-Missing accurate-OCR assets fail with a repair/paste-text message.
+Translation 0.4.0 requires Nskry 0.5.1 and a compatible local OCR provider for
+screenshot recognition. The official companion supplies the same PP-OCRv4 and
+layout pipeline used by Text Recognition. Place `nskry-ocr-provider.nskryplugin`
+beside the translation package when importing, or install a compatible provider
+first. The Text Recognition feature is optional. An unavailable provider leaves
+manual text entry usable. A build with `NSKRY_OCR_MODEL_ENGINE=OFF` explicitly
+requests the Windows OCR mode.
 
 The offline worker now supplies the pinned en→zh model's required source-side
 `>>cmn_Hans<<` language marker (counted inside the token budget). It translates
@@ -67,11 +64,8 @@ provider disables the OCR entry, and a busy task is not silently overwritten.
 Closing OCR does not close a handed-off translation window. Update Core + both
 plugins for this integration; the external language packs do not need conversion again.
 
-The source bitmap is copied before execute returns. OCR does not depend on the
-OCR plugin. Recognition source/engine assets are reused at build time and owned
-by this package at runtime, without an OCR-plugin prerequisite or private-UI call.
-Manual source entry remains available. Complex photos may still have mistakes;
-review both source and translation, especially names, addresses and numbers.
+The source bitmap is copied before execute returns. OCR completes before
+translation begins. Review source and translation for names, addresses and numbers.
 
 ## Development setup (explicit, not part of normal build)
 
@@ -100,11 +94,9 @@ review both source and translation, especially names, addresses and numbers.
    <build-plugin-stage> <new-build-path>.nskryplugin`. Language packs stay external;
    use `DEVELOPMENT_ONLY.md` release restrictions. Add `--online-only` to omit
    the entire optional offline translation engine/runtime. Both variants have the same
-   plugin ID/version: choose one, not two installed plugins. Online-only needs
-   no Python/translation model but still includes the native local OCR model.
-   Selecting Offline then clearly reports the absent translation engine.
-   A model-free configured build must explicitly use `--without-image-model`;
-   the packaging tool checks that this matches the build's `image-model.txt`.
+   plugin ID/version. Online-only needs no Python or translation model. Both
+   variants use the separate OCR capability package. Selecting Offline in the
+   online-only package reports the absent translation engine.
    This does not install anything.
 
 No system Python is needed by the frozen worker. The current developer runtime

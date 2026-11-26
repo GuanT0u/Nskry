@@ -66,6 +66,10 @@ bool PluginManifest::LoadFromFile(const std::wstring& path, PluginManifest& mani
     result.toolbarIcon = ReadToolbarIcon(root);
     if (const auto *extensions = root.Find(L"extensions")) {
         if (!extensions->IsObject() ||
+            (extensions->Find(L"ocr_layout") &&
+             (!extensions->GetUnsigned(L"ocr_layout", result.ocrLayoutApi) || result.ocrLayoutApi != 1)) ||
+            (extensions->Find(L"ocr_layout_client") &&
+             (!extensions->GetUnsigned(L"ocr_layout_client", result.ocrLayoutClientApi) || result.ocrLayoutClientApi != 1)) ||
             (extensions->Find(L"image_recognition") &&
              (!extensions->GetUnsigned(L"image_recognition", result.imageRecognitionApi) || result.imageRecognitionApi != 1)) ||
             (extensions->Find(L"image_recognition_client") &&
@@ -214,6 +218,11 @@ bool PluginManifest::LoadFromFile(const std::wstring& path, PluginManifest& mani
             row.id=L"plugin."+result.id+L"."+local;row.pluginId=result.id;row.pluginName=result.name;
             result.shortcuts.push_back(std::move(row));
         }
+    }
+    if (result.ocrLayoutApi && (result.loadPolicy != PluginLoadPolicy::OnDemand || result.ocrLayoutClientApi ||
+                                result.toolbarAction || result.postCapture || !result.shortcuts.empty())) {
+        SetError(error, L"A layout OCR provider must be an on-demand capability without feature actions or an OCR dependency.");
+        return false;
     }
     if (!IsSafePluginId(result.id) || !IsSafeEntryName(result.entry)) {
         SetError(error, L"Plugin id or entry file name is unsafe.");

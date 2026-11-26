@@ -5,7 +5,7 @@
 #include <functional>
 
 namespace nskry::ocr {
-enum class ModelStatus { Success, Unavailable, Canceled, Failed };
+enum class ModelStatus { Success, Unavailable, Canceled, Failed, Timeout };
 struct ModelResult {
     ModelStatus status{ModelStatus::Failed};
     wire::Reply reply;
